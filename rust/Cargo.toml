@@ -1,0 +1,42 @@
+[package]
+name = "viska_core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Núcleo criptográfico e de protocolo do Viska"
+license = "AGPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+# Hashing, KDF e Merkle
+blake3 = "1.8"
+# AEAD
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+# Curvas elípticas clássicas
+x25519-dalek = { version = "3.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize"] }
+# KEM pós-quântico (D10): libcrux é formalmente verificado (HACL*/F*)
+libcrux-ml-kem = { version = "0.0.10", default-features = false, features = ["mlkem768"] }
+# Aleatoriedade: exclusivamente o CSPRNG do sistema operacional
+getrandom = "0.3"
+# Higiene de memória
+zeroize = { version = "1.9", features = ["derive"] }
+subtle = "2.6"
+thiserror = "2"
+
+[dev-dependencies]
+hex = "0.4"
+proptest = "1"
+
+[features]
+default = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
