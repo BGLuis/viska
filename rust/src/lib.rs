@@ -1,60 +1,19 @@
-//! Núcleo do Viska: identidade, pareamento, handshake híbrido pós-quântico,
-//! ratchet, envelope de transporte e pipeline de arquivos.
+//! Fronteira FFI do Viska: casca fina em torno de `viska_proto`, gerada por
+//! `flutter_rust_bridge_codegen` a partir de `ffi/`.
 //!
 //! Regra de fronteira: nenhum byte de material de chave atravessa o FFI para o
-//! Dart. Este crate detém todos os segredos; a camada Flutter só orquestra UI,
-//! sensores e sockets.
+//! Dart. `viska_proto` detém todos os segredos; este crate só marshalling.
+//!
+//! Este é o único crate do projeto sem `#![forbid(unsafe_code)]`: o código
+//! gerado em `frb_generated.rs` contém `unsafe` genuíno, inerente a qualquer
+//! ponte Rust↔Dart. Toda a lógica de protocolo — tudo que `CLAUDE.md` trata
+//! como não-negociável quanto a `unsafe` — mora em `viska_proto`
+//! (`rust/logic/`), que mantém `forbid(unsafe_code)` sem exceção. Nenhuma
+//! linha escrita à mão neste crate usa `unsafe`; só o código gerado o faz.
 //!
 //! A especificação normativa está em `docs/protocol.md` na raiz do repositório.
 
-#![forbid(unsafe_code)]
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 
-pub mod crypto;
-pub mod util;
-pub mod wire;
-
-/// Versão do protocolo de fio implementada por este crate.
-pub const PROTOCOL_VERSION: u8 = 0x01;
-
-/// Erro unificado do núcleo.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("versão de protocolo não suportada: {0:#04x}")]
-    UnsupportedVersion(u8),
-
-    #[error("payload malformado: {0}")]
-    Malformed(&'static str),
-
-    #[error("comprimento inválido: esperado {expected}, recebido {actual}")]
-    BadLength { expected: usize, actual: usize },
-
-    #[error("assinatura inválida")]
-    BadSignature,
-
-    #[error("falha na autenticação do AEAD")]
-    AeadFailure,
-
-    #[error("chave pública inválida: {0}")]
-    InvalidPublicKey(&'static str),
-
-    #[error("contribuição de ordem baixa detectada no Diffie-Hellman")]
-    LowOrderPoint,
-
-    #[error("auto-pareamento: o contato apresenta a identidade deste dispositivo")]
-    SelfPairing,
-
-    #[error("estado de sessão inválido: {0}")]
-    InvalidState(&'static str),
-
-    #[error("mensagem não decifrável: chave já consumida ou fora da janela")]
-    UndecryptableMessage,
-
-    #[error("payload excede o maior bucket de padding ({max} bytes)")]
-    PayloadTooLarge { max: usize },
-
-    #[error("falha ao obter aleatoriedade do sistema operacional")]
-    Rng,
-}
-
-pub type Result<T> = core::result::Result<T, Error>;
+mod frb_generated; // Gerado por `flutter_rust_bridge_codegen generate`.
+pub mod ffi;

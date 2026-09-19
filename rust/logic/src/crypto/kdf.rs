@@ -36,6 +36,10 @@ impl core::fmt::Debug for Key {
 pub mod context {
     pub const QR_SIGNATURE: &str = "viska-qr-sig-v1";
     pub const SAFETY_NUMBER: &str = "viska-safety-number-v1";
+    /// Índices de palavra do safety number (§3.3) — derivação separada da dos
+    /// dígitos para não reaproveitar bytes já consumidos pelo XOF de 60 bytes
+    /// e não acoplar o layout de bits das duas representações.
+    pub const SAFETY_NUMBER_WORDS: &str = "viska-safety-number-words-v1";
     pub const HANDSHAKE: &str = "viska-handshake-v1";
     pub const ROOT_CHAIN: &str = "viska-root-chain-v1";
     /// Avanço da cadeia simétrica, de envio **e** de recepção.

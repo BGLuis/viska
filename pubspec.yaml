@@ -10,6 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_rust_bridge: 2.13.0
+  mobile_scanner: ^7.4.2
+  path_provider: ^2.1.6
+  permission_handler: ^13.0.2
+  qr_flutter: ^4.1.0
   viska_core:
     path: rust_builder
 
@@ -17,6 +21,13 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+
+# permission_handler_android 14.x tem um build.gradle.kts quebrado (bloco
+# `kotlin { compilerOptions {} }` que não resolve com o AGP/Kotlin fixados em
+# android/settings.gradle.kts — falha antes mesmo de chegar no código nativo).
+# 13.0.1 é a última versão com build.gradle em Groovy, sem esse problema.
+dependency_overrides:
+  permission_handler_android: 13.0.1
 
 flutter:
   uses-material-design: true

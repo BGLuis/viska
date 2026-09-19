@@ -94,7 +94,9 @@ pub fn decode_qr(payload: &[u8], local: &PublicIdentity) -> Result<PublicIdentit
 
     // Apontar a câmera para o próprio QR não deve criar um contato consigo
     // mesmo: o resto do protocolo assume dois lados distintos.
-    if candidate.signing == local.signing || candidate.dh == local.dh {
+    if crate::util::encoding::ct_eq(&candidate.signing, &local.signing)
+        || crate::util::encoding::ct_eq(candidate.dh.as_bytes(), local.dh.as_bytes())
+    {
         return Err(Error::SelfPairing);
     }
 

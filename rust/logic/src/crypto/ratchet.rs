@@ -174,10 +174,11 @@ fn ratchet_dh_step(
     dh_self_current: &DhSecret,
     dh_remote_new: &DhPublic,
     kem_ct_fold: Option<&KemSharedSecret>,
-) -> Result<(kdf::Key, kdf::Key, DhSecret, kdf::Key)> {
+) -> Result<(kdf::Key, kdf::Key, DhSecret, kdf::Key, [u8; kdf::KEY_LEN])> {
     // RK, CKr = kdf_rk(RK, X25519(DHs_antigo, DHr_novo))
     let shared_recv = dh_self_current.agree(dh_remote_new)?;
     let (root_after_recv, recv_chain) = kdf_rk(root, &shared_recv);
+    let recv_fold_bytes = *root_after_recv.as_bytes();
 
     let root_mid = match kem_ct_fold {
         Some(shared) => fold_rekem(&root_after_recv, shared),
@@ -189,7 +190,7 @@ fn ratchet_dh_step(
     let shared_send = dh_self_new.agree(dh_remote_new)?;
     let (root_after_send, send_chain) = kdf_rk(&root_mid, &shared_send);
 
-    Ok((root_after_send, recv_chain, dh_self_new, send_chain))
+    Ok((root_after_send, recv_chain, dh_self_new, send_chain, recv_fold_bytes))
 }
 
 /// Avança `chain_key` de `from` até `to` (exclusive), guardando cada chave de
@@ -327,6 +328,8 @@ struct PendingReceive {
     clear_own_kem_secret: bool,
     outgoing_kem_ct: Option<KemCiphertext>,
     rekem_completed: bool,
+    #[cfg_attr(not(test), allow(dead_code))]
+    recv_fold_root: Option<[u8; kdf::KEY_LEN]>,
 }
 
 /// Campos do cabeçalho do ratchet (§6.1), como valores já resolvidos.
@@ -450,9 +453,10 @@ impl RatchetState {
         let (next_chain, message_key) = chain_step(chain);
 
         let counter = self.ns;
+        let next_ns = self.ns.checked_add(1).ok_or(Error::CounterOverflow)?;
         self.sending_chain = Some(next_chain);
-        self.ns += 1;
-        self.msgs_since_rekem += 1;
+        self.ns = next_ns;
+        self.msgs_since_rekem = self.msgs_since_rekem.saturating_add(1);
 
         // Gatilho do re-KEM (§5.4): contagem ou tempo, o que vier primeiro. Só
         // dispara se não há um ciclo nosso já em aberto — senão o gatilho
@@ -501,6 +505,13 @@ impl RatchetState {
     /// `discard_receive` (ou simplesmente processar outra mensagem) se a
     /// autenticação falhar. Ver a documentação de módulo para o porquê.
     pub fn receiving_key(&mut self, header: &RatchetHeader) -> Result<kdf::Key> {
+        // Se o contador do remetente for u32::MAX, qualquer incremento
+        // causará estouro no contador local de recepção `nr`.
+        // Rejeitamos imediatamente com erro de estouro (§5.3).
+        if header.counter == u32::MAX {
+            return Err(Error::CounterOverflow);
+        }
+
         let dh_id = *header.dh_pub.as_bytes();
 
         // Mensagem fora de ordem cuja chave já foi derivada e guardada num
@@ -541,6 +552,7 @@ impl RatchetState {
             pn,
             mut skipped_additions,
             recv_from,
+            recv_fold_root,
         ) = if same_chain {
             if header.counter < self.nr {
                 // Já deveria estar no cache de puladas; não estando, essa
@@ -565,6 +577,7 @@ impl RatchetState {
                 self.pn,
                 Vec::new(),
                 self.nr,
+                None,
             )
         } else {
             // Troca de ratchet DH (§5.2), inclusive a primeiríssima
@@ -578,7 +591,7 @@ impl RatchetState {
                 }
             }
 
-            let (new_root, recv_chain0, dh_self_new, send_chain) = ratchet_dh_step(
+            let (new_root, recv_chain0, dh_self_new, send_chain, recv_fold_bytes) = ratchet_dh_step(
                 &self.root,
                 &self.dh_self,
                 &header.dh_pub,
@@ -594,6 +607,7 @@ impl RatchetState {
                 self.ns,
                 additions,
                 0u32,
+                Some(recv_fold_bytes),
             )
         };
 
@@ -629,12 +643,13 @@ impl RatchetState {
             new_dh_self,
             dh_remote: header.dh_pub,
             ns,
-            nr: header.counter + 1,
+            nr: header.counter.checked_add(1).ok_or(Error::CounterOverflow)?,
             pn,
             skipped_additions,
             clear_own_kem_secret,
             outgoing_kem_ct,
             rekem_completed,
+            recv_fold_root,
         });
 
         Ok(message_key)
@@ -720,6 +735,14 @@ impl RatchetState {
 
     fn skipped_len_for_test(&self) -> usize {
         self.skipped.len()
+    }
+
+    fn pending_recv_fold_root_for_test(&self) -> Option<[u8; kdf::KEY_LEN]> {
+        self.pending.as_ref().and_then(|p| p.recv_fold_root)
+    }
+
+    fn force_ns_for_test(&mut self, ns: u32) {
+        self.ns = ns;
     }
 }
 
@@ -1048,5 +1071,84 @@ mod tests {
         // Nenhuma mutação deveria ter ficado pendente.
         bob.commit_receive();
         assert!(bob.dh_remote.is_none());
+    }
+
+    #[test]
+    fn estouro_do_contador_de_envio_rejeitado_com_erro() {
+        let (mut alice, _bob) = established_pair();
+        alice.force_ns_for_test(u32::MAX);
+        assert!(matches!(
+            alice.next_sending_key(),
+            Err(Error::CounterOverflow)
+        ));
+    }
+
+    #[test]
+    fn estouro_do_contador_de_recepcao_rejeitado_com_erro() {
+        let (_alice, mut bob) = established_pair();
+        let header = RatchetHeader {
+            dh_pub: DhPublic::from_bytes([0x42u8; dh::KEY_LEN]),
+            pn: 0,
+            counter: u32::MAX,
+            kem_ek: None,
+            kem_ct: None,
+        };
+        assert!(matches!(
+            bob.receiving_key(&header),
+            Err(Error::CounterOverflow)
+        ));
+    }
+
+    #[test]
+    fn convergencia_exata_de_rk_em_passo_dh() {
+        let (mut alice, mut bob) = established_pair();
+
+        // Alice envia msg 0 (já estabelecida na inicialização dela).
+        // Bob recebe a msg 0: o passo DH de recepção de Bob deve reproduzir
+        // exatamente a RK que Alice calculou na inicialização dela!
+        let (header0, key0) = alice.next_sending_key().unwrap();
+        let alice_root0 = alice.root_bytes_for_test();
+
+        let recv_key0 = bob.receiving_key(&header0).unwrap();
+        assert_eq!(key0.as_bytes(), recv_key0.as_bytes());
+        let bob_recv_fold0 = bob.pending_recv_fold_root_for_test().expect("Bob executou passo DH");
+        assert_eq!(bob_recv_fold0, alice_root0, "a dobra de recepção de Bob deve bater bit a bit com a RK de Alice");
+        bob.commit_receive();
+
+        // Bob envia resposta 0 (com novo DHs gerado no passo acima).
+        let (bob_reply0, bob_key0) = bob.next_sending_key().unwrap();
+        let bob_root0 = bob.root_bytes_for_test();
+
+        // Alice recebe resposta 0 de Bob: o passo DH de Alice deve reproduzir a RK que Bob comitou!
+        let alice_recv_key0 = alice.receiving_key(&bob_reply0).unwrap();
+        assert_eq!(bob_key0.as_bytes(), alice_recv_key0.as_bytes());
+        let alice_recv_fold0 = alice.pending_recv_fold_root_for_test().expect("Alice executou passo DH");
+        assert_eq!(alice_recv_fold0, bob_root0, "a dobra de recepção de Alice deve bater bit a bit com a RK de Bob");
+        alice.commit_receive();
+
+        // E mais uma rodada para confirmar a convergência contínua:
+        let (header1, key1) = alice.next_sending_key().unwrap();
+        let alice_root1 = alice.root_bytes_for_test();
+
+        let recv_key1 = bob.receiving_key(&header1).unwrap();
+        assert_eq!(key1.as_bytes(), recv_key1.as_bytes());
+        let bob_recv_fold1 = bob.pending_recv_fold_root_for_test().expect("Bob executou passo DH");
+        assert_eq!(bob_recv_fold1, alice_root1, "na segunda rodada a sincronia de RK permanece exata");
+        bob.commit_receive();
+    }
+
+    #[test]
+    fn conversa_profunda_10000_mensagens_alternando() {
+        let (mut alice, mut bob) = established_pair();
+
+        for i in 0..10_000 {
+            if i % 2 == 0 {
+                deliver(&mut alice, &mut bob);
+            } else {
+                deliver(&mut bob, &mut alice);
+            }
+        }
+        assert_eq!(alice.skipped_len_for_test(), 0);
+        assert_eq!(bob.skipped_len_for_test(), 0);
     }
 }

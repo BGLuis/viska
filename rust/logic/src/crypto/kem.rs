@@ -126,8 +126,13 @@ pub trait Kem {
 }
 
 /// Backend ativo, selecionado em tempo de compilação.
+///
+/// Struct de chaves vazias em vez de unit struct (`;`): o parser do
+/// `flutter_rust_bridge_codegen` não suporta unit structs em nenhum lugar do
+/// crate, mesmo em tipos que nunca cruzam o FFI — troca puramente sintática,
+/// sem mudança de comportamento (`MlKem768` só é usado via `Self::método()`).
 #[derive(Debug)]
-pub struct MlKem768;
+pub struct MlKem768 {}
 
 mod backend {
     use super::*;

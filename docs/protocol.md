@@ -35,6 +35,7 @@ viska-beacon-v1            derivação do BeaconID BLE rotativo
 viska-file-key-v1          chave por transferência de arquivo
 viska-staging-v1           chave de cifragem em repouso do arquivo .staging
 viska-db-key-v1            chave do banco SQLCipher
+viska-safety-number-words-v1  índices de palavra do safety number (§3.3)
 ```
 
 Aleatoriedade: exclusivamente `getrandom` (CSPRNG do sistema operacional). Nenhum PRNG de
@@ -105,7 +106,17 @@ Entropia efetiva do valor exibido ≈ 12 × log2(100000) ≈ 199 bits, muito aci
 e dos ~20 bits do desenho original.
 
 Também é oferecida uma representação em 6 palavras de uma lista de 2048 (66 bits) para leitura
-em voz alta por canal de áudio confiável.
+em voz alta por canal de áudio confiável:
+
+```
+wb = BLAKE3::derive_key("viska-safety-number-words-v1", lo ‖ hi).finalize_xof() -> 9 bytes
+palavra_i = lista[u11_be(wb, i)]        para i em 0..6, bits mais significativos primeiro
+```
+
+Derivação independente da dos dígitos (contexto próprio, mesmo `lo ‖ hi`): mantém a fórmula do
+`sn` acima intocada em vez de reaproveitar bytes já consumidos pelos dois primeiros grupos, e
+evita acoplar o layout de bits das duas representações. A lista é o BIP-39 em português (BR),
+2048 palavras — reaproveitada por já ser auditada, e não uma lista nova do projeto.
 
 ---
 
