@@ -6,21 +6,24 @@
 //! `encode`/`decode` testáveis exaustivamente com property tests sem precisar
 //! de nenhum material de chave.
 //!
+//! `dh_pub` do `RatchetHeader` **não** está aqui — ele vive no cabeçalho em
+//! claro do envelope (`wire::envelope`, D14), porque `crypto::ratchet`
+//! precisa dele para derivar a própria chave de decifragem antes de poder
+//! abrir este plaintext. Ver a documentação de `envelope.rs` para o porquê.
+//!
 //! Layout, deslocamentos fixos:
 //!
 //! ```text
 //! offset  tam  campo
 //! 0       1    packet_type
-//! 1       32   dh_pub        chave pública X25519 do ratchet do emissor
-//! 33      4    pn            u32 be
-//! 37      2    body_len      u16 be
-//! 39      1    flags         bit0 = carrega KEM_ek, bit1 = carrega KEM_ct
-//! 40      ..   kem_material  0, 1184, 1088 ou 2272 bytes conforme flags
+//! 1       4    pn            u32 be
+//! 5       2    body_len      u16 be
+//! 7       1    flags         bit0 = carrega KEM_ek, bit1 = carrega KEM_ct
+//! 8       ..   kem_material  0, 1184, 1088 ou 2272 bytes conforme flags
 //! ..      ..   body          body_len bytes
 //! ..      ..   padding       bytes aleatórios CSPRNG até o bucket
 //! ```
 
-use crate::crypto::dh::DhPublic;
 use crate::crypto::kem::{KemCiphertext, KemPublicKey, CIPHERTEXT_LEN, PUBLIC_KEY_LEN};
 use crate::util::encoding;
 use crate::wire::packet_type::PacketType;
@@ -28,14 +31,13 @@ use crate::wire::transport::Transport;
 use crate::{Error, Result};
 
 const PACKET_TYPE_AT: usize = 0;
-const DH_PUB_AT: usize = PACKET_TYPE_AT + 1;
-const PN_AT: usize = DH_PUB_AT + crate::crypto::dh::KEY_LEN;
+const PN_AT: usize = PACKET_TYPE_AT + 1;
 const BODY_LEN_AT: usize = PN_AT + 4;
 const FLAGS_AT: usize = BODY_LEN_AT + 2;
 /// Deslocamento onde começa o material KEM opcional — o cabeçalho fixo termina aqui.
 const KEM_MATERIAL_AT: usize = FLAGS_AT + 1;
 
-const _: () = assert!(KEM_MATERIAL_AT == 40);
+const _: () = assert!(KEM_MATERIAL_AT == 8);
 
 const FLAG_KEM_EK: u8 = 0b0000_0001;
 const FLAG_KEM_CT: u8 = 0b0000_0010;
@@ -56,8 +58,6 @@ pub const MAX_HEADER_LEN: usize = KEM_MATERIAL_AT + PUBLIC_KEY_LEN + CIPHERTEXT_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InnerPlaintext {
     pub packet_type: PacketType,
-    /// Chave pública X25519 atual do ratchet de envio (`DHs.public` do emissor).
-    pub dh_pub: DhPublic,
     /// Número de mensagens da cadeia de envio anterior (`PN` do ratchet).
     pub pn: u32,
     /// Novo `KEM_ek` do emissor, presente quando este dispara um re-KEM (§5.4).
@@ -100,7 +100,6 @@ impl InnerPlaintext {
 
         let mut out = vec![0u8; bucket];
         out[PACKET_TYPE_AT] = self.packet_type.to_u8();
-        out[DH_PUB_AT..PN_AT].copy_from_slice(self.dh_pub.as_bytes());
         out[PN_AT..BODY_LEN_AT].copy_from_slice(&self.pn.to_be_bytes());
         out[BODY_LEN_AT..FLAGS_AT].copy_from_slice(&body_len.to_be_bytes());
 
@@ -149,7 +148,6 @@ impl InnerPlaintext {
         // nunca estouram — mas isso já foi validado acima, não presumido.
 
         let packet_type = PacketType::from_u8(bytes[PACKET_TYPE_AT])?;
-        let dh_pub = DhPublic::from_slice(&bytes[DH_PUB_AT..PN_AT])?;
         let pn = encoding::read_u32(&bytes[PN_AT..BODY_LEN_AT])
             .expect("comprimento do bucket garante 4 bytes disponíveis");
         let body_len = encoding::read_u16(&bytes[BODY_LEN_AT..FLAGS_AT])
@@ -201,7 +199,6 @@ impl InnerPlaintext {
 
         Ok(Self {
             packet_type,
-            dh_pub,
             pn,
             kem_ek,
             kem_ct,
@@ -214,10 +211,6 @@ impl InnerPlaintext {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
-    fn dh_pub_de_teste(byte: u8) -> DhPublic {
-        DhPublic::from_bytes([byte; crate::crypto::dh::KEY_LEN])
-    }
 
     fn kem_ek_de_teste() -> KemPublicKey {
         KemPublicKey::from_slice(&[0xABu8; PUBLIC_KEY_LEN]).unwrap()
@@ -235,7 +228,6 @@ mod tests {
     ) -> InnerPlaintext {
         InnerPlaintext {
             packet_type,
-            dh_pub: dh_pub_de_teste(0x11),
             pn: 7,
             kem_ek: has_ek.then(kem_ek_de_teste),
             kem_ct: has_ct.then(kem_ct_de_teste),
@@ -352,7 +344,6 @@ mod tests {
         fn ida_e_volta_property_datachannel(
             tipo in estrategia_packet_type(),
             pn in any::<u32>(),
-            dh_byte in any::<u8>(),
             has_ek in any::<bool>(),
             has_ct in any::<bool>(),
             body in proptest::collection::vec(
@@ -362,7 +353,6 @@ mod tests {
         ) {
             let original = InnerPlaintext {
                 packet_type: tipo,
-                dh_pub: dh_pub_de_teste(dh_byte),
                 pn,
                 kem_ek: has_ek.then(kem_ek_de_teste),
                 kem_ct: has_ct.then(kem_ct_de_teste),
@@ -381,7 +371,6 @@ mod tests {
         fn ida_e_volta_property_local_socket(
             tipo in estrategia_packet_type(),
             pn in any::<u32>(),
-            dh_byte in any::<u8>(),
             has_ek in any::<bool>(),
             has_ct in any::<bool>(),
             body in proptest::collection::vec(
@@ -391,7 +380,6 @@ mod tests {
         ) {
             let original = InnerPlaintext {
                 packet_type: tipo,
-                dh_pub: dh_pub_de_teste(dh_byte),
                 pn,
                 kem_ek: has_ek.then(kem_ek_de_teste),
                 kem_ct: has_ct.then(kem_ct_de_teste),

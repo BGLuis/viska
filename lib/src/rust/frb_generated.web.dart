@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'ffi/core.dart';
 import 'ffi/error.dart';
+import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
@@ -47,7 +48,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  bool dco_decode_bool(dynamic raw);
+
+  @protected
+  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  IncomingMessageDto dco_decode_box_autoadd_incoming_message_dto(dynamic raw);
+
+  @protected
+  SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw);
+
+  @protected
   ContactDto dco_decode_contact_dto(dynamic raw);
+
+  @protected
+  DeliveryStateDto dco_decode_delivery_state_dto(dynamic raw);
 
   @protected
   FfiError dco_decode_ffi_error(dynamic raw);
@@ -59,7 +75,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_i_64(dynamic raw);
 
   @protected
+  IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw);
+
+  @protected
+  List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
   List<ContactDto> dco_decode_list_contact_dto(dynamic raw);
+
+  @protected
+  List<MessageDto> dco_decode_list_message_dto(dynamic raw);
 
   @protected
   List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
@@ -68,10 +93,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
+
+  @protected
+  MessageDirectionDto dco_decode_message_direction_dto(dynamic raw);
+
+  @protected
+  MessageDto dco_decode_message_dto(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  IncomingMessageDto? dco_decode_opt_box_autoadd_incoming_message_dto(
+    dynamic raw,
+  );
+
+  @protected
+  SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw);
+
+  @protected
+  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
   SafetyNumberDto dco_decode_safety_number_dto(dynamic raw);
+
+  @protected
+  SealedMessageDto dco_decode_sealed_message_dto(dynamic raw);
+
+  @protected
+  SessionStateKind dco_decode_session_state_kind(dynamic raw);
+
+  @protected
+  SessionStatusDto dco_decode_session_status_dto(dynamic raw);
+
+  @protected
+  SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw);
+
+  @protected
+  BigInt dco_decode_u_64(dynamic raw);
 
   @protected
   int dco_decode_u_8(dynamic raw);
@@ -104,7 +167,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  IncomingMessageDto sse_decode_box_autoadd_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SessionStatusDto sse_decode_box_autoadd_session_status_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ContactDto sse_decode_contact_dto(SseDeserializer deserializer);
+
+  @protected
+  DeliveryStateDto sse_decode_delivery_state_dto(SseDeserializer deserializer);
 
   @protected
   FfiError sse_decode_ffi_error(SseDeserializer deserializer);
@@ -116,7 +198,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
 
   @protected
+  IncomingMessageDto sse_decode_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+  @protected
   List<ContactDto> sse_decode_list_contact_dto(SseDeserializer deserializer);
+
+  @protected
+  List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer);
 
   @protected
   List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
@@ -125,10 +218,56 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<SealedMessageDto> sse_decode_list_sealed_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  MessageDirectionDto sse_decode_message_direction_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  MessageDto sse_decode_message_dto(SseDeserializer deserializer);
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  IncomingMessageDto? sse_decode_opt_box_autoadd_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
   SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer);
+
+  @protected
+  SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer);
+
+  @protected
+  SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer);
+
+  @protected
+  SessionStatusDto sse_decode_session_status_dto(SseDeserializer deserializer);
+
+  @protected
+  SignalingTopicsDto sse_decode_signaling_topics_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_8(SseDeserializer deserializer);
@@ -138,9 +277,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
-
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
   void
@@ -167,7 +303,34 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_i_64(
+    PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_incoming_message_dto(
+    IncomingMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_session_status_dto(
+    SessionStatusDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_contact_dto(ContactDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_delivery_state_dto(
+    DeliveryStateDto self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_ffi_error(FfiError self, SseSerializer serializer);
@@ -179,8 +342,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
 
   @protected
+  void sse_encode_incoming_message_dto(
+    IncomingMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_contact_dto(
     List<ContactDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_message_dto(
+    List<MessageDto> self,
     SseSerializer serializer,
   );
 
@@ -194,13 +372,79 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sealed_message_dto(
+    List<SealedMessageDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_message_direction_dto(
+    MessageDirectionDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_i_64(
+    PlatformInt64? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_incoming_message_dto(
+    IncomingMessageDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_session_status_dto(
+    SessionStatusDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_list_prim_u_8_strict(
+    Uint8List? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_safety_number_dto(
     SafetyNumberDto self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_sealed_message_dto(
+    SealedMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_state_kind(
+    SessionStateKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_status_dto(
+    SessionStatusDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_signaling_topics_dto(
+    SignalingTopicsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);
@@ -210,9 +454,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer);
 }
 
 // Section: wire_class

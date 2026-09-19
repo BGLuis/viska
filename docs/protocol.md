@@ -263,11 +263,15 @@ torna indecifrável — é o comportamento desejado, e não um erro de protocolo
 
 ---
 
-## 6. Envelope de transporte (D4)
+## 6. Envelope de transporte (D4, D14)
 
 O envelope da especificação original expunha `Magic`, `Version` e `Packet Type` em claro. Aqui,
-o único metadado em claro é o contador, porque o receptor precisa dele para derivar o nonce e
-localizar a chave de mensagem.
+o metadado em claro é o contador e o `dh_pub` do ratchet do emissor — o receptor precisa dos dois
+antes de conseguir decifrar qualquer coisa: do contador para derivar o nonce e localizar a chave de
+mensagem, e do `dh_pub` para saber se esta mensagem pertence à cadeia de recepção atual ou dispara
+um passo de troca de DH (§5.2) — o que, por sua vez, é o que produz a chave de decifragem em
+primeiro lugar. Não há ordem de operações em que decifrar primeiro revela o `dh_pub`; ele precisa
+estar disponível antes (D14).
 
 ```
  0                   1                   2                   3
@@ -276,7 +280,11 @@ localizar a chave de mensagem.
 |                     Counter (u32, big-endian)                 |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                                                               |
-|          Ciphertext = AEAD(MK, nonce, AAD=Counter,            |
++                   dh_pub (32 B, X25519 efêmera do ratchet)   +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
+|          Ciphertext = AEAD(MK, nonce, AAD=Counter ‖ dh_pub,   |
 |                            plaintext = Header ‖ Body ‖ Pad)   |
 |                                                               |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -287,16 +295,20 @@ localizar a chave de mensagem.
 `nonce (12 B) = 0x00000000 ‖ 0x00000000 ‖ Counter_be`. A chave muda a cada mensagem pelo ratchet,
 então o nonce determinístico é seguro por construção. O `Counter` em claro é o `Ns` da cadeia.
 
+`dh_pub` em claro é uma chave X25519 **efêmera** do ratchet (trocada a cada poucas mensagens, nunca
+a identidade de longo prazo `IK_dh`) — um vazamento estritamente menor que os já aceitos em D12 (o
+IP real de cada par, exposto pela própria natureza de uma conexão P2P direta). Ver D14 para o
+histórico da correção e o motivo.
+
 ### 6.1 Plaintext interno
 
 ```
 offset  tam  campo
 0       1    packet_type
-1       32   dh_pub        chave pública X25519 do ratchet do emissor
-33      4    pn            u32 be, mensagens da cadeia anterior
-37      2    body_len      u16 be, comprimento real do corpo
-39      1    flags         bit0 = carrega KEM_ek, bit1 = carrega KEM_ct
-40      ..   kem_material  0, 1184 ou 1088 B conforme flags
+1       4    pn            u32 be, mensagens da cadeia anterior
+5       2    body_len      u16 be, comprimento real do corpo
+7       1    flags         bit0 = carrega KEM_ek, bit1 = carrega KEM_ct
+8       ..   kem_material  0, 1184 ou 1088 B conforme flags
 ..      ..   body          body_len bytes
 ..      ..   padding       bytes aleatórios CSPRNG até o bucket
 ```
@@ -402,10 +414,18 @@ com wear leveling.
 ### 8.1 Chave e tópicos
 
 ```
+K_root_da_sessão_pareada = X25519(IK_dh_local, IK_dh_peer)
 K_sig = derive_key("viska-signaling-v1", K_root_da_sessão_pareada)
 epoch = floor(unix_time / 3600)
 topic(dir, epoch) = hex(BLAKE3_keyed(K_sig, "viska-sig-v1" ‖ dir ‖ u64_be(epoch)))
 ```
+
+`K_root_da_sessão_pareada` é o DH **estático** entre as duas `IK_dh` de longo prazo trocadas no QR
+(§3) — não a raiz do ratchet de uma sessão em andamento (§5.1). A sinalização existe justamente para
+estabelecer o `DataChannel`; ela não pode depender de uma raiz de ratchet que só existe depois que o
+handshake (§4) já rodou sobre esse mesmo `DataChannel`. Qualquer um dos dois lados recalcula esse DH
+sozinho a qualquer momento, sem round-trip, com um domínio de KDF (`viska-signaling-v1`) separado do
+domínio do handshake (`viska-handshake-v1`).
 
 `dir` é `"a2b"` ou `"b2a"`, com A/B fixados pela ordem lexicográfica de `IK_dh`. O assinante
 inscreve as épocas `e-1`, `e` e `e+1` para tolerar desvio de relógio.
@@ -422,6 +442,24 @@ SDP e candidatos ICE são cifrados com **XChaCha20-Poly1305** sob `K_sig`, com n
 > de arquivo elimina o terceiro modo e o código correspondente.
 
 MQTT com `retain = false`, QoS 0. O socket do broker é fechado assim que o DataChannel abre.
+
+#### 8.2.1 Formato interno do payload (conteúdo novo, Fase 3 F5)
+
+O envelope cifrado carrega SDP e candidatos ICE pelo mesmo tópico — algo precisa distinguir os três
+dentro do plaintext, e a spec original não cobre isso (só descreve o envelope cifrado em si). Formato
+adotado, antes de cifrar:
+
+```
+offset  tam  campo
+0       1    kind     0x00 = oferta, 0x01 = resposta, 0x02 = candidato ICE
+1       ..   corpo    kind 0x00/0x01: SDP em UTF-8, direto
+                       kind 0x02: JSON UTF-8 {"candidate", "sdpMid", "sdpMLineIndex"}
+```
+
+`kind` desconhecido, ou corpo que não decodifica no formato esperado do `kind` declarado, é
+descartado em silêncio — mesma política do resto da sinalização (§8.2): o payload já passou pela
+autenticação do AEAD, então um formato interno inesperado é sinal de versão incompatível, não de
+ataque, e não há nada de útil a fazer além de ignorar.
 
 ### 8.3 Backends
 
@@ -458,3 +496,71 @@ Serviço `_viska._tcp` com nome de instância igual ao `beacon` em hex. Mesma ro
 `version = 0x01` no QR e no handshake. Um par que receba uma versão desconhecida aborta e informa
 ao usuário para atualizar. Não há downgrade negociado — downgrade negociável é uma vulnerabilidade,
 não uma funcionalidade.
+
+---
+
+## 11. Camada de sessão
+
+Conteúdo normativo novo: as seções anteriores descrevem handshake (§4), ratchet (§5) e envelope
+(§6) como peças isoladas, mas nenhuma delas dizia quem decide iniciar, o que fazer quando o AEAD
+falha, ou o que acontece quando o contador de envio se aproxima do limite do tipo. Implementado em
+`rust/logic/src/session/`.
+
+### 11.1 Máquina de estados
+
+```
+AwaitingPeerInit      somos respondedor; nada enviado ainda
+AwaitingResponse      somos iniciador; INIT enviada, aguardando RESP
+Established           handshake concluído; ratchet vivo
+Failed                exige Session::open novo
+```
+
+O papel é decidido por `PublicIdentity::is_before` (§4): quem tem `IK_dh.public` lexicograficamente
+menor abre como iniciador e já produz a INIT; o outro lado abre em `AwaitingPeerInit` e não envia
+nada até a INIT do par chegar. A regra é 100% determinística nas duas pontas — não existe
+negociação de papel, então não há handshake "simultâneo" a resolver, só o caso trivial de um lado
+chamar `Session::open` antes do outro ver o resultado.
+
+Não há marcador de tipo no fio para distinguir "isto é handshake" de "isto é um envelope de sessão"
+— isso contradiria D4. A distinção é puramente o estado local: enquanto a sessão não é
+`Established`, todo byte recebido é tratado como mensagem de handshake.
+
+**Política de erro do handshake:** uma INIT malformada ou de tipo errado, recebida em
+`AwaitingPeerInit`, não muda o estado — `respond` é uma função livre que não consome nada do lado
+que a chama, então tentar de novo com a mensagem certa depois custa nada. Uma RESP inválida,
+recebida em `AwaitingResponse`, sempre leva a sessão para `Failed`: `Initiator::finish` consome o
+`Initiator` mesmo em erro, e recuperá-lo exigiria clonar segredo efêmero (`ek_secret`, `kem_secret`)
+só para permitir uma segunda tentativa — o custo de uma cópia extra de segredo em memória não vale
+a economia de uma sessão nova.
+
+**Política de erro do AEAD, sessão já `Established`:** toda falha de decifragem (envelope
+malformado, `dh_pub` de ordem baixa, contador repetido, tag do AEAD inválida) é descartada em
+silêncio — nenhuma causa é diferenciada por fora, pela mesma razão de `crypto::aead` nunca
+distinguir a causa de uma falha própria (evitar oráculo). Falhas consecutivas acima de um limiar
+pequeno (8 falhas, contadas só em memória, nunca persistidas) levam a sessão para `Failed` — acima
+disso, assume-se dessincronia irrecuperável (por exemplo, o par perdeu o estado do ratchet e
+reiniciou) em vez de continuar tentando indefinidamente.
+
+### 11.2 Política de rotação do contador
+
+A spec não previa o que fazer quando o contador de envio (`Ns`, u32) se aproxima do limite do tipo.
+Na prática isso é raro — o ratchet reseta `Ns` a cada passo DH conversacional e força um re-KEM a
+cada 256 mensagens (§5.4) — mas nada impede um "monólogo" unidirecional em que o par nunca responde,
+e portanto a cadeia de envio nunca gira. A sessão observa o contador a cada envio bem-sucedido: ao
+cruzar um limiar de segurança bem abaixo de `u32::MAX`, marca a sessão para renovação. A mensagem
+que cruzou o limiar ainda é entregue normalmente; chamadas seguintes de cifragem são recusadas até
+que uma sessão nova seja aberta com o mesmo par (não repete o pareamento por QR, só o AKE de §4).
+
+### 11.3 Por que `pn`/`kem_ek`/`kem_ct` continuam cifrados, mas `dh_pub` não (D14)
+
+§6 já documenta que `dh_pub` saiu do plaintext cifrado (§6.1) para o cabeçalho em claro do envelope.
+Os outros três campos do cabeçalho do ratchet — `pn`, `kem_ek`, `kem_ct` — continuam dentro do
+plaintext cifrado, e isso é seguro pelo mesmo motivo que `dh_pub` não podia ficar: rastreando
+`crypto::ratchet::receiving_key`, esses três campos só influenciam a reconciliação da chave raiz e
+do cache de mensagens puladas — nunca a derivação da chave da mensagem atual, que depende só de
+`dh_pub` e do contador (ambos já em claro). A camada de sessão resolve isso chamando
+`receiving_key` duas vezes: a primeira com `pn`/`kem_ek`/`kem_ct` zerados (o suficiente para abrir o
+AEAD), e uma segunda, só depois que o AEAD confirma a mensagem, com os valores reais — agora
+conhecidos — para que o commit aplique o estado correto. `receiving_key` já era idempotente em
+relação ao estado de confiança por desenho do próprio módulo `ratchet` (§5, ver o doc-comment de
+`crypto/ratchet.rs`); a camada de sessão só usa essa propriedade, não introduz nenhuma nova.

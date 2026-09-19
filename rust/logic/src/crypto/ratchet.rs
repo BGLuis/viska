@@ -761,7 +761,7 @@ mod tests {
 
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (bob_outcome, resp) = respond(&bob, &alice.public(), &init).unwrap();
-        let alice_outcome = initiator.finish(&resp).unwrap();
+        let alice_outcome = initiator.finish(&alice, &resp).unwrap();
 
         (
             RatchetState::initialize(alice_outcome).unwrap(),

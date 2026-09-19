@@ -14,8 +14,14 @@
 // pelo re-export abaixo.
 pub mod core;
 pub mod error;
+pub mod jitter;
+pub mod session;
+pub mod signaling;
 pub mod types;
 
 pub use self::core::Core;
 pub use error::FfiError;
-pub use types::{ContactDto, SafetyNumberDto};
+pub use types::{
+    ContactDto, DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto,
+    SafetyNumberDto, SealedMessageDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto,
+};

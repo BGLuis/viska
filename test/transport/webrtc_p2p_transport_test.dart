@@ -1,0 +1,488 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart' show RTCIceCandidate;
+import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/transport/p2p_transport.dart';
+import 'package:viska/src/transport/raw_p2p_channel.dart';
+import 'package:viska/src/transport/signaling/signaling_backend.dart';
+import 'package:viska/src/transport/webrtc_p2p_transport.dart';
+import 'package:viska/src/transport/webrtc_transport.dart';
+
+/// Só implementa o que `WebrtcP2PTransport` de fato chama — o resto
+/// arremessa `UnimplementedError` de propósito, para que um teste que
+/// dependesse de um método não coberto falhasse alto e claro, em vez de
+/// silenciosamente devolver um valor padrão sem sentido.
+class _FakeCore implements Core {
+  _FakeCore({
+    required this.topics,
+    required this.sessionStatus_,
+  });
+
+  final SignalingTopicsDto topics;
+  final SessionStatusDto sessionStatus_;
+
+  final sealedSignalingCalls = <Uint8List>[];
+  final openedSignalingCalls = <Uint8List>[];
+
+  /// Payload devolvido por `openSignalingPayload` — configurável por teste;
+  /// por padrão, ecoa de volta os bytes que `sealSignalingPayload` recebeu
+  /// (simula um seal/open ida-e-volta sem AEAD de verdade).
+  Uint8List? Function(Uint8List sealed)? openSignalingPayloadHandler;
+
+  @override
+  Future<SignalingTopicsDto> signalingTopics({required List<int> peerDeviceId}) async => topics;
+
+  @override
+  Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async => sessionStatus_;
+
+  @override
+  Future<Uint8List> sealSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> payloadBytes,
+  }) async {
+    final bytes = Uint8List.fromList(payloadBytes);
+    sealedSignalingCalls.add(bytes);
+    return bytes;
+  }
+
+  @override
+  Future<Uint8List?> openSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> sealed,
+  }) async {
+    final bytes = Uint8List.fromList(sealed);
+    openedSignalingCalls.add(bytes);
+    return openSignalingPayloadHandler != null ? openSignalingPayloadHandler!(bytes) : bytes;
+  }
+
+  @override
+  Future<IncomingMessageDto?> decryptIncoming({
+    required List<int> peerDeviceId,
+    required List<int> envelope,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> feedHandshake({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<ContactDto>> listContacts() => throw UnimplementedError();
+
+  @override
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> markMessageSent({required PlatformInt64 messageId}) => throw UnimplementedError();
+
+  @override
+  Future<Uint8List> myQrPayload() => throw UnimplementedError();
+
+  @override
+  Future<ContactDto> pairFromQr({required List<int> payload}) => throw UnimplementedError();
+
+  @override
+  Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SealedMessageDto> sealOutgoingText({
+    required List<int> peerDeviceId,
+    required String body,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  void dispose() {}
+
+  @override
+  bool get isDisposed => false;
+}
+
+class _FakeRawP2PChannel implements RawP2PChannel {
+  final offerCalls = <void>[];
+  final answerCalls = <String>[];
+  final remoteAnswerCalls = <String>[];
+  final remoteCandidateCalls = <Map<String, Object?>>[];
+  final sendCalls = <Uint8List>[];
+  var closed = false;
+
+  String offerSdpToReturn = 'v=0 OFFER';
+  String answerSdpToReturn = 'v=0 ANSWER';
+
+  final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
+  final _localIceCandidates = StreamController<RTCIceCandidate>.broadcast();
+  final _incoming = StreamController<Uint8List>.broadcast();
+
+  @override
+  Future<String> createOffer() async {
+    offerCalls.add(null);
+    return offerSdpToReturn;
+  }
+
+  @override
+  Future<String> createAnswerForOffer(String remoteSdp) async {
+    answerCalls.add(remoteSdp);
+    return answerSdpToReturn;
+  }
+
+  @override
+  Future<void> applyRemoteAnswer(String remoteSdp) async {
+    remoteAnswerCalls.add(remoteSdp);
+  }
+
+  @override
+  Future<void> addRemoteIceCandidate({
+    required String candidate,
+    String? sdpMid,
+    int? sdpMLineIndex,
+  }) async {
+    remoteCandidateCalls.add({
+      'candidate': candidate,
+      'sdpMid': sdpMid,
+      'sdpMLineIndex': sdpMLineIndex,
+    });
+  }
+
+  @override
+  Future<void> send(Uint8List envelope) async {
+    sendCalls.add(envelope);
+  }
+
+  @override
+  Stream<Uint8List> get incoming => _incoming.stream;
+
+  @override
+  Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
+
+  @override
+  Stream<RTCIceCandidate> get localIceCandidates => _localIceCandidates.stream;
+
+  @override
+  Future<void> close() async {
+    closed = true;
+  }
+
+  void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
+  void emitLocalCandidate(RTCIceCandidate candidate) => _localIceCandidates.add(candidate);
+  void emitIncoming(Uint8List bytes) => _incoming.add(bytes);
+}
+
+class _FakeSignalingBackend implements SignalingBackend {
+  final publishCalls = <MapEntry<String, Uint8List>>[];
+  final subscribedTopicsCalls = <List<String>>[];
+  var connectCalls = 0;
+  var disconnectCalls = 0;
+
+  final _incoming = StreamController<SignalingMessage>.broadcast();
+
+  @override
+  Future<void> connect() async => connectCalls++;
+
+  @override
+  Future<void> subscribeTopics(List<String> topics) async {
+    subscribedTopicsCalls.add(topics);
+  }
+
+  @override
+  Future<void> publish(String topic, Uint8List payload) async {
+    publishCalls.add(MapEntry(topic, payload));
+  }
+
+  @override
+  Stream<SignalingMessage> get incoming => _incoming.stream;
+
+  @override
+  Future<void> disconnect() async => disconnectCalls++;
+
+  void emit(SignalingMessage message) => _incoming.add(message);
+}
+
+/// Decodifica o payload interno (`byte 0 = kind`) só o suficiente para os
+/// testes inspecionarem o que foi publicado, sem importar
+/// `signaling_payload_codec.dart` (que já tem seus próprios testes).
+Map<String, Object?> _decodeTestPayload(Uint8List bytes) {
+  final kind = bytes[0];
+  final body = utf8.decode(bytes.sublist(1));
+  if (kind == 0 || kind == 1) {
+    return {'kind': kind, 'sdp': body};
+  }
+  return {'kind': kind, ...jsonDecode(body) as Map<String, dynamic>};
+}
+
+void main() {
+  group('WebrtcP2PTransport', () {
+    late ContactId contact;
+    late SignalingTopicsDto topics;
+
+    setUp(() {
+      contact = ContactId(List.generate(16, (i) => i));
+      topics = SignalingTopicsDto(
+        publishTopic: 'pub-topic',
+        subscribeTopics: ['sub-1', 'sub-2', 'sub-3'],
+      );
+    });
+
+    test('como iniciador: conecta a sinalização, assina, cria oferta e publica', () async {
+      // `outgoingHandshake` não-nulo é o sinal de que somos o iniciador —
+      // reaproveitado de `Core.ensureSession` para também decidir quem
+      // oferta o SDP (ver o doc-comment de `WebrtcP2PTransport`).
+      final initiatorStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1, 2, 3]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: initiatorStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+
+      await transport.connect();
+
+      expect(signaling.connectCalls, 1);
+      expect(signaling.subscribedTopicsCalls.single, topics.subscribeTopics);
+      expect(channel.offerCalls, hasLength(1));
+      expect(signaling.publishCalls, hasLength(1));
+
+      final published = signaling.publishCalls.single;
+      expect(published.key, topics.publishTopic);
+      final decoded = _decodeTestPayload(published.value);
+      expect(decoded['kind'], 0); // offer
+      expect(decoded['sdp'], channel.offerSdpToReturn);
+
+      // Não deveria ter sido chamado como respondedor.
+      expect(channel.answerCalls, isEmpty);
+    });
+
+    test('como respondedor: não cria oferta; oferta recebida vira resposta publicada', () async {
+      final responderStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: null,
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: responderStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+
+      await transport.connect();
+      expect(channel.offerCalls, isEmpty);
+
+      final offerPayload = Uint8List.fromList([0, ...utf8.encode('v=0 OFFER REMOTA')]);
+      signaling.emit(SignalingMessage('sub-1', offerPayload));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(channel.answerCalls, ['v=0 OFFER REMOTA']);
+      expect(signaling.publishCalls, hasLength(1));
+      final decoded = _decodeTestPayload(signaling.publishCalls.single.value);
+      expect(decoded['kind'], 1); // answer
+      expect(decoded['sdp'], channel.answerSdpToReturn);
+    });
+
+    test('resposta remota recebida chama applyRemoteAnswer', () async {
+      final initiatorStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: initiatorStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+
+      final answerPayload = Uint8List.fromList([1, ...utf8.encode('v=0 RESPOSTA REMOTA')]);
+      signaling.emit(SignalingMessage('sub-1', answerPayload));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(channel.remoteAnswerCalls, ['v=0 RESPOSTA REMOTA']);
+    });
+
+    test('candidato ICE local é publicado; candidato remoto recebido é aplicado', () async {
+      final initiatorStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: initiatorStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+      signaling.publishCalls.clear(); // limpa a publicação da oferta
+
+      channel.emitLocalCandidate(RTCIceCandidate('candidate:1 local', 'mid0', 0));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(signaling.publishCalls, hasLength(1));
+      final decoded = _decodeTestPayload(signaling.publishCalls.single.value);
+      expect(decoded['kind'], 2); // ice candidate
+      expect(decoded['candidate'], 'candidate:1 local');
+      expect(decoded['sdpMid'], 'mid0');
+      expect(decoded['sdpMLineIndex'], 0);
+
+      final remoteCandidatePayload = Uint8List.fromList([
+        2,
+        ...utf8.encode(jsonEncode({
+          'candidate': 'candidate:2 remoto',
+          'sdpMid': 'mid1',
+          'sdpMLineIndex': 1,
+        })),
+      ]);
+      signaling.emit(SignalingMessage('sub-1', remoteCandidatePayload));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(channel.remoteCandidateCalls, [
+        {'candidate': 'candidate:2 remoto', 'sdpMid': 'mid1', 'sdpMLineIndex': 1},
+      ]);
+    });
+
+    test('desconecta a sinalização assim que o transporte fica connected', () async {
+      final status = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: status);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+      expect(signaling.disconnectCalls, 0);
+
+      channel.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.connected));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(signaling.disconnectCalls, 1);
+    });
+
+    test('payload de sinalização não decifrável (Ok(None)) é ignorado sem erro', () async {
+      final status = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: null,
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: status)
+        ..openSignalingPayloadHandler = (_) => null;
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+
+      signaling.emit(SignalingMessage('sub-1', Uint8List(1024)));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(channel.answerCalls, isEmpty);
+      expect(channel.remoteAnswerCalls, isEmpty);
+      expect(channel.remoteCandidateCalls, isEmpty);
+    });
+
+    test('send/incoming/connectionEvents proxeiam direto para o canal', () async {
+      final status = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: status);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+
+      final received = <Uint8List>[];
+      transport.incoming.listen(received.add);
+      final events = <TransportConnectionEvent>[];
+      transport.connectionEvents.listen(events.add);
+
+      await transport.send(Uint8List.fromList([9, 9, 9]));
+      expect(channel.sendCalls, [Uint8List.fromList([9, 9, 9])]);
+
+      channel.emitIncoming(Uint8List.fromList([7, 7]));
+      channel.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.failed));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(received, [Uint8List.fromList([7, 7])]);
+      expect(events, [const TransportConnectionEvent(TransportConnectionState.failed)]);
+    });
+
+    test('close() fecha sinalização e canal', () async {
+      final status = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([1]),
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: status);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+      await transport.close();
+
+      expect(channel.closed, isTrue);
+      expect(signaling.disconnectCalls, 1);
+    });
+  });
+}

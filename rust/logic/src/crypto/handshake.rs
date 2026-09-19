@@ -188,10 +188,14 @@ pub struct HandshakeOutcome {
 /// O ponto de existir como struct em vez de duas funções soltas é impedir,
 /// pelo sistema de tipos, que a raiz seja produzida sem uma RESP de verdade:
 /// `finish` consome `self`, então um `Initiator` só serve para uma troca.
-pub struct Initiator<'a> {
-    /// `IK_dh` de longo prazo deste lado — autentica o handshake porque já
-    /// foi trocada presencialmente pelo QR, nunca por assinatura.
-    local_dh: &'a DhSecret,
+///
+/// Não guarda a `LocalIdentity` (nem uma referência a ela): uma camada de
+/// sessão precisa manter este estado vivo entre duas chamadas de FFI
+/// separadas (abrir a sessão, e só bem depois processar a RESP que chegou
+/// pela rede), e uma struct com lifetime não sobrevive a isso sem virar
+/// autorreferencial — o que exigiria `unsafe`, proibido neste crate. `finish`
+/// recebe `local` como parâmetro na hora, exatamente como `respond` já faz.
+pub struct Initiator {
     /// `IK_dh` pública do par, já conhecida do pareamento.
     peer_dh: DhPublic,
     ek_secret: DhSecret,
@@ -200,7 +204,7 @@ pub struct Initiator<'a> {
     kem_public: KemPublicKey,
 }
 
-impl<'a> Initiator<'a> {
+impl Initiator {
     /// Inicia o handshake e produz a mensagem INIT (§4.1).
     ///
     /// Quem chama decide o papel de antemão comparando `IK_dh` com
@@ -208,10 +212,8 @@ impl<'a> Initiator<'a> {
     /// porque a segurança do protocolo não depende dela (ver o comentário de
     /// módulo): ela só existe para evitar round-trip extra em handshake
     /// simultâneo, não para impedir ataque nenhum.
-    pub fn start(
-        local: &'a LocalIdentity,
-        peer: &PublicIdentity,
-    ) -> Result<(Self, [u8; INIT_LEN])> {
+    pub fn start(local: &LocalIdentity, peer: &PublicIdentity) -> Result<(Self, [u8; INIT_LEN])> {
+        let _ = local;
         let ek_secret = DhSecret::generate()?;
         let ek_public = ek_secret.public();
         let kem_pair = MlKem768::generate()?;
@@ -223,7 +225,6 @@ impl<'a> Initiator<'a> {
         init[KEM_MATERIAL_AT..].copy_from_slice(kem_pair.public.as_bytes());
 
         let state = Self {
-            local_dh: local.dh(),
             peer_dh: peer.dh,
             ek_secret,
             ek_public,
@@ -237,25 +238,25 @@ impl<'a> Initiator<'a> {
     /// Consome a RESP (§4.2) e produz a raiz da sessão.
     ///
     /// Sem verificação de assinatura nenhuma: a autenticação inteira está em
-    /// `local_dh.agree(..)` — se o outro lado não tiver a `IK_dh` privada que
-    /// corresponde à chave obtida no QR, o `DH1` que ele computou do lado
+    /// `local.dh().agree(..)` — se o outro lado não tiver a `IK_dh` privada
+    /// que corresponde à chave obtida no QR, o `DH1` que ele computou do lado
     /// dele não bate com o nosso, e as duas raízes simplesmente divergem, sem
     /// que nenhum erro explícito seja necessário nem possível (D1, §4.4).
-    pub fn finish(self, resp: &[u8]) -> Result<HandshakeOutcome> {
+    pub fn finish(self, local: &LocalIdentity, resp: &[u8]) -> Result<HandshakeOutcome> {
         validate_header(resp, RESP_LEN, MSG_TYPE_RESP)?;
 
         let ek_r = DhPublic::from_slice(&resp[EK_AT..EK_AT + dh::KEY_LEN])?;
         let kem_ct = KemCiphertext::from_slice(&resp[KEM_MATERIAL_AT..])?;
 
         // DH1 = X25519(IK_dh_I, EK_R): autentica I para R.
-        let dh1 = self.local_dh.agree(&ek_r)?;
+        let dh1 = local.dh().agree(&ek_r)?;
         // DH2 = X25519(EK_I, IK_dh_R): autentica R para I.
         let dh2 = self.ek_secret.agree(&self.peer_dh)?;
         // DH3 = X25519(EK_I, EK_R): forward secrecy.
         let dh3 = self.ek_secret.agree(&ek_r)?;
         let ss_kem = MlKem768::decapsulate(&self.kem_secret, &kem_ct)?;
 
-        let ik_dh_i = self.local_dh.public();
+        let ik_dh_i = local.dh().public();
         let transcript = build_transcript(
             &ik_dh_i,
             &self.peer_dh,
@@ -275,12 +276,11 @@ impl<'a> Initiator<'a> {
     }
 }
 
-impl core::fmt::Debug for Initiator<'_> {
+impl core::fmt::Debug for Initiator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Initiator")
             .field("peer_dh", &self.peer_dh)
             .field("ek_public", &self.ek_public)
-            .field("local_dh", &"<redigida>")
             .field("ek_secret", &"<redigida>")
             .field("kem_secret", &"<redigida>")
             .finish()
@@ -351,9 +351,8 @@ mod tests {
     /// efêmeras sem regenerar chaves a cada iteração — regenerar produziria
     /// uma raiz diferente de qualquer forma, o que mascararia o efeito da
     /// adulteração em si.
-    fn clone_initiator<'a>(original: &Initiator<'a>) -> Initiator<'a> {
+    fn clone_initiator(original: &Initiator) -> Initiator {
         Initiator {
-            local_dh: original.local_dh,
             peer_dh: original.peer_dh,
             ek_secret: DhSecret::from_bytes(original.ek_secret.to_bytes()),
             ek_public: original.ek_public,
@@ -367,7 +366,7 @@ mod tests {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (resp_outcome, resp) = respond(&bob, &alice.public(), &init).unwrap();
-        let init_outcome = initiator.finish(&resp).unwrap();
+        let init_outcome = initiator.finish(&alice, &resp).unwrap();
 
         assert_eq!(init_outcome.root.as_bytes(), resp_outcome.root.as_bytes());
         assert!(init_outcome.is_initiator);
@@ -380,11 +379,11 @@ mod tests {
 
         let (initiator1, init1) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp1) = respond(&bob, &alice.public(), &init1).unwrap();
-        let root1 = initiator1.finish(&resp1).unwrap().root;
+        let root1 = initiator1.finish(&alice, &resp1).unwrap().root;
 
         let (initiator2, init2) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp2) = respond(&bob, &alice.public(), &init2).unwrap();
-        let root2 = initiator2.finish(&resp2).unwrap().root;
+        let root2 = initiator2.finish(&alice, &resp2).unwrap().root;
 
         assert_ne!(root1.as_bytes(), root2.as_bytes());
     }
@@ -396,7 +395,7 @@ mod tests {
 
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (bob_outcome, resp) = respond(&bob, &alice.public(), &init).unwrap();
-        let alice_outcome = initiator.finish(&resp).unwrap();
+        let alice_outcome = initiator.finish(&alice, &resp).unwrap();
         assert_eq!(alice_outcome.root.as_bytes(), bob_outcome.root.as_bytes());
 
         // Eve observa a INIT inteira (é pública, ainda não há sessão) e tenta
@@ -412,7 +411,7 @@ mod tests {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
-        let correct_root = initiator.finish(&resp).unwrap().root;
+        let correct_root = initiator.finish(&alice, &resp).unwrap().root;
 
         for index in 0..INIT_LEN {
             for bit in 0..8u8 {
@@ -438,7 +437,7 @@ mod tests {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
-        let correct_root = clone_initiator(&initiator).finish(&resp).unwrap().root;
+        let correct_root = clone_initiator(&initiator).finish(&alice, &resp).unwrap().root;
 
         for index in 0..RESP_LEN {
             for bit in 0..8u8 {
@@ -448,7 +447,7 @@ mod tests {
                     continue;
                 }
 
-                if let Ok(outcome) = clone_initiator(&initiator).finish(&tampered) {
+                if let Ok(outcome) = clone_initiator(&initiator).finish(&alice, &tampered) {
                     assert_ne!(
                         outcome.root.as_bytes(),
                         correct_root.as_bytes(),
@@ -477,7 +476,7 @@ mod tests {
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
 
         assert!(matches!(
-            initiator.finish(&resp[..RESP_LEN - 1]),
+            initiator.finish(&alice, &resp[..RESP_LEN - 1]),
             Err(Error::BadLength { .. })
         ));
     }
@@ -502,7 +501,7 @@ mod tests {
         resp[VERSION_AT] = 0x02;
 
         assert!(matches!(
-            initiator.finish(&resp),
+            initiator.finish(&alice, &resp),
             Err(Error::UnsupportedVersion(0x02))
         ));
     }
@@ -526,7 +525,10 @@ mod tests {
         let (_, mut resp) = respond(&bob, &alice.public(), &init).unwrap();
         resp[MSG_TYPE_AT] = MSG_TYPE_INIT;
 
-        assert!(matches!(initiator.finish(&resp), Err(Error::Malformed(_))));
+        assert!(matches!(
+            initiator.finish(&alice, &resp),
+            Err(Error::Malformed(_))
+        ));
     }
 
     #[test]
@@ -548,6 +550,9 @@ mod tests {
         let (_, mut resp) = respond(&bob, &alice.public(), &init).unwrap();
         resp[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(&[0u8; dh::KEY_LEN]);
 
-        assert!(matches!(initiator.finish(&resp), Err(Error::LowOrderPoint)));
+        assert!(matches!(
+            initiator.finish(&alice, &resp),
+            Err(Error::LowOrderPoint)
+        ));
     }
 }

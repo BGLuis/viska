@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D13). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D14). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -211,3 +211,29 @@ descartável; teclado sem autocorreção nem sugestões; zero SDK de analytics, 
 publicidade; build reproduzível.
 
 **Custo de reverter:** o adversário mais provável passa a ser o menos tratado.
+
+---
+
+## D14 — `dh_pub` do ratchet em claro no envelope
+**Spec (versão anterior deste protocolo):** §6.1, `dh_pub` dentro do plaintext cifrado, ao lado do
+corpo.
+**Aqui:** `dh_pub` no cabeçalho em claro do envelope, ao lado do contador, incluído no AAD.
+
+Descoberto ao planejar a camada `session` (Fase 3): a versão anterior é circular. Para uma mensagem
+que dispara uma troca de cadeia DH (§5.2), `RatchetState::receiving_key` precisa do `dh_pub` do
+cabeçalho **antes** de conseguir derivar a chave — o passo `ratchet_dh_step` calcula
+`X25519(DHs_atual, dh_pub_recebido)`, e não há como decifrar primeiro para descobrir esse valor.
+Confirmado lendo `crypto/ratchet.rs` diretamente, não é uma leitura ambígua da spec.
+
+A correção segue o Double Ratchet do Signal: `dh_pub` sai do plaintext cifrado e entra no cabeçalho
+em claro do envelope, coberto pelo AAD (qualquer adulteração ainda é detectada pelo AEAD, só não é
+mais escondida). O valor exposto é uma chave X25519 **efêmera**, trocada a cada poucas mensagens —
+nunca a identidade de longo prazo (`IK_dh`). É um vazamento estritamente menor que os já aceitos em
+D12 (o IP real de cada par, inerente a uma conexão P2P direta).
+
+A alternativa mais cara — manter `dh_pub` escondido com header encryption completo (chaves de
+cabeçalho simétricas `HK`/`NHK`, derivadas por geração de cadeia) — preservaria a promessa original de
+D4 ("nada além do contador em claro"), mas exige uma máquina de estados nova dentro de
+`crypto/ratchet.rs`, um projeto à parte. Descartada para a Fase 3 pelo custo, não por ser inviável.
+
+**Custo de reverter:** header encryption completo — projeto à parte, não uma correção pontual.

@@ -6,20 +6,38 @@
 //! como tipo opaco automaticamente: o Dart recebe um handle e chama métodos
 //! nele, nunca lê os campos diretamente.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{ContactDto, SafetyNumberDto};
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
 use viska_proto::crypto::safety_number::SafetyNumber;
+use viska_proto::session::Session;
 use viska_proto::store::{keyring, Store};
 
 const DB_FILE_NAME: &str = "viska.sqlite3";
 
 pub struct Core {
-    identity: LocalIdentity,
-    store: Store,
+    // `pub(super)`, não privado: `ffi::session` (mesmo módulo pai `ffi`)
+    // implementa métodos novos sobre `Core` num arquivo separado e precisa
+    // desses três campos. Continuam inacessíveis de fora de `ffi` — a regra
+    // "nenhum segredo cruza para o Dart" não depende de os campos serem
+    // privados ao arquivo, só de não serem `pub` ao ponto de o codegen do
+    // `flutter_rust_bridge` tentar codificá-los (que ele não tenta, porque
+    // nenhum dos três tipos é serializável pela ponte).
+    pub(super) identity: LocalIdentity,
+    pub(super) store: Store,
+    /// Sessões de mensagens em memória, uma por contato — nunca persistidas:
+    /// reabrir o app começa sem sessão nenhuma, exatamente como dois
+    /// aparelhos que nunca trocaram um handshake (`ffi/session.rs`).
+    ///
+    /// `Mutex`, não `RefCell`: mesmo motivo de `Store::conn` — os métodos do
+    /// FFI são despachados pelo `flutter_rust_bridge` em threads do próprio
+    /// pool, potencialmente diferentes a cada chamada.
+    pub(super) sessions: Mutex<HashMap<[u8; 16], Session>>,
 }
 
 impl Core {
@@ -31,7 +49,11 @@ impl Core {
         let store = Store::open(&dir.join(DB_FILE_NAME), &master_secret)?;
         let identity = store.load_or_create_identity()?;
 
-        Ok(Core { identity, store })
+        Ok(Core {
+            identity,
+            store,
+            sessions: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Os 145 bytes do QR Code desta identidade.

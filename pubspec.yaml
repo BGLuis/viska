@@ -10,10 +10,13 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_rust_bridge: 2.13.0
+  flutter_webrtc: ^1.6.2
   mobile_scanner: ^7.4.2
+  mqtt_client: ^10.9.0
   path_provider: ^2.1.6
   permission_handler: ^13.0.2
   qr_flutter: ^4.1.0
+  typed_data: ^1.4.0
   viska_core:
     path: rust_builder
 

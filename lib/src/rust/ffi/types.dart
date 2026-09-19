@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -45,6 +45,86 @@ class ContactDto {
           nickname == other.nickname;
 }
 
+/// Estado de entrega de uma mensagem de saída — espelha
+/// `store::messages::DeliveryState`. `Delivered`/`Failed` ainda não são
+/// produzidos por nenhum código desta fase (reservados para quando
+/// `MSG_RECEIPT` e relato de falha de transporte existirem).
+enum DeliveryStateDto { pending, sent, delivered, failed }
+
+/// Uma mensagem recebida e decifrada, pronta para a UI.
+class IncomingMessageDto {
+  /// `None` só para `MSG_TYPING` — indicador efêmero, nunca persistido
+  /// (`docs/protocol.md` §6.2).
+  final PlatformInt64? messageId;
+  final String body;
+  final bool isTyping;
+  final PlatformInt64 receivedAtUnixSecs;
+
+  const IncomingMessageDto({
+    this.messageId,
+    required this.body,
+    required this.isTyping,
+    required this.receivedAtUnixSecs,
+  });
+
+  @override
+  int get hashCode =>
+      messageId.hashCode ^
+      body.hashCode ^
+      isTyping.hashCode ^
+      receivedAtUnixSecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IncomingMessageDto &&
+          runtimeType == other.runtimeType &&
+          messageId == other.messageId &&
+          body == other.body &&
+          isTyping == other.isTyping &&
+          receivedAtUnixSecs == other.receivedAtUnixSecs;
+}
+
+/// Direção de uma mensagem persistida — espelha `store::messages::Direction`,
+/// sem reexportar o tipo interno diretamente na fronteira FFI.
+enum MessageDirectionDto { outgoing, incoming }
+
+/// Uma mensagem já persistida, pronta para a tela de chat renderizar.
+class MessageDto {
+  final PlatformInt64 id;
+  final MessageDirectionDto direction;
+  final String body;
+  final DeliveryStateDto deliveryState;
+  final PlatformInt64 createdAtUnixSecs;
+
+  const MessageDto({
+    required this.id,
+    required this.direction,
+    required this.body,
+    required this.deliveryState,
+    required this.createdAtUnixSecs,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      direction.hashCode ^
+      body.hashCode ^
+      deliveryState.hashCode ^
+      createdAtUnixSecs.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MessageDto &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          direction == other.direction &&
+          body == other.body &&
+          deliveryState == other.deliveryState &&
+          createdAtUnixSecs == other.createdAtUnixSecs;
+}
+
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
 class SafetyNumberDto {
@@ -66,4 +146,108 @@ class SafetyNumberDto {
           runtimeType == other.runtimeType &&
           digits == other.digits &&
           words == other.words;
+}
+
+/// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão
+/// já estava pronta na hora da chamada.
+class SealedMessageDto {
+  /// `id` na tabela `messages` — usado depois em `Core::mark_message_sent`.
+  final PlatformInt64 messageId;
+
+  /// `None` quando a sessão ainda não está `Established`: a mensagem já
+  /// está persistida como `pending`, mas não há nada para enviar ainda —
+  /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_pending` assim
+  /// que a sessão ficar pronta.
+  final Uint8List? bytes;
+
+  const SealedMessageDto({required this.messageId, this.bytes});
+
+  @override
+  int get hashCode => messageId.hashCode ^ bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SealedMessageDto &&
+          runtimeType == other.runtimeType &&
+          messageId == other.messageId &&
+          bytes == other.bytes;
+}
+
+/// Estado de uma sessão, sem nenhum dos campos criptográficos de
+/// `viska_proto::session::Session` — só o que a UI precisa para decidir o que
+/// mostrar (indicador de conexão, botão de retry).
+enum SessionStateKind {
+  /// Handshake em andamento — nem INIT nem RESP concluídos ainda.
+  handshaking,
+
+  /// Pronta para cifrar/decifrar mensagens.
+  established,
+
+  /// Precisa de uma sessão nova (`Core::ensure_session` de novo).
+  failed,
+}
+
+/// Status de uma sessão, devolvido por `Core::ensure_session`.
+class SessionStatusDto {
+  final SessionStateKind state;
+
+  /// `true` quando o contador de envio já cruzou o limiar de segurança —
+  /// a sessão ainda funciona para decifrar, mas `encrypt_outgoing` vai
+  /// recusar mensagens novas.
+  final bool needsRehandshake;
+
+  /// Bytes de handshake a publicar via sinalização — presente sempre que
+  /// formos iniciador e ainda não tivermos recebido a RESP, `None` em
+  /// qualquer outro caso (respondedor, sessão já estabelecida, ou
+  /// falhada). Chamar `ensure_session` várias vezes nesse intervalo
+  /// devolve os mesmos bytes todas as vezes, nunca uma INIT nova — mais
+  /// de uma parte do app pode precisar deles em momentos diferentes (ver
+  /// `Session::pending_outgoing_handshake`).
+  final Uint8List? outgoingHandshake;
+
+  const SessionStatusDto({
+    required this.state,
+    required this.needsRehandshake,
+    this.outgoingHandshake,
+  });
+
+  @override
+  int get hashCode =>
+      state.hashCode ^ needsRehandshake.hashCode ^ outgoingHandshake.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SessionStatusDto &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          needsRehandshake == other.needsRehandshake &&
+          outgoingHandshake == other.outgoingHandshake;
+}
+
+/// Tópicos de sinalização para um contato — `docs/protocol.md` §8.1.
+class SignalingTopicsDto {
+  /// Tópico para publicar agora — só a época corrente, nossa direção.
+  final String publishTopic;
+
+  /// Os três tópicos para assinar — épocas anterior/atual/seguinte, na
+  /// direção do par (a oposta da nossa).
+  final List<String> subscribeTopics;
+
+  const SignalingTopicsDto({
+    required this.publishTopic,
+    required this.subscribeTopics,
+  });
+
+  @override
+  int get hashCode => publishTopic.hashCode ^ subscribeTopics.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SignalingTopicsDto &&
+          runtimeType == other.runtimeType &&
+          publishTopic == other.publishTopic &&
+          subscribeTopics == other.subscribeTopics;
 }

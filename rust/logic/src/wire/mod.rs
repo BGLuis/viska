@@ -12,9 +12,11 @@
 //!
 //! 1. `plaintext::InnerPlaintext::encode` produz o plaintext preenchido até o
 //!    bucket do transporte;
-//! 2. `crypto::aead::seal` cifra esse plaintext, usando `envelope::aad` como AAD;
-//! 3. `envelope::encode` prefixa o contador em claro ao resultado;
-//! 4. no socket TCP, `framing::frame` prefixa o comprimido do envelope —
+//! 2. `crypto::aead::seal` cifra esse plaintext, usando `envelope::aad(counter,
+//!    dh_pub)` como AAD — o `dh_pub` é o `RatchetHeader.dh_pub` desta
+//!    mensagem, não um campo do plaintext (ver `envelope.rs` para o porquê);
+//! 3. `envelope::encode` prefixa o contador e o `dh_pub` em claro ao resultado;
+//! 4. no socket TCP, `framing::frame` prefixa o comprimento do envelope —
 //!    no DataChannel, o envelope já é a mensagem inteira.
 //!
 //! Do lado de recepção, os passos rodam na ordem inversa, com

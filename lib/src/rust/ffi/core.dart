@@ -12,8 +12,66 @@ import 'types.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
 abstract class Core implements RustOpaqueInterface {
+  /// Decifra um envelope recebido no `DataChannel`.
+  ///
+  /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
+  /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
+  /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
+  /// DTO efêmero, sem `message_id`. Outros tipos de pacote (arquivo,
+  /// controle) estão fora do escopo desta fase e são descartados como se a
+  /// decifragem tivesse falhado.
+  Future<IncomingMessageDto?> decryptIncoming({
+    required List<int> peerDeviceId,
+    required List<int> envelope,
+  });
+
+  /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
+  ///
+  /// Idempotente: chamadas repetidas para o mesmo contato nunca reabrem o
+  /// handshake. `outgoing_handshake` vem preenchido em toda chamada feita
+  /// enquanto formos iniciador e ainda não tivermos recebido a RESP — não
+  /// só na primeira — porque mais de uma parte do app pode precisar desses
+  /// bytes em momentos diferentes (o transporte WebRTC, para decidir quem
+  /// oferta o SDP; o controlador de chat, para de fato publicar a mensagem
+  /// de handshake assim que o canal abrir). Ver
+  /// `viska_proto::session::Session::pending_outgoing_handshake`.
+  Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId});
+
+  /// Alimenta a sessão com uma mensagem de handshake recebida via
+  /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
+  /// de resposta a publicar, se houver.
+  ///
+  /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
+  /// sido chamado antes para este contato — este método nunca cria uma
+  /// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
+  /// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
+  /// errado dependendo só de qual mensagem chegou primeiro.
+  Future<Uint8List?> feedHandshake({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  });
+
+  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
+  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
+  /// estabelecer. Para na primeira falha de cifragem (ex.:
+  /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
+  /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
+  /// ordem de entrega.
+  Future<List<SealedMessageDto>> flushPending({
+    required List<int> peerDeviceId,
+  });
+
   /// Todos os contatos já pareados.
   Future<List<ContactDto>> listContacts();
+
+  /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
+  /// — histórico completo para a tela de chat abrir com.
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId});
+
+  /// Marca uma mensagem de saída como entregue ao transporte — chamar só
+  /// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
+  /// lançar erro.
+  Future<void> markMessageSent({required PlatformInt64 messageId});
 
   /// Os 145 bytes do QR Code desta identidade.
   Future<Uint8List> myQrPayload();
@@ -23,9 +81,48 @@ abstract class Core implements RustOpaqueInterface {
   static Future<Core> open({required String appDir}) =>
       RustLib.instance.api.crateFfiCoreCoreOpen(appDir: appDir);
 
+  /// Decifra um payload de sinalização recebido do broker.
+  ///
+  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
+  /// inválida — sem distinguir a causa, mesma política de
+  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
+  /// confiável.
+  Future<Uint8List?> openSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> sealed,
+  });
+
   /// Valida o payload lido pela câmera e persiste o contato.
   Future<ContactDto> pairFromQr({required List<int> payload});
 
   /// Safety number entre esta identidade e um contato já pareado.
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId});
+
+  /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
+  /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
+  /// mesmo que o transporte esteja indisponível no momento da chamada.
+  ///
+  /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
+  /// `Established`: a mensagem já está persistida, e `flush_pending` a
+  /// entrega assim que a sessão ficar pronta.
+  Future<SealedMessageDto> sealOutgoingText({
+    required List<int> peerDeviceId,
+    required String body,
+  });
+
+  /// Cifra um payload de sinalização (SDP ou candidato ICE já
+  /// serializado) para publicar — sempre exatamente 1024 B.
+  Future<Uint8List> sealSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> payloadBytes,
+  });
+
+  /// Status atual da sessão com um contato, sem alterar nada — `None` se
+  /// `ensure_session` nunca foi chamado para ele.
+  Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId});
+
+  /// Tópico para publicar agora (época corrente, nossa direção) e os três
+  /// tópicos para assinar (épocas anterior/atual/seguinte, direção do
+  /// par) — `docs/protocol.md` §8.1.
+  Future<SignalingTopicsDto> signalingTopics({required List<int> peerDeviceId});
 }

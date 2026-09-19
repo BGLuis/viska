@@ -23,6 +23,15 @@ pub enum FfiError {
     StoreFailure,
     /// Nenhum contato com o `device_id` informado.
     ContactNotFound,
+    /// O contador de envio da sessão cruzou o limiar de segurança — a UI
+    /// precisa iniciar uma sessão nova (nova sinalização/handshake) com este
+    /// contato, não é um erro para simplesmente relatar e ignorar.
+    SessionExpired,
+    /// Chamou `feed_handshake`/`decrypt_incoming` para um contato sem sessão
+    /// aberta ainda. Não vem de `viska_proto::Error` — é puramente um erro de
+    /// uso da API do FFI: quem chama precisa ter chamado `ensure_session`
+    /// primeiro.
+    NoActiveSession,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -40,6 +49,7 @@ impl From<viska_proto::Error> for FfiError {
             Error::LowOrderPoint => FfiError::ForgedKey,
             Error::Store => FfiError::StoreFailure,
             Error::ContactNotFound => FfiError::ContactNotFound,
+            Error::NeedsRehandshake => FfiError::SessionExpired,
             Error::AeadFailure
             | Error::InvalidState(_)
             | Error::UndecryptableMessage
@@ -94,6 +104,10 @@ mod tests {
         assert_eq!(
             FfiError::from(Error::ContactNotFound),
             FfiError::ContactNotFound
+        );
+        assert_eq!(
+            FfiError::from(Error::NeedsRehandshake),
+            FfiError::SessionExpired
         );
 
         for err in [

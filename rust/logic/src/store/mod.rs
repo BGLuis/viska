@@ -8,6 +8,7 @@
 mod contacts;
 mod identity;
 pub mod keyring;
+pub mod messages;
 mod schema;
 
 use std::path::Path;
@@ -15,6 +16,7 @@ use std::sync::Mutex;
 
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::kdf;
+use crate::wire::packet_type::PacketType;
 use crate::{Error, Result};
 
 /// Banco de dados cifrado de um dispositivo: identidade local e contatos.
@@ -74,6 +76,52 @@ impl Store {
     pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<(PublicIdentity, i64)>> {
         let conn = self.lock()?;
         contacts::find_by_device_id(&conn, device_id)
+    }
+
+    /// Persiste uma mensagem de saída como `Pending`, antes de qualquer
+    /// tentativa de envio.
+    pub fn insert_pending_message(
+        &self,
+        contact_device_id: &[u8; 16],
+        packet_type: PacketType,
+        body: &str,
+        created_at_unix_secs: i64,
+    ) -> Result<i64> {
+        let conn = self.lock()?;
+        messages::insert_pending(&conn, contact_device_id, packet_type, body, created_at_unix_secs)
+    }
+
+    /// Persiste uma mensagem recebida e já decifrada.
+    pub fn insert_incoming_message(
+        &self,
+        contact_device_id: &[u8; 16],
+        packet_type: PacketType,
+        body: &str,
+        received_at_unix_secs: i64,
+    ) -> Result<i64> {
+        let conn = self.lock()?;
+        messages::insert_incoming(&conn, contact_device_id, packet_type, body, received_at_unix_secs)
+    }
+
+    /// Marca uma mensagem de saída como entregue ao transporte.
+    pub fn mark_message_sent(&self, message_id: i64) -> Result<()> {
+        let conn = self.lock()?;
+        messages::mark_sent(&conn, message_id)
+    }
+
+    /// Todas as mensagens de um contato, mais antigas primeiro.
+    pub fn list_messages(&self, contact_device_id: &[u8; 16]) -> Result<Vec<messages::StoredMessage>> {
+        let conn = self.lock()?;
+        messages::list_for_contact(&conn, contact_device_id)
+    }
+
+    /// Mensagens de saída ainda não entregues.
+    pub fn list_pending_messages(
+        &self,
+        contact_device_id: &[u8; 16],
+    ) -> Result<Vec<messages::StoredMessage>> {
+        let conn = self.lock()?;
+        messages::list_pending(&conn, contact_device_id)
     }
 
     /// Trava a conexão. Um mutex envenenado (por pânico em outra chamada)

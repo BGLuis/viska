@@ -20,6 +20,13 @@ String pairingErrorMessage(FfiError error) {
       return 'Não foi possível salvar o contato. Tente novamente.';
     case FfiError.contactNotFound:
       return 'Contato não encontrado.';
+    // As duas variantes abaixo não são produzidas pelo fluxo de pareamento —
+    // só por chamadas de sessão/mensagem (Fase 3) — mas o switch precisa ser
+    // exaustivo sobre o enum inteiro, que é compartilhado entre as telas.
+    case FfiError.sessionExpired:
+      return 'A sessão de conversa expirou. Abra uma nova.';
+    case FfiError.noActiveSession:
+      return 'Nenhuma sessão de conversa está aberta com este contato.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

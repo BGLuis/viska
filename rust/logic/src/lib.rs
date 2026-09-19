@@ -15,6 +15,8 @@
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 
 pub mod crypto;
+pub mod session;
+pub mod signaling;
 pub mod store;
 pub mod util;
 pub mod wire;
@@ -63,6 +65,9 @@ pub enum Error {
 
     #[error("contador de mensagens de 32 bits esgotado")]
     CounterOverflow,
+
+    #[error("contador de envio cruzou o limiar de segurança; abra uma sessão nova")]
+    NeedsRehandshake,
 
     #[error("falha no banco cifrado")]
     Store,

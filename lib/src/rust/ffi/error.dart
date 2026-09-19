@@ -29,6 +29,17 @@ enum FfiError {
   /// Nenhum contato com o `device_id` informado.
   contactNotFound,
 
+  /// O contador de envio da sessão cruzou o limiar de segurança — a UI
+  /// precisa iniciar uma sessão nova (nova sinalização/handshake) com este
+  /// contato, não é um erro para simplesmente relatar e ignorar.
+  sessionExpired,
+
+  /// Chamou `feed_handshake`/`decrypt_incoming` para um contato sem sessão
+  /// aberta ainda. Não vem de `viska_proto::Error` — é puramente um erro de
+  /// uso da API do FFI: quem chama precisa ter chamado `ensure_session`
+  /// primeiro.
+  noActiveSession,
+
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,
 }
