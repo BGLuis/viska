@@ -45,8 +45,15 @@ abstract class P2PTransport {
   /// Envia um envelope já cifrado — bytes crus, prontos para o transporte.
   Future<void> send(Uint8List envelope);
 
+  /// Como [send], no canal `file` — símbolo RaptorQ ou pedaço de nota de
+  /// voz, já selado com chave própria fora do ratchet (Fase 4/5).
+  Future<void> sendFile(Uint8List bytes);
+
   /// Envelopes recebidos, ainda cifrados — prontos para `Core.decryptIncoming`.
   Stream<Uint8List> get incoming;
+
+  /// Como [incoming], no canal `file`.
+  Stream<Uint8List> get incomingFile;
 
   Stream<TransportConnectionEvent> get connectionEvents;
 

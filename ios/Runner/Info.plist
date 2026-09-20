@@ -28,6 +28,26 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>A câmera é usada para ler o QR Code de pareamento de um contato.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O microfone é usado para gravar notas de voz enviadas a um contato.</string>
+	<!-- Descoberta local por mDNS/DNS-SD (docs/protocol.md §9.2, Fase 6 F1) —
+	     sem as duas chaves abaixo a descoberta falha em silêncio no iOS, sem
+	     nenhum erro visível. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>A rede local é usada para encontrar um contato por perto e transferir mensagens e arquivos diretamente, sem passar por um servidor.</string>
+	<!-- Descoberta local por BLE (docs/protocol.md §9.1, Fase 6 F2). -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>O Bluetooth é usado para encontrar um contato por perto quando não há rede Wi-Fi em comum.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_viska._tcp</string>
+		<!-- MultipeerConnectivity (Fase 6, F5) anuncia sobre Bonjour por
+		     baixo dos panos — o iOS 14+ exige os dois serviços (`_tcp` e
+		     `_udp`) do `serviceType` aqui, senão a descoberta falha em
+		     silêncio, mesma armadilha do mDNS puro (F1). -->
+		<string>_viska-p2p._tcp</string>
+		<string>_viska-p2p._udp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

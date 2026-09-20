@@ -3,7 +3,7 @@
 Especificação normativa do protocolo. Toda implementação (Rust core, testes, futuras portas)
 deve seguir este documento. Divergências entre código e este arquivo são bug no código.
 
-Baseado na especificação de arquitetura original, com os desvios D1–D13 documentados em
+Baseado na especificação de arquitetura original, com os desvios D1–D18 documentados em
 `docs/deviations.md` já incorporados.
 
 ---
@@ -352,13 +352,37 @@ Um pacote que não caiba no maior bucket é rejeitado pelo emissor — os produt
 Antes de cada envio, atraso amostrado de uma normal truncada em [5 ms, 25 ms] usando CSPRNG.
 Documentado em `docs/threat-model.md` como mitigação parcial: não derrota adversário global (D12).
 
+### 6.6 `AUDIO_CHUNK` — ausência de metadados de dispositivo (D16)
+
+O payload de um `AUDIO_CHUNK` é o *bitstream* Opus cru: só os pacotes de áudio e o essencial de
+`OpusHead` (canais, taxa de amostragem, pre-skip). Nunca um contêiner com `OpusTags` — é ali que
+`MediaRecorder` (Android) e `AVAudioRecorder` (iOS) costumam gravar `ENCODER`, `creation_time` ou
+identificador de aparelho. A sanitização é subtração, não filtro: o formato que de fato atravessa o
+pipeline não tem campo algum onde esse metadado pudesse ir parar (`file::opus_container`).
+
+Uma nota de voz é tratada como arquivo (§7) do ponto de vista do transporte — reusa manifesto,
+Merkle, RaptorQ/offset e staging inteiros, cifra os pedaços com `K_audio_chunk`
+(`crypto::kdf::context::AUDIO_CHUNK`) em vez de `K_symbol`, nunca a mesma chave para os dois. Ver
+D16 para o porquê de não existirem `AUDIO_METADATA`/`AUDIO_FEEDBACK`/`AUDIO_COMPLETE` dedicados.
+
+A contagem de pacotes de uma nota de voz revela sua duração aproximada a um observador do tráfego
+cifrado — os buckets de padding (§6.3) limitam só a granularidade do tamanho de cada pacote, não
+quantos pacotes existem. Limitação declarada em `docs/threat-model.md`, não escondida (D12).
+
 ---
 
 ## 7. Pipeline de arquivos
 
 ### 7.1 Manifesto (`FILE_METADATA`, 0x20)
 
-Serializado em CBOR canônico dentro do corpo:
+O corpo de `FILE_METADATA` é `kind (1 B) ‖ transfer_secret (32 B) ‖ manifest_cbor` — `kind` (D16)
+distingue arquivo comum (`0x00`) de nota de voz (`0x01`) para o receptor escolher `K_symbol` ou
+`K_audio_chunk` antes do primeiro pedaço chegar; `transfer_secret` é o segredo local de 32 B de D15.
+Nenhum dos dois é normativo na especificação original — são formato de fio decidido nesta
+implementação, como o resto do corpo de `FILE_SYMBOL`/`FILE_FEEDBACK`/`FILE_COMPLETE` (nenhum tem
+layout definido pela spec além de `FILE_METADATA` em si).
+
+`manifest_cbor` é serializado em CBOR canônico:
 
 ```
 file_id        16 B aleatórios
@@ -371,7 +395,9 @@ name_encrypted bytes nome original, cifrado no corpo
 mime           sempre "application/octet-stream" no fio
 ```
 
-O nome do arquivo trafega dentro do corpo já cifrado; o MIME real nunca vai ao fio.
+O nome do arquivo trafega dentro do corpo já cifrado; o MIME real nunca vai ao fio. O manifesto em
+si é agnóstico de conteúdo — o mesmo formato serve arquivo comum e nota de voz; só o `kind` do
+envelope externo diferencia os dois (§6.6, D16).
 
 ### 7.2 Merkle BLAKE3
 
@@ -385,6 +411,20 @@ que o decodifica, e a raiz completa no final, antes do commit atômico.
 - Desativado na LAN TCP, que usa transferência por offset com retomada.
 - Source blocks de no máximo 1024 símbolos, para limitar o decodificador a ~16 MB de RAM.
 - O emissor gera símbolos de reparo continuamente até receber `FILE_FEEDBACK` indicando bloco completo.
+
+### 7.3.1 Formato de fio de `FILE_SYMBOL`/`AUDIO_CHUNK` (D17)
+
+Todo pacote do canal `file` (símbolo de arquivo ou pedaço de nota de voz) tem o mesmo formato:
+
+```
+file_id (16 B, em claro) ‖ nonce (24 B) ‖ ciphertext ‖ tag (16 B)
+```
+
+`file_id` em claro é o que permite ao receptor escolher a transferência certa (e, com ela, a chave
+— `K_symbol` ou `K_audio_chunk`) antes de tentar abrir o AEAD — sem isso, várias transferências
+concorrentes com o mesmo contato não teriam como ser distinguidas antes de decifrar. Vazamento
+aceito, mesma categoria de `Counter`/`dh_pub` no envelope do canal `control` (§6, D4/D14): um
+identificador aleatório, sem relação com conteúdo, nome ou tamanho.
 
 ### 7.4 Feedback (`FILE_FEEDBACK`, 0x22)
 
@@ -494,6 +534,58 @@ Endereço MAC: aleatorização de endereço privado resolvível habilitada. Nenh
 ### 9.2 mDNS / DNS-SD
 
 Serviço `_viska._tcp` com nome de instância igual ao `beacon` em hex. Mesma rotação por época.
+
+### 9.3 Multiplexação de canais no socket TCP local
+
+```
+preâmbulo (17 B) = device_id (16 B) ‖ canal (1 B: 0x00 control, 0x01 file)
+```
+
+`wire::framing` (§6.4) não carrega identificador de canal — só o prefixo de comprimento. No socket
+TCP local, cada conexão recebe esse preâmbulo uma vez, antes do primeiro quadro, enviado por quem
+discou. `device_id` é dado já público (trocado no QR); varia por contato, então não vira uma
+impressão digital fixa de DPI (mesma motivação de D4). Cada canal lógico (`control`/`file`) usa uma
+conexão TCP própria — duas conexões por par ativo.
+
+Papel ativo/passivo: a mesma regra de §4 (`PublicIdentity::is_before`) que decide quem inicia o
+handshake decide quem disca a conexão TCP; o outro lado escuta. Um único `ServerSocket` por
+processo atende a todos os contatos, roteando cada conexão entrante pelo `device_id` do preâmbulo.
+
+### 9.4 Wi-Fi Aware (Android)
+
+```
+service_name = hex(beacon)   — mesma convenção de §9.2
+```
+
+Papel passivo publica (`PublishConfig`), papel ativo assina (`SubscribeConfig`) — mesma convenção
+ativo/passivo de §9.3. Depois que o caminho de dados é estabelecido, os dois canais lógicos
+(`control`/`file`) são multiplexados sobre a única conexão disponível por 1 byte de marcador
+(`0x00`/`0x01`) prefixado a cada envelope, *dentro* do mesmo `wire::framing` do socket TCP local —
+o enquadramento por comprimento é o mesmo, só ganha esse byte extra à frente.
+
+### 9.5 MultipeerConnectivity (iOS)
+
+```
+serviceType    = "viska-p2p"              (fixo — não rotativo por época)
+discoveryInfo  = { "beacon": hex(beacon) }
+```
+
+A API do MultipeerConnectivity exige um `serviceType` curto (1–15 caracteres, `[a-z0-9-]`, sem
+pontos) — incompatível com `_viska._tcp` ou qualquer string derivada do beacon. Por isso o
+`serviceType` é fixo e a identidade do par continua vindo do beacon, carregado dentro do
+`discoveryInfo` do anúncio, nunca do `serviceType`.
+
+`MCSession.send` já entrega mensagens delimitadas (não é um fluxo de bytes cru como um socket TCP),
+então **não** passa por `wire::framing` — só o marcador de 1 byte de §9.4 antes de cada mensagem,
+sem prefixo de comprimento.
+
+### 9.6 Lacuna conhecida: BLE não transporta dados
+
+O beacon BLE (§9.1) só serve para descoberta — nenhuma implementação atual usa GATT ou L2CAP para
+tráfego de chat/arquivo. Consequência: o cenário "Android ↔ iOS sem nenhuma rede em comum" (sem LAN,
+e sem interoperação entre Wi-Fi Aware e MultipeerConnectivity, que são exclusivos de cada SO) não
+tem caminho de transporte — só o indicador de "contato por perto" via BLE. Fechar essa lacuna
+exigiria BLE L2CAP ou um dos aparelhos virar ponto de acesso; nenhum dos dois está implementado.
 
 ---
 

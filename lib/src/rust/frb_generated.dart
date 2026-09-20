@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'ffi/core.dart';
 import 'ffi/error.dart';
+import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
@@ -67,7 +68,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1534713083;
+  int get rustContentHash => -999166079;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -79,10 +80,25 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<void> crateFfiCoreCoreCancelTransfer({
+    required Core that,
+    required List<int> fileId,
+  });
+
+  Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
+    required Core that,
+    required List<int> internalBytes,
+  });
+
   Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({
     required Core that,
     required List<int> peerDeviceId,
     required List<int> envelope,
+  });
+
+  Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({
+    required Core that,
+    required List<int> peerDeviceId,
   });
 
   Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({
@@ -96,9 +112,28 @@ abstract class RustLibApi extends BaseApi {
     required List<int> bytes,
   });
 
+  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  });
+
+  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  });
+
   Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
     required Core that,
     required List<int> peerDeviceId,
+  });
+
+  Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({
+    required Core that,
+    required List<int> wireBytes,
   });
 
   Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that});
@@ -113,7 +148,19 @@ abstract class RustLibApi extends BaseApi {
     required PlatformInt64 messageId,
   });
 
+  Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({
+    required Core that,
+    required List<int> beacon,
+  });
+
+  Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that});
+
   Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that});
+
+  Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({
+    required Core that,
+    required List<int> fileId,
+  });
 
   Future<Core> crateFfiCoreCoreOpen({required String appDir});
 
@@ -128,9 +175,25 @@ abstract class RustLibApi extends BaseApi {
     required List<int> payload,
   });
 
+  Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({
+    required Core that,
+    required List<int> peerDeviceId,
+  });
+
+  Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({
+    required Core that,
+    required List<int> peerDeviceId,
+  });
+
   Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({
     required Core that,
     required List<int> contactDeviceId,
+  });
+
+  Future<void> crateFfiCoreCoreSanitizeAndStageAudio({
+    required Core that,
+    required String sourcePath,
+    required String destinationPath,
   });
 
   Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
@@ -155,6 +218,32 @@ abstract class RustLibApi extends BaseApi {
     required List<int> peerDeviceId,
   });
 
+  Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  });
+
+  Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  });
+
+  Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({
+    required Core that,
+    required List<int> fileId,
+  });
+
+  Future<(Uint8List?, Uint8List)>
+  crateFfiFramingExtractFrameFromLocalSocketBuffer({required List<int> buffer});
+
+  Future<Uint8List> crateFfiFramingFrameForLocalSocket({
+    required List<int> envelope,
+  });
+
   Future<BigInt> crateFfiJitterSampleJitterDelayMs();
 
   RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Core;
@@ -171,6 +260,82 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required super.generalizedFrbRustBinding,
     required super.portManager,
   });
+
+  @override
+  Future<void> crateFfiCoreCoreCancelTransfer({
+    required Core that,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreCancelTransferConstMeta,
+        argValues: [that, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreCancelTransferConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_cancel_transfer",
+        argNames: ["that", "fileId"],
+      );
+
+  @override
+  Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
+    required Core that,
+    required List<int> internalBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(internalBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreDecodeAudioToWavConstMeta,
+        argValues: [that, internalBytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreDecodeAudioToWavConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_decode_audio_to_wav",
+        argNames: ["that", "internalBytes"],
+      );
 
   @override
   Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({
@@ -191,7 +356,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 3,
             port: port_,
           );
         },
@@ -213,6 +378,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_discovery_beacons_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreDiscoveryBeaconsConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreDiscoveryBeaconsConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_discovery_beacons",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
   Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({
     required Core that,
     required List<int> peerDeviceId,
@@ -229,7 +432,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 5,
             port: port_,
           );
         },
@@ -269,7 +472,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 6,
             port: port_,
           );
         },
@@ -291,6 +494,90 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          sse_encode_String(destinationPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreFinishReceiveAudioConstMeta,
+        argValues: [that, peerDeviceId, fileId, destinationPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreFinishReceiveAudioConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_finish_receive_audio",
+        argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
+      );
+
+  @override
+  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          sse_encode_String(destinationPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreFinishReceiveFileConstMeta,
+        argValues: [that, peerDeviceId, fileId, destinationPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreFinishReceiveFileConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_finish_receive_file",
+        argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
+      );
+
+  @override
   Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
     required Core that,
     required List<int> peerDeviceId,
@@ -307,7 +594,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 9,
             port: port_,
           );
         },
@@ -329,6 +616,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({
+    required Core that,
+    required List<int> wireBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(wireBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 10,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_ingested_chunk_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta,
+        argValues: [that, wireBytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_ingest_incoming_wire_bytes",
+        argNames: ["that", "wireBytes"],
+      );
+
+  @override
   Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -341,7 +666,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 11,
             port: port_,
           );
         },
@@ -376,7 +701,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 12,
             port: port_,
           );
         },
@@ -414,7 +739,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 13,
             port: port_,
           );
         },
@@ -436,6 +761,75 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({
+    required Core that,
+    required List<int> beacon,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(beacon, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_contact_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta,
+        argValues: [that, beacon],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_match_discovered_beacon",
+        argNames: ["that", "beacon"],
+      );
+
+  @override
+  Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateFfiCoreCoreMyDeviceIdConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreMyDeviceIdConstMeta =>
+      const TaskConstMeta(debugName: "Core_my_device_id", argNames: ["that"]);
+
+  @override
   Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -448,7 +842,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 16,
             port: port_,
           );
         },
@@ -467,6 +861,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "Core_my_qr_payload", argNames: ["that"]);
 
   @override
+  Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({
+    required Core that,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta,
+        argValues: [that, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_next_outgoing_wire_chunk",
+        argNames: ["that", "fileId"],
+      );
+
+  @override
   Future<Core> crateFfiCoreCoreOpen({required String appDir}) {
     return handler.executeNormal(
       NormalTask(
@@ -476,7 +908,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 18,
             port: port_,
           );
         },
@@ -514,7 +946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 19,
             port: port_,
           );
         },
@@ -552,7 +984,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 20,
             port: port_,
           );
         },
@@ -573,6 +1005,82 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 21,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_file_offer_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCorePendingAudioOffersConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCorePendingAudioOffersConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_pending_audio_offers",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
+  Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_file_offer_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCorePendingFileOffersConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCorePendingFileOffersConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_pending_file_offers",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
   Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({
     required Core that,
     required List<int> contactDeviceId,
@@ -589,7 +1097,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 23,
             port: port_,
           );
         },
@@ -611,6 +1119,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateFfiCoreCoreSanitizeAndStageAudio({
+    required Core that,
+    required String sourcePath,
+    required String destinationPath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(sourcePath, serializer);
+          sse_encode_String(destinationPath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 24,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta,
+        argValues: [that, sourcePath, destinationPath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_sanitize_and_stage_audio",
+        argNames: ["that", "sourcePath", "destinationPath"],
+      );
+
+  @override
   Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
     required Core that,
     required List<int> peerDeviceId,
@@ -629,7 +1177,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 25,
             port: port_,
           );
         },
@@ -669,7 +1217,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 26,
             port: port_,
           );
         },
@@ -707,7 +1255,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 27,
             port: port_,
           );
         },
@@ -745,7 +1293,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 28,
             port: port_,
           );
         },
@@ -767,6 +1315,197 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_String(audioPath, serializer);
+          sse_encode_bool(useLan, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_send_audio_started_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreStartSendAudioConstMeta,
+        argValues: [that, peerDeviceId, audioPath, useLan],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreStartSendAudioConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_start_send_audio",
+        argNames: ["that", "peerDeviceId", "audioPath", "useLan"],
+      );
+
+  @override
+  Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_String(filePath, serializer);
+          sse_encode_bool(useLan, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 30,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_send_file_started_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreStartSendFileConstMeta,
+        argValues: [that, peerDeviceId, filePath, useLan],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreStartSendFileConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_start_send_file",
+        argNames: ["that", "peerDeviceId", "filePath", "useLan"],
+      );
+
+  @override
+  Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({
+    required Core that,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 31,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_transfer_progress_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreTransferProgressConstMeta,
+        argValues: [that, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreTransferProgressConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_transfer_progress",
+        argNames: ["that", "fileId"],
+      );
+
+  @override
+  Future<(Uint8List?, Uint8List)>
+  crateFfiFramingExtractFrameFromLocalSocketBuffer({
+    required List<int> buffer,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(buffer, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 32,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta,
+        argValues: [buffer],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta =>
+      const TaskConstMeta(
+        debugName: "extract_frame_from_local_socket_buffer",
+        argNames: ["buffer"],
+      );
+
+  @override
+  Future<Uint8List> crateFfiFramingFrameForLocalSocket({
+    required List<int> envelope,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(envelope, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 33,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiFramingFrameForLocalSocketConstMeta,
+        argValues: [envelope],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiFramingFrameForLocalSocketConstMeta =>
+      const TaskConstMeta(
+        debugName: "frame_for_local_socket",
+        argNames: ["envelope"],
+      );
+
+  @override
   Future<BigInt> crateFfiJitterSampleJitterDelayMs() {
     return handler.executeNormal(
       NormalTask(
@@ -775,7 +1514,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 34,
             port: port_,
           );
         },
@@ -841,6 +1580,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ContactDto dco_decode_box_autoadd_contact_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_contact_dto(raw);
+  }
+
+  @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_i_64(raw);
@@ -853,9 +1598,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_ingested_chunk_dto(raw);
+  }
+
+  @protected
   SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_session_status_dto(raw);
+  }
+
+  @protected
+  TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_transfer_progress_dto(raw);
   }
 
   @protected
@@ -880,9 +1639,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DiscoveryBeaconsDto(
+      advertiseBeacon: dco_decode_list_prim_u_8_strict(arr[0]),
+      scanBeacons: dco_decode_list_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
   FfiError dco_decode_ffi_error(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return FfiError.values[raw as int];
+  }
+
+  @protected
+  FileOfferDto dco_decode_file_offer_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return FileOfferDto(
+      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+      name: dco_decode_String(arr[1]),
+      fileSize: dco_decode_u_64(arr[2]),
+    );
   }
 
   @protected
@@ -912,6 +1696,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return IngestedChunkDto(
+      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+      progress: dco_decode_transfer_progress_dto(arr[1]),
+    );
+  }
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
@@ -921,6 +1717,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<ContactDto> dco_decode_list_contact_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_contact_dto).toList();
+  }
+
+  @protected
+  List<FileOfferDto> dco_decode_list_file_offer_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_file_offer_dto).toList();
+  }
+
+  @protected
+  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_list_prim_u_8_strict).toList();
   }
 
   @protected
@@ -957,21 +1765,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto dco_decode_message_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return MessageDto(
       id: dco_decode_i_64(arr[0]),
       direction: dco_decode_message_direction_dto(arr[1]),
-      body: dco_decode_String(arr[2]),
-      deliveryState: dco_decode_delivery_state_dto(arr[3]),
-      createdAtUnixSecs: dco_decode_i_64(arr[4]),
+      kind: dco_decode_message_kind_dto(arr[2]),
+      body: dco_decode_String(arr[3]),
+      audioFileId: dco_decode_opt_list_prim_u_8_strict(arr[4]),
+      deliveryState: dco_decode_delivery_state_dto(arr[5]),
+      createdAtUnixSecs: dco_decode_i_64(arr[6]),
     );
+  }
+
+  @protected
+  MessageKindDto dco_decode_message_kind_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return MessageKindDto.values[raw as int];
   }
 
   @protected
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
+  ContactDto? dco_decode_opt_box_autoadd_contact_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_contact_dto(raw);
   }
 
   @protected
@@ -991,15 +1813,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_ingested_chunk_dto(raw);
+  }
+
+  @protected
   SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_session_status_dto(raw);
   }
 
   @protected
+  TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_transfer_progress_dto(raw);
+  }
+
+  @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
+  }
+
+  @protected
+  (Uint8List?, Uint8List)
+  dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (
+      dco_decode_opt_list_prim_u_8_strict(arr[0]),
+      dco_decode_list_prim_u_8_strict(arr[1]),
+    );
   }
 
   @protected
@@ -1023,6 +1875,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SealedMessageDto(
       messageId: dco_decode_i_64(arr[0]),
       bytes: dco_decode_opt_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
+  SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SendAudioStartedDto(
+      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+      sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
+      messageId: dco_decode_i_64(arr[2]),
+    );
+  }
+
+  @protected
+  SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return SendFileStartedDto(
+      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+      sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
     );
   }
 
@@ -1055,6 +1932,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       publishTopic: dco_decode_String(arr[0]),
       subscribeTopics: dco_decode_list_String(arr[1]),
     );
+  }
+
+  @protected
+  TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return TransferProgressDto(
+      blocksDone: dco_decode_u_32(arr[0]),
+      totalBlocks: dco_decode_u_32(arr[1]),
+      bytesDone: dco_decode_u_64(arr[2]),
+      isComplete: dco_decode_bool(arr[3]),
+    );
+  }
+
+  @protected
+  int dco_decode_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
   }
 
   @protected
@@ -1131,6 +2028,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ContactDto sse_decode_box_autoadd_contact_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_contact_dto(deserializer));
+  }
+
+  @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_i_64(deserializer));
@@ -1145,11 +2048,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_ingested_chunk_dto(deserializer));
+  }
+
+  @protected
   SessionStatusDto sse_decode_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_session_status_dto(deserializer));
+  }
+
+  @protected
+  TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_transfer_progress_dto(deserializer));
   }
 
   @protected
@@ -1177,10 +2096,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DiscoveryBeaconsDto sse_decode_discovery_beacons_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_advertiseBeacon = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_scanBeacons = sse_decode_list_list_prim_u_8_strict(deserializer);
+    return DiscoveryBeaconsDto(
+      advertiseBeacon: var_advertiseBeacon,
+      scanBeacons: var_scanBeacons,
+    );
+  }
+
+  @protected
   FfiError sse_decode_ffi_error(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return FfiError.values[inner];
+  }
+
+  @protected
+  FileOfferDto sse_decode_file_offer_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_fileSize = sse_decode_u_64(deserializer);
+    return FileOfferDto(
+      fileId: var_fileId,
+      name: var_name,
+      fileSize: var_fileSize,
+    );
   }
 
   @protected
@@ -1213,6 +2158,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto sse_decode_ingested_chunk_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_progress = sse_decode_transfer_progress_dto(deserializer);
+    return IngestedChunkDto(fileId: var_fileId, progress: var_progress);
+  }
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1232,6 +2185,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <ContactDto>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_contact_dto(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<FileOfferDto> sse_decode_list_file_offer_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FileOfferDto>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_file_offer_dto(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <Uint8List>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_list_prim_u_8_strict(deserializer));
     }
     return ans_;
   }
@@ -1290,16 +2271,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_i_64(deserializer);
     var var_direction = sse_decode_message_direction_dto(deserializer);
+    var var_kind = sse_decode_message_kind_dto(deserializer);
     var var_body = sse_decode_String(deserializer);
+    var var_audioFileId = sse_decode_opt_list_prim_u_8_strict(deserializer);
     var var_deliveryState = sse_decode_delivery_state_dto(deserializer);
     var var_createdAtUnixSecs = sse_decode_i_64(deserializer);
     return MessageDto(
       id: var_id,
       direction: var_direction,
+      kind: var_kind,
       body: var_body,
+      audioFileId: var_audioFileId,
       deliveryState: var_deliveryState,
       createdAtUnixSecs: var_createdAtUnixSecs,
     );
+  }
+
+  @protected
+  MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return MessageKindDto.values[inner];
   }
 
   @protected
@@ -1308,6 +2300,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  ContactDto? sse_decode_opt_box_autoadd_contact_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_contact_dto(deserializer));
     } else {
       return null;
     }
@@ -1338,6 +2343,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_ingested_chunk_dto(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   ) {
@@ -1345,6 +2363,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_session_status_dto(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_transfer_progress_dto(deserializer));
     } else {
       return null;
     }
@@ -1362,6 +2393,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (Uint8List?, Uint8List)
+  sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_field1 = sse_decode_list_prim_u_8_strict(deserializer);
+    return (var_field0, var_field1);
+  }
+
+  @protected
   SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_digits = sse_decode_String(deserializer);
@@ -1375,6 +2417,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_messageId = sse_decode_i_64(deserializer);
     var var_bytes = sse_decode_opt_list_prim_u_8_strict(deserializer);
     return SealedMessageDto(messageId: var_messageId, bytes: var_bytes);
+  }
+
+  @protected
+  SendAudioStartedDto sse_decode_send_audio_started_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_messageId = sse_decode_i_64(deserializer);
+    return SendAudioStartedDto(
+      fileId: var_fileId,
+      sealedMetadata: var_sealedMetadata,
+      messageId: var_messageId,
+    );
+  }
+
+  @protected
+  SendFileStartedDto sse_decode_send_file_started_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+    return SendFileStartedDto(
+      fileId: var_fileId,
+      sealedMetadata: var_sealedMetadata,
+    );
   }
 
   @protected
@@ -1410,6 +2480,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       publishTopic: var_publishTopic,
       subscribeTopics: var_subscribeTopics,
     );
+  }
+
+  @protected
+  TransferProgressDto sse_decode_transfer_progress_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_blocksDone = sse_decode_u_32(deserializer);
+    var var_totalBlocks = sse_decode_u_32(deserializer);
+    var var_bytesDone = sse_decode_u_64(deserializer);
+    var var_isComplete = sse_decode_bool(deserializer);
+    return TransferProgressDto(
+      blocksDone: var_blocksDone,
+      totalBlocks: var_totalBlocks,
+      bytesDone: var_bytesDone,
+      isComplete: var_isComplete,
+    );
+  }
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint32();
   }
 
   @protected
@@ -1487,6 +2580,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_contact_dto(
+    ContactDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_contact_dto(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
     SseSerializer serializer,
@@ -1505,12 +2607,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_ingested_chunk_dto(
+    IngestedChunkDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_ingested_chunk_dto(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_session_status_dto(
     SessionStatusDto self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_session_status_dto(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_transfer_progress_dto(
+    TransferProgressDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_transfer_progress_dto(self, serializer);
   }
 
   @protected
@@ -1533,9 +2653,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_discovery_beacons_dto(
+    DiscoveryBeaconsDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.advertiseBeacon, serializer);
+    sse_encode_list_list_prim_u_8_strict(self.scanBeacons, serializer);
+  }
+
+  @protected
   void sse_encode_ffi_error(FfiError self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_file_offer_dto(FileOfferDto self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_u_64(self.fileSize, serializer);
   }
 
   @protected
@@ -1563,6 +2701,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_ingested_chunk_dto(
+    IngestedChunkDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+    sse_encode_transfer_progress_dto(self.progress, serializer);
+  }
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
@@ -1580,6 +2728,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_contact_dto(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_file_offer_dto(
+    List<FileOfferDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_file_offer_dto(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_list_prim_u_8_strict(
+    List<Uint8List> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_list_prim_u_8_strict(item, serializer);
     }
   }
 
@@ -1643,9 +2815,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self.id, serializer);
     sse_encode_message_direction_dto(self.direction, serializer);
+    sse_encode_message_kind_dto(self.kind, serializer);
     sse_encode_String(self.body, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.audioFileId, serializer);
     sse_encode_delivery_state_dto(self.deliveryState, serializer);
     sse_encode_i_64(self.createdAtUnixSecs, serializer);
+  }
+
+  @protected
+  void sse_encode_message_kind_dto(
+    MessageKindDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -1655,6 +2838,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_contact_dto(
+    ContactDto? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_contact_dto(self, serializer);
     }
   }
 
@@ -1685,6 +2881,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_ingested_chunk_dto(
+    IngestedChunkDto? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_ingested_chunk_dto(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_session_status_dto(
     SessionStatusDto? self,
     SseSerializer serializer,
@@ -1694,6 +2903,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_session_status_dto(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_transfer_progress_dto(
+    TransferProgressDto? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_transfer_progress_dto(self, serializer);
     }
   }
 
@@ -1708,6 +2930,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_list_prim_u_8_strict(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
+    (Uint8List?, Uint8List) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_list_prim_u_8_strict(self.$1, serializer);
+    sse_encode_list_prim_u_8_strict(self.$2, serializer);
   }
 
   @protected
@@ -1728,6 +2960,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self.messageId, serializer);
     sse_encode_opt_list_prim_u_8_strict(self.bytes, serializer);
+  }
+
+  @protected
+  void sse_encode_send_audio_started_dto(
+    SendAudioStartedDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+    sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
+    sse_encode_i_64(self.messageId, serializer);
+  }
+
+  @protected
+  void sse_encode_send_file_started_dto(
+    SendFileStartedDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+    sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
   }
 
   @protected
@@ -1758,6 +3011,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.publishTopic, serializer);
     sse_encode_list_String(self.subscribeTopics, serializer);
+  }
+
+  @protected
+  void sse_encode_transfer_progress_dto(
+    TransferProgressDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.blocksDone, serializer);
+    sse_encode_u_32(self.totalBlocks, serializer);
+    sse_encode_u_64(self.bytesDone, serializer);
+    sse_encode_bool(self.isComplete, serializer);
+  }
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint32(self);
   }
 
   @protected
@@ -1803,14 +3074,49 @@ class CoreImpl extends RustOpaque implements Core {
         RustLib.instance.api.rust_arc_decrement_strong_count_CorePtr,
   );
 
+  /// Cancela uma transferência (de qualquer lado): remove o handle em
+  /// memória e o registro em `store`. Do lado receptor, também apaga o
+  /// `.staging` — mesma garantia de "abortar destrói a chave" de
+  /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
+  /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
+  /// foi fechado a cada bloco completado). Ver §7.5/D15.
+  Future<void> cancelTransfer({required List<int> fileId}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreCancelTransfer(that: this, fileId: fileId);
+
+  /// Decodifica o formato interno devolvido por
+  /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
+  /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
+  /// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
+  /// nenhum, com ou sem suporte a Opus (D18).
+  Future<Uint8List> decodeAudioToWav({required List<int> internalBytes}) =>
+      RustLib.instance.api.crateFfiCoreCoreDecodeAudioToWav(
+        that: this,
+        internalBytes: internalBytes,
+      );
+
   /// Decifra um envelope recebido no `DataChannel`.
   ///
   /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
   /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
   /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-  /// DTO efêmero, sem `message_id`. Outros tipos de pacote (arquivo,
-  /// controle) estão fora do escopo desta fase e são descartados como se a
-  /// decifragem tivesse falhado.
+  /// DTO efêmero, sem `message_id`.
+  ///
+  /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
+  /// processados aqui como efeito colateral — inicia/atualiza/encerra o
+  /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
+  /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
+  /// deste método para acomodar isso quebraria `chat_controller.dart`
+  /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
+  /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+  /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
+  /// política de silêncio de qualquer corpo malformado nesta fronteira, e
+  /// nunca deveria acontecer vindo de um par honesto.
+  ///
+  /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
+  /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
+  /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,
@@ -1818,6 +3124,16 @@ class CoreImpl extends RustOpaque implements Core {
     that: this,
     peerDeviceId: peerDeviceId,
     envelope: envelope,
+  );
+
+  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
+  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  Future<DiscoveryBeaconsDto> discoveryBeacons({
+    required List<int> peerDeviceId,
+  }) => RustLib.instance.api.crateFfiCoreCoreDiscoveryBeacons(
+    that: this,
+    peerDeviceId: peerDeviceId,
   );
 
   /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
@@ -1854,6 +3170,37 @@ class CoreImpl extends RustOpaque implements Core {
     bytes: bytes,
   );
 
+  /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
+  /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
+  /// chama remonta o contêiner para reprodução (ver
+  /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
+  Future<Uint8List> finishReceiveAudio({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) => RustLib.instance.api.crateFfiCoreCoreFinishReceiveAudio(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    fileId: fileId,
+    destinationPath: destinationPath,
+  );
+
+  /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
+  /// decifra para `destination_path`, remove o `.staging` e o registro em
+  /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
+  /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
+  /// emissor pelo canal `control`.
+  Future<Uint8List> finishReceiveFile({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) => RustLib.instance.api.crateFfiCoreCoreFinishReceiveFile(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    fileId: fileId,
+    destinationPath: destinationPath,
+  );
+
   /// Cifra todas as mensagens `pending` de um contato — chamar quando o
   /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
   /// estabelecer. Para na primeira falha de cifragem (ex.:
@@ -1865,6 +3212,21 @@ class CoreImpl extends RustOpaque implements Core {
   }) => RustLib.instance.api.crateFfiCoreCoreFlushPending(
     that: this,
     peerDeviceId: peerDeviceId,
+  );
+
+  /// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
+  /// sozinho a qual transferência ele pertence (D17: `file_id` vai em
+  /// claro na frente, ver `peek_wire_file_id`) e roteia para a
+  /// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
+  /// pode ser um pacote de uma transferência já concluída/cancelada, ou
+  /// que chegou antes do `FILE_METADATA` correspondente terminar de
+  /// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
+  /// de quem chama. Serve arquivo e áudio por igual.
+  Future<IngestedChunkDto?> ingestIncomingWireBytes({
+    required List<int> wireBytes,
+  }) => RustLib.instance.api.crateFfiCoreCoreIngestIncomingWireBytes(
+    that: this,
+    wireBytes: wireBytes,
   );
 
   /// Todos os contatos já pareados.
@@ -1887,9 +3249,40 @@ class CoreImpl extends RustOpaque implements Core {
       .api
       .crateFfiCoreCoreMarkMessageSent(that: this, messageId: messageId);
 
+  /// Identifica a qual contato pareado um `BeaconID` recebido do rádio
+  /// pertence — varre todos os contatos e compara a janela de três épocas
+  /// de cada um. Fica em Rust porque só aqui há a identidade privada
+  /// necessária para recalcular `K_sig` de qualquer contato arbitrário; o
+  /// Dart nunca vê `K_sig`, só o resultado do casamento.
+  Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon}) =>
+      RustLib.instance.api.crateFfiCoreCoreMatchDiscoveredBeacon(
+        that: this,
+        beacon: beacon,
+      );
+
+  /// `device_id` desta identidade local — dado já público (trocado no QR,
+  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
+  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// dele até a descoberta local.
+  Future<Uint8List> myDeviceId() =>
+      RustLib.instance.api.crateFfiCoreCoreMyDeviceId(that: this);
+
   /// Os 145 bytes do QR Code desta identidade.
   Future<Uint8List> myQrPayload() =>
       RustLib.instance.api.crateFfiCoreCoreMyQrPayload(that: this);
+
+  /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
+  /// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
+  /// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
+  /// `file_id` não é uma transferência de envio conhecida (já terminou,
+  /// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
+  /// para o estado atual. Serve arquivo e áudio por igual — nada aqui
+  /// depende de `kind`.
+  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) =>
+      RustLib.instance.api.crateFfiCoreCoreNextOutgoingWireChunk(
+        that: this,
+        fileId: fileId,
+      );
 
   /// Decifra um payload de sinalização recebido do broker.
   ///
@@ -1912,12 +3305,46 @@ class CoreImpl extends RustOpaque implements Core {
       .api
       .crateFfiCoreCorePairFromQr(that: this, payload: payload);
 
+  /// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
+  Future<List<FileOfferDto>> pendingAudioOffers({
+    required List<int> peerDeviceId,
+  }) => RustLib.instance.api.crateFfiCoreCorePendingAudioOffers(
+    that: this,
+    peerDeviceId: peerDeviceId,
+  );
+
+  /// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
+  /// para a UI listar e (por ora, automaticamente — ver doc do módulo)
+  /// já em recebimento. Só `kind = File`; ver
+  /// [`Core::pending_audio_offers`] para notas de voz.
+  Future<List<FileOfferDto>> pendingFileOffers({
+    required List<int> peerDeviceId,
+  }) => RustLib.instance.api.crateFfiCoreCorePendingFileOffers(
+    that: this,
+    peerDeviceId: peerDeviceId,
+  );
+
   /// Safety number entre esta identidade e um contato já pareado.
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) =>
       RustLib.instance.api.crateFfiCoreCoreSafetyNumber(
         that: this,
         contactDeviceId: contactDeviceId,
       );
+
+  /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
+  /// metadados) e grava, em `destination_path`, só o formato interno de
+  /// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
+  /// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
+  /// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
+  /// silêncio — mesma política do resto do crate para bytes externos.
+  Future<void> sanitizeAndStageAudio({
+    required String sourcePath,
+    required String destinationPath,
+  }) => RustLib.instance.api.crateFfiCoreCoreSanitizeAndStageAudio(
+    that: this,
+    sourcePath: sourcePath,
+    destinationPath: destinationPath,
+  );
 
   /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
   /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
@@ -1963,4 +3390,52 @@ class CoreImpl extends RustOpaque implements Core {
     that: this,
     peerDeviceId: peerDeviceId,
   );
+
+  /// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
+  /// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
+  /// `audio_path` deve apontar para um arquivo já no formato interno de
+  /// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
+  /// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
+  /// produziu, que ainda carregaria `OpusTags` com metadados de
+  /// aparelho. Também insere a linha `Pending` na timeline única
+  /// (`store::messages`) — `message_id` no DTO devolvido é para quem
+  /// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
+  /// de `seal_outgoing_text`.
+  Future<SendAudioStartedDto> startSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) => RustLib.instance.api.crateFfiCoreCoreStartSendAudio(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    audioPath: audioPath,
+    useLan: useLan,
+  );
+
+  /// Inicia o envio de um arquivo para um contato pareado com sessão já
+  /// estabelecida. Lê o arquivo inteiro uma vez para calcular a raiz de
+  /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
+  /// precisa da raiz completa antes do primeiro símbolo sair.
+  ///
+  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+  /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
+  /// `block_symbols` é sempre o teto de D6 (1024).
+  Future<SendFileStartedDto> startSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) => RustLib.instance.api.crateFfiCoreCoreStartSendFile(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    filePath: filePath,
+    useLan: useLan,
+  );
+
+  /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
+  /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
+  Future<TransferProgressDto?> transferProgress({required List<int> fileId}) =>
+      RustLib.instance.api.crateFfiCoreCoreTransferProgress(
+        that: this,
+        fileId: fileId,
+      );
 }

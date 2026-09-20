@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D15). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D18). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -264,3 +264,86 @@ retomar uma transferência não depende de reconstruir um estado de ratchet espe
 **Custo de reverter:** perder a capacidade de retomar uma transferência grande após queda de conexão
 sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
 desenhada dentro do ratchet — projeto à parte.
+
+---
+
+## D16 — Notas de voz reusam o pipeline de arquivo com discriminador de `kind`
+**Spec:** §6.2 lista `AUDIO_CHUNK` (0x30) como tipo de pacote próprio, ao lado de
+`FILE_METADATA`/`FILE_SYMBOL`/`FILE_FEEDBACK`/`FILE_COMPLETE` — o que sugere, à primeira leitura, que
+uma nota de voz precisaria de um controle de transferência inteiramente separado.
+**Aqui:** `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (0x20/0x22/0x23) continuam sendo os únicos
+tipos de pacote de controle, para arquivo **e** para áudio. Um byte `kind` (`0x00 = File`,
+`0x01 = Audio`) na frente do corpo de `FILE_METADATA` (ver `docs/protocol.md` §7.1) é o que diz ao
+receptor, antes do primeiro `AUDIO_CHUNK` chegar, para derivar `K_audio_chunk` em vez de `K_symbol`
+(`crypto::kdf::context::AUDIO_CHUNK`, contexto de KDF próprio — nunca a mesma chave que `K_symbol`,
+mesmo para o mesmo par `(transfer_secret, file_id)`).
+
+A spec não define `AUDIO_METADATA`/`AUDIO_FEEDBACK`/`AUDIO_COMPLETE`, e criá-los do zero duplicaria
+manifesto, feedback esparso (§7.4) e confirmação de commit atômico (§7.5) sem nenhum ganho: o
+`Manifest` já é agnóstico de conteúdo por desenho (não carrega, e não deveria carregar, um campo de
+tipo — o MIME real do arquivo já nunca vai ao fio, §7.1). `AUDIO_CHUNK`, como `FILE_SYMBOL`, nunca
+aparece de fato como byte de `packet_type` dentro de um envelope: os dois contornam
+`session::Session` inteiramente e vão diretos no canal de dados, selados com uma chave própria fora
+do ratchet (D11/D15) — o "tipo de pacote" de cada um se materializa só como escolha de contexto de
+KDF e como nome de método na fronteira FFI (`start_send_file` vs. `start_send_audio`, e assim por
+diante em `rust/src/ffi/transfer.rs`).
+
+A sanitização em si (remover `ENCODER`/`creation_time`/identificador de aparelho que
+`MediaRecorder`/`AVAudioRecorder` gravam no `OpusTags` de um Ogg-Opus) é subtração, não filtro: o
+Ogg é desmontado (`file::opus_container::strip_container`) até um formato interno que só tem campos
+para canais, taxa de amostragem, pre-skip e os pacotes Opus crus — não existe campo para onde um
+metadado de aparelho pudesse ir parar. É esse formato interno, não o Ogg original, que atravessa o
+pipeline de arquivo (Merkle, RaptorQ, staging) sem nenhuma mudança.
+
+**Custo de reverter:** recriar os três tipos de controle dedicados a áudio e duplicar os handlers de
+`Core::decrypt_incoming`/`file::transfer`, caso a spec um dia exija metadados de transferência de
+áudio que divirjam dos de arquivo comum (ex.: duração declarada, taxa de amostragem no próprio
+manifesto em vez de dentro do payload sanitizado).
+
+---
+
+## D17 — `file_id` em claro na frente de cada pacote do canal `file`
+**Spec:** não trata explicitamente de transferências concorrentes; o desenho original de
+`FILE_SYMBOL` (Fase 4) não tinha nenhum campo de identificação porque bastava uma transferência
+ativa por contato.
+**Aqui:** todo pacote do canal `file` — `FILE_SYMBOL` ou `AUDIO_CHUNK` — é
+`file_id (16 B, em claro) ‖ selado(nonce ‖ ciphertext ‖ tag)`. `peek_wire_file_id`
+(`file::transfer`) lê o prefixo sem decifrar nada; é isso que permite ao receptor escolher a
+`ReceiveTransfer` certa antes de tentar abrir o AEAD.
+
+Descoberto ao dar suporte a nota de voz na mesma timeline de mensagens de texto (Fase 5): um
+usuário grava e manda uma nota de voz enquanto uma transferência de arquivo genérico (ou outra nota)
+ainda está em andamento com o mesmo contato — sem um identificador em claro, o receptor não tem
+como saber, ao pegar um pacote cru do canal `file`, qual `K_symbol`/`K_audio_chunk` tentar, porque a
+única forma de descobrir a transferência era decifrar, e decifrar exige já saber a chave. É uma
+referência circular que só um identificador fora do envelope cifrado resolve.
+
+O vazamento aceito é o próprio `file_id`: um identificador aleatório de 16 bytes, sem relação com
+conteúdo, nome ou tamanho do arquivo. Mesma categoria de metadado necessário já aceita para
+`Counter`/`dh_pub` no envelope do canal `control` (D4/D14) — um observador aprende que dois pacotes
+pertencem à mesma transferência, não o que ela contém.
+
+**Custo de reverter:** voltar ao limite de uma transferência (arquivo ou áudio) ativa por vez por
+contato — o gargalo que motivou D17 em primeiro lugar.
+
+---
+
+## D18 — Reprodução de nota de voz em WAV (PCM), não Ogg-Opus remontado
+**Spec:** não define formato de reprodução — é inteiramente uma decisão de implementação do lado
+Flutter/Rust, sem texto normativo correspondente.
+**Aqui:** `file::opus_container::decode_to_wav` decodifica os pacotes Opus para PCM 16 bits (via
+`libopus`, crate `audiopus`) e embrulha num WAV de 44 bytes de cabeçalho — exposto como
+`Core::decode_audio_to_wav`. O plano original desta fase remontava um Ogg-Opus mínimo em memória
+para entregar ao `just_audio`.
+
+Descoberto ao integrar com `just_audio`: `AVPlayer`, o player nativo por trás do `just_audio` no
+iOS, não sabe demuxar contêiner Ogg de jeito nenhum — não é uma questão de suporte a Opus, é o
+próprio contêiner que o iOS não abre. Suporte a Opus dentro de MP4 existe só a partir do iOS 17, de
+forma inconsistente. Decodificar para PCM/WAV elimina a ambiguidade de contêiner e codec nas duas
+plataformas ao custo de uma dependência nativa nova (`audiopus`/`libopus`, licença BSD,
+compatível com AGPL) e de código de decodificação que não seria necessário se o player de destino
+suportasse Ogg-Opus nativamente.
+
+**Custo de reverter:** reintroduzir a ambiguidade de reprodução no iOS — provavelmente notas de voz
+mudas nesse aparelho, dependendo da versão. `rebuild_container`/`strip_container` continuam
+existindo (usados pelos testes do próprio demuxer), só não são mais o caminho de reprodução.

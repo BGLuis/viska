@@ -15,6 +15,7 @@
 
 use rusqlite::OptionalExtension;
 
+use crate::file::transfer::TransferKind;
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,8 +43,13 @@ pub struct StoredTransfer {
     pub manifest_cbor: Vec<u8>,
     pub transfer_secret: Vec<u8>,
     pub created_at_unix_secs: i64,
+    /// Arquivo comum ou nota de voz (Fase 5, D16) — persistido para uma
+    /// transferência retomada saber qual chave rederivar (`K_symbol` vs.
+    /// `K_audio_chunk`) sem precisar do `FILE_METADATA` de novo.
+    pub kind: TransferKind,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert(
     conn: &rusqlite::Connection,
     file_id: &[u8; 16],
@@ -52,11 +58,12 @@ pub fn insert(
     manifest_cbor: &[u8],
     transfer_secret: &[u8],
     created_at_unix_secs: i64,
+    kind: TransferKind,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO file_transfers
-            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             file_id.as_slice(),
             direction as i64,
@@ -64,6 +71,7 @@ pub fn insert(
             manifest_cbor,
             transfer_secret,
             created_at_unix_secs,
+            kind as i64,
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -72,7 +80,7 @@ pub fn insert(
 
 pub fn find(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<Option<StoredTransfer>> {
     conn.query_row(
-        "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs
+        "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind
          FROM file_transfers WHERE file_id = ?1",
         [file_id.as_slice()],
         row_to_transfer,
@@ -91,7 +99,7 @@ pub fn list_for_contact(
 ) -> Result<Vec<StoredTransfer>> {
     let mut statement = conn
         .prepare(
-            "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs
+            "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind
              FROM file_transfers
              WHERE contact_device_id = ?1 AND direction = ?2
              ORDER BY created_at_unix_secs ASC",
@@ -151,6 +159,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
     let manifest_cbor: Vec<u8> = row.get(3)?;
     let transfer_secret: Vec<u8> = row.get(4)?;
     let created_at_unix_secs: i64 = row.get(5)?;
+    let kind: i64 = row.get(6)?;
 
     Ok(StoredTransfer {
         file_id: file_id.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -161,6 +170,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
         manifest_cbor,
         transfer_secret,
         created_at_unix_secs,
+        kind: TransferKind::from_u8(kind as u8).map_err(|_| rusqlite::Error::InvalidQuery)?,
     })
 }
 
@@ -195,6 +205,7 @@ mod tests {
             b"manifesto-cbor",
             b"segredo-de-32-bytes-ou-nao",
             1000,
+            TransferKind::Audio,
         )
         .unwrap();
 
@@ -205,6 +216,7 @@ mod tests {
         assert_eq!(found.manifest_cbor, b"manifesto-cbor");
         assert_eq!(found.transfer_secret, b"segredo-de-32-bytes-ou-nao");
         assert_eq!(found.created_at_unix_secs, 1000);
+        assert_eq!(found.kind, TransferKind::Audio);
     }
 
     #[test]
@@ -226,6 +238,7 @@ mod tests {
             b"m",
             b"s",
             0,
+            TransferKind::File,
         )
         .unwrap();
 
@@ -249,9 +262,9 @@ mod tests {
         let recebendo_de_a = [1u8; 16];
         let enviando_para_a = [2u8; 16];
         let recebendo_de_b = [3u8; 16];
-        insert(&conn, &recebendo_de_a, Direction::Receiving, &contact_a, b"m", b"s", 0).unwrap();
-        insert(&conn, &enviando_para_a, Direction::Sending, &contact_a, b"m", b"s", 1).unwrap();
-        insert(&conn, &recebendo_de_b, Direction::Receiving, &contact_b, b"m", b"s", 2).unwrap();
+        insert(&conn, &recebendo_de_a, Direction::Receiving, &contact_a, b"m", b"s", 0, TransferKind::File).unwrap();
+        insert(&conn, &enviando_para_a, Direction::Sending, &contact_a, b"m", b"s", 1, TransferKind::File).unwrap();
+        insert(&conn, &recebendo_de_b, Direction::Receiving, &contact_b, b"m", b"s", 2, TransferKind::File).unwrap();
 
         let ofertas_de_a = list_for_contact(&conn, &contact_a, Direction::Receiving).unwrap();
         assert_eq!(ofertas_de_a.len(), 1);
@@ -264,8 +277,8 @@ mod tests {
         let conn = conn_with_contact(contact);
         let a = [1u8; 16];
         let b = [2u8; 16];
-        insert(&conn, &a, Direction::Sending, &contact, b"m", b"s", 0).unwrap();
-        insert(&conn, &b, Direction::Receiving, &contact, b"m", b"s", 0).unwrap();
+        insert(&conn, &a, Direction::Sending, &contact, b"m", b"s", 0, TransferKind::File).unwrap();
+        insert(&conn, &b, Direction::Receiving, &contact, b"m", b"s", 0, TransferKind::Audio).unwrap();
 
         let mut ids = list_active_file_ids(&conn).unwrap();
         ids.sort();

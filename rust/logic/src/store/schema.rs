@@ -43,6 +43,8 @@ const MIGRATIONS: &[&str] = &[
         transfer_secret       BLOB NOT NULL,
         created_at_unix_secs  INTEGER NOT NULL
     );",
+    "\
+    ALTER TABLE file_transfers ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -126,5 +128,46 @@ mod tests {
             )
             .unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn banco_so_ate_file_transfers_ganha_coluna_kind_com_default_sem_perder_dado_existente() {
+        // Simula um banco criado antes da Fase 5: as três primeiras
+        // migrações, sem a coluna `kind` — uma transferência de arquivo já
+        // persistida (Fase 4) precisa sobreviver com `kind = 0` (File).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..3] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3i64).unwrap();
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, NULL)",
+            rusqlite::params![[9u8; 16], [1u8; 32], [2u8; 32]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_transfers
+                (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs)
+             VALUES (?1, 0, ?2, ?3, ?4, 1000)",
+            rusqlite::params![[7u8; 16], [9u8; 16], b"manifesto".as_slice(), b"segredo".as_slice()],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+
+        let kind: i64 = conn
+            .query_row(
+                "SELECT kind FROM file_transfers WHERE file_id = ?1",
+                [[7u8; 16].as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, 0, "transferência pré-Fase-5 deveria ganhar kind=File por default");
     }
 }

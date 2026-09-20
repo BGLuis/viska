@@ -40,6 +40,12 @@ enum FfiError {
   /// primeiro.
   noActiveSession,
 
+  /// Raiz de Merkle recomputada não bate com a do manifesto — arquivo
+  /// corrompido ou adulterado em trânsito (§7.2/§7.5). Distinto de
+  /// `Internal` porque a UI precisa oferecer "tentar de novo", não só
+  /// relatar uma falha genérica.
+  fileCorrupted,
+
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,
 }

@@ -15,8 +15,8 @@ use std::sync::MutexGuard;
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
-    DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto, SealedMessageDto,
-    SessionStateKind, SessionStatusDto,
+    DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto, MessageKindDto,
+    SealedMessageDto, SessionStateKind, SessionStatusDto,
 };
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
@@ -264,6 +264,12 @@ impl Core {
     }
 }
 
+/// `message.packet_type` só é `MsgText` ou `AudioChunk` (Fase 5) — os
+/// únicos dois que `store::messages::reject_typing` deixa passar. Para
+/// `AudioChunk`, `body` é `hex(file_id)` (convenção de `ffi/transfer.rs`,
+/// que é quem escreve essas linhas) — um valor que não decodifica como hex
+/// vira `audio_file_id: None` em vez de erro, mesma política de "nunca
+/// panica com dado próprio corrompido" do resto da fronteira FFI.
 fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageDto {
     let direction = match message.direction {
         viska_proto::store::messages::Direction::Outgoing => MessageDirectionDto::Outgoing,
@@ -276,10 +282,19 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         viska_proto::store::messages::DeliveryState::Failed => DeliveryStateDto::Failed,
     };
 
+    let (kind, body, audio_file_id) =
+        if message.packet_type == viska_proto::wire::packet_type::PacketType::AudioChunk {
+            (MessageKindDto::VoiceNote, String::new(), hex::decode(&message.body).ok())
+        } else {
+            (MessageKindDto::Text, message.body, None)
+        };
+
     MessageDto {
         id: message.id,
         direction,
-        body: message.body,
+        kind,
+        body,
+        audio_file_id,
         delivery_state,
         created_at_unix_secs: message.created_at_unix_secs,
     }

@@ -16,9 +16,15 @@ crate-type = ["cdylib", "staticlib", "lib"]
 [dependencies]
 viska_proto = { path = "logic" }
 flutter_rust_bridge = "=2.13.0"
+# Codifica/decodifica `file_id` como hex no corpo de mensagens de nota de voz
+# (Fase 5) — já é dependência de `viska_proto`, só exposta aqui também.
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Só para gerar quadros Opus de verdade nos testes ponta-a-ponta de nota de
+# voz (D18) — produção nunca codifica, só decodifica (ver viska_proto).
+audiopus = { version = "0.2", default-features = false, features = ["decoder", "encoder"] }
 
 [features]
 default = []

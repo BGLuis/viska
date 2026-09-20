@@ -95,6 +95,16 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
 - **Volume e frequência de mensagens/arquivos.** O feedback de transferência de arquivo (`FILE_FEEDBACK`,
   §7.4) e o próprio ato de trocar mensagens revelam volume aproximado a quem observa o tráfego cifrado;
   o protocolo não tenta esconder isso (é tratado como já observável de qualquer forma).
+- **Duração aproximada de uma nota de voz, pela contagem de pacotes.** Os buckets de padding (§6.3, D5)
+  limitam a granularidade do *tamanho* de cada `AUDIO_CHUNK`, mas não escondem *quantos* pacotes uma
+  nota de voz gera — um observador do tráfego cifrado pode estimar a duração contando pacotes na
+  janela de tempo da transferência. Mesma categoria de vazamento que volume/frequência acima (D12);
+  aceito e declarado, não mitigado nesta fase.
+- **`file_id` em claro no canal `file` (D17).** Um observador do tráfego cifrado vê que vários
+  pacotes do canal `file` pertencem à mesma transferência (arquivo ou nota de voz) — necessário para
+  suportar transferências concorrentes com o mesmo contato. `file_id` é aleatório, sem relação com
+  conteúdo, nome ou tamanho; mesma categoria de vazamento necessário que `Counter`/`dh_pub` no canal
+  `control` (D4/D14).
 - **Comprometimento do aparelho antes do primeiro uso.** Se o aparelho já estiver comprometido (malware,
   keylogger, câmera do QR interceptada) antes do pareamento, nenhuma primitiva aqui ajuda — a raiz de
   confiança é o pareamento presencial em si.

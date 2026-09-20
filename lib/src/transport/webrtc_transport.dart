@@ -43,11 +43,14 @@ class TransportConnectionEvent {
       'TransportConnectionEvent($state${reason == null ? '' : ', $reason'})';
 }
 
-/// Transporte WebRTC concreto — Fase 3, F3.
+/// Transporte WebRTC concreto — Fase 3, F3; canal `file` ligado na Fase 5.
 ///
-/// Só o canal `control` carrega tráfego real nesta fase (`MSG_TEXT` e
-/// afins); o canal `file` é criado e negociado junto (§11.4/D6) mas fica sem
-/// uso até o pipeline de arquivos existir.
+/// O canal `control` carrega `MSG_TEXT`/`FILE_METADATA`/`FILE_FEEDBACK`/
+/// `FILE_COMPLETE` e afins; o canal `file`, criado e negociado junto desde a
+/// Fase 3 (§11.4/D6), carrega `FILE_SYMBOL`/`AUDIO_CHUNK` — volume alto,
+/// não ordenado, sem retransmissão (`ordered:false, maxRetransmits:0`),
+/// nunca passa por `Session` (ver `viska_proto::file::transfer`, doc do
+/// módulo).
 ///
 /// Callbacks de rede (`onMessage`, `onDataChannel`) nunca chamam a FFI
 /// diretamente — só empilham em [incoming] ou [localIceCandidates]; quem
@@ -68,6 +71,7 @@ class WebrtcTransport implements RawP2PChannel {
     // `await _controlChannelOpen.future` dentro de `rawSend` continua
     // recebendo o erro normalmente; isto só evita o aviso de zona.
     _controlChannelOpen.future.ignore();
+    _fileChannelOpen.future.ignore();
   }
 
   final Duration _iceTimeout;
@@ -90,9 +94,16 @@ class WebrtcTransport implements RawP2PChannel {
   /// demais.
   final _controlChannelOpen = Completer<void>();
 
+  /// Como [_controlChannelOpen], para o canal `file` — os dois abrem de
+  /// forma independente (nada garante ordem entre eles no SCTP).
+  final _fileChannelOpen = Completer<void>();
+
+  JitteredOutbox? _fileOutbox;
+
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
   final _localIceCandidates = StreamController<RTCIceCandidate>.broadcast();
   final _incoming = StreamController<Uint8List>.broadcast();
+  final _incomingFile = StreamController<Uint8List>.broadcast();
 
   @override
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
@@ -104,6 +115,11 @@ class WebrtcTransport implements RawP2PChannel {
   /// stream só empilha, nunca decifra.
   @override
   Stream<Uint8List> get incoming => _incoming.stream;
+
+  /// Como [incoming], para o canal `file` — símbolo/pedaço de áudio selado,
+  /// pronto para `Core.ingestIncomingFileSymbol`/`ingestIncomingAudioChunk`.
+  @override
+  Stream<Uint8List> get incomingFile => _incomingFile.stream;
 
   /// Cria a oferta como iniciador: monta o `RTCPeerConnection`, cria os dois
   /// `RTCDataChannel` (para os dois saírem no mesmo SDP), e devolve o texto
@@ -195,6 +211,21 @@ class WebrtcTransport implements RawP2PChannel {
     return outbox.enqueue(envelope);
   }
 
+  /// Enfileira `bytes` (símbolo/pedaço de áudio já selado) para envio no
+  /// canal `file`, com o mesmo jitter de `docs/protocol.md` §6.5 — a
+  /// propriedade de indistinguibilidade de tráfego não faz exceção para
+  /// volume alto.
+  @override
+  Future<void> sendFile(Uint8List bytes) {
+    final outbox = _fileOutbox;
+    if (outbox == null) {
+      return Future.error(
+        StateError('sendFile chamado antes do canal file existir'),
+      );
+    }
+    return outbox.enqueue(bytes);
+  }
+
   @override
   Future<void> close() async {
     if (_closed) return;
@@ -202,11 +233,17 @@ class WebrtcTransport implements RawP2PChannel {
 
     _iceTimeoutTimer?.cancel();
     _outbox?.close();
+    _fileOutbox?.close();
     if (!_controlChannelOpen.isCompleted) {
       // Nenhum `send` deveria ficar esperando um canal que nunca vai abrir —
       // rejeita em vez de travar para sempre.
       _controlChannelOpen.completeError(
         StateError('WebrtcTransport fechado antes do canal control abrir'),
+      );
+    }
+    if (!_fileChannelOpen.isCompleted) {
+      _fileChannelOpen.completeError(
+        StateError('WebrtcTransport fechado antes do canal file abrir'),
       );
     }
 
@@ -219,6 +256,7 @@ class WebrtcTransport implements RawP2PChannel {
     await _connectionEvents.close();
     await _localIceCandidates.close();
     await _incoming.close();
+    await _incomingFile.close();
   }
 
   Future<RTCPeerConnection> _ensurePeerConnection() async {
@@ -266,7 +304,24 @@ class WebrtcTransport implements RawP2PChannel {
         };
       case DataChannelKind.file:
         _fileChannel = channel;
-      // Sem tráfego real nesta fase (D6) — só precisa existir no SDP.
+        _fileOutbox = JitteredOutbox(
+          rawSend: (bytes) async {
+            await _fileChannelOpen.future;
+            await channel.send(RTCDataChannelMessage.fromBinary(bytes));
+          },
+          sampleJitter: _jitterProvider,
+        );
+        channel.onMessage = (message) {
+          if (message.isBinary) {
+            _incomingFile.add(message.binary);
+          }
+        };
+        channel.onDataChannelState = (state) {
+          if (state == RTCDataChannelState.RTCDataChannelOpen &&
+              !_fileChannelOpen.isCompleted) {
+            _fileChannelOpen.complete();
+          }
+        };
     }
   }
 

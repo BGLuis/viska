@@ -11,7 +11,9 @@ class _FakeP2PTransport implements P2PTransport {
   var connectCalls = 0;
   var closeCalls = 0;
   final sendCalls = <Uint8List>[];
+  final sendFileCalls = <Uint8List>[];
   final _incoming = StreamController<Uint8List>.broadcast();
+  final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
   @override
@@ -21,7 +23,13 @@ class _FakeP2PTransport implements P2PTransport {
   Future<void> send(Uint8List envelope) async => sendCalls.add(envelope);
 
   @override
+  Future<void> sendFile(Uint8List bytes) async => sendFileCalls.add(bytes);
+
+  @override
   Stream<Uint8List> get incoming => _incoming.stream;
+
+  @override
+  Stream<Uint8List> get incomingFile => _incomingFile.stream;
 
   @override
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
@@ -30,6 +38,7 @@ class _FakeP2PTransport implements P2PTransport {
   Future<void> close() async => closeCalls++;
 
   void emitIncoming(Uint8List bytes) => _incoming.add(bytes);
+  void emitIncomingFile(Uint8List bytes) => _incomingFile.add(bytes);
 }
 
 void main() {
@@ -57,6 +66,28 @@ void main() {
 
       expect(created[contact]!.connectCalls, 1);
       expect(created[contact]!.sendCalls, [Uint8List.fromList([9])]);
+    });
+
+    test('sendFileToContact usa o canal file, separado de sendToContact', () async {
+      final contact = ContactId([1, 2, 3]);
+      await router.sendFileToContact(contact, Uint8List.fromList([9]));
+
+      expect(created[contact]!.connectCalls, 1);
+      expect(created[contact]!.sendFileCalls, [Uint8List.fromList([9])]);
+      expect(created[contact]!.sendCalls, isEmpty);
+    });
+
+    test('incomingFileFor recebe só o que o canal file emite', () async {
+      final contact = ContactId([4, 5, 6]);
+      final received = <Uint8List>[];
+      router.incomingFileFor(contact).listen(received.add);
+      await Future<void>.delayed(Duration.zero);
+
+      created[contact]!.emitIncomingFile(Uint8List.fromList([1]));
+      created[contact]!.emitIncoming(Uint8List.fromList([2]));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(received, [Uint8List.fromList([1])]);
     });
 
     test('chamadas seguintes para o mesmo contato reusam o mesmo transporte', () async {

@@ -62,6 +62,11 @@ pub mod context {
     /// símbolos por transferência estressaria o teto de chaves puladas do
     /// ratchet (§5.5) se corresse pela cadeia normal.
     pub const FILE_SYMBOL: &str = "viska-file-symbol-v1";
+    /// Cifra cada `AUDIO_CHUNK` de uma nota de voz — mesmo raciocínio de
+    /// `FILE_SYMBOL` (fora do ratchet, D11), contexto próprio para nunca
+    /// reaproveitar a mesma chave entre os dois usos mesmo quando os dois
+    /// derivam do mesmo `K_file` (Fase 5, D16).
+    pub const AUDIO_CHUNK: &str = "viska-audio-chunk-v1";
     pub const DATABASE: &str = "viska-db-key-v1";
 }
 

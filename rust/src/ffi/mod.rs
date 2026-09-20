@@ -13,7 +13,9 @@
 // (`crate::ffi::error::FfiError`, `crate::ffi::types::ContactDto`), não só
 // pelo re-export abaixo.
 pub mod core;
+pub mod discovery;
 pub mod error;
+pub mod framing;
 pub mod jitter;
 pub mod session;
 pub mod signaling;
@@ -23,7 +25,7 @@ pub mod types;
 pub use self::core::Core;
 pub use error::FfiError;
 pub use types::{
-    ContactDto, DeliveryStateDto, FileOfferDto, IncomingMessageDto, MessageDirectionDto,
-    MessageDto, SafetyNumberDto, SealedMessageDto, SendFileStartedDto, SessionStateKind,
-    SessionStatusDto, SignalingTopicsDto, TransferProgressDto,
+    ContactDto, DeliveryStateDto, DiscoveryBeaconsDto, FileOfferDto, IncomingMessageDto,
+    MessageDirectionDto, MessageDto, SafetyNumberDto, SealedMessageDto, SendFileStartedDto,
+    SessionStateKind, SessionStatusDto, SignalingTopicsDto, TransferProgressDto,
 };

@@ -4,15 +4,18 @@ import 'dart:typed_data';
 import 'package:viska/src/rust/ffi/core.dart';
 
 import 'p2p_transport.dart';
-import 'webrtc_p2p_transport.dart';
+import 'selecting_p2p_transport.dart';
+import 'transport_candidates.dart';
 import 'webrtc_transport.dart';
 
 /// Roteia envio/recebimento por contato para o transporte certo — Fase 3, F5.
 ///
-/// Um único transporte registrado nesta fase ([WebrtcP2PTransport]); a Fase
-/// 6 (rádios locais) adiciona mais implementações de [P2PTransport] e
-/// escolhe por prioridade (ex.: LAN > BLE > WebRTC) sem precisar mudar este
-/// contrato nem quem o consome (a tela de chat, Fase 3 F6).
+/// A fábrica padrão devolve um [SelectingP2PTransport] (Fase 6, F3) que
+/// tenta, em ordem de prioridade, LAN > Wi-Fi Aware/MultipeerConnectivity
+/// (quando suportados) > WebRTC — o primeiro que conectar é o escolhido.
+/// BLE **não** entra nessa lista: não carrega dados nesta fase, só descoberta
+/// (`NearbyPresenceService`, Fase 6 F2) — mesmo raciocínio de `docs/protocol.md`
+/// §9.1.
 ///
 /// Cria um [P2PTransport] por contato, sob demanda, na primeira vez que
 /// qualquer um dos três métodos é chamado para aquele contato — e chama
@@ -38,6 +41,18 @@ class P2PTransportRouter {
 
   /// Envelopes recebidos de `contact`, ainda cifrados.
   Stream<Uint8List> incomingFor(ContactId contact) => _ensure(contact).transport.incoming;
+
+  /// Como [sendToContact], no canal `file` — símbolo RaptorQ ou pedaço de
+  /// nota de voz, já selado (Fase 4/5).
+  Future<void> sendFileToContact(ContactId contact, Uint8List bytes) async {
+    final routed = _ensure(contact);
+    await routed.connectFuture;
+    await routed.transport.sendFile(bytes);
+  }
+
+  /// Como [incomingFor], no canal `file`.
+  Stream<Uint8List> incomingFileFor(ContactId contact) =>
+      _ensure(contact).transport.incomingFile;
 
   Stream<TransportConnectionEvent> connectionEventsFor(ContactId contact) =>
       _ensure(contact).transport.connectionEvents;
@@ -65,7 +80,7 @@ class P2PTransportRouter {
   }
 
   static P2PTransport _defaultFactory(Core core, ContactId contactId) =>
-      WebrtcP2PTransport(core: core, contactId: contactId);
+      SelectingP2PTransport(candidates: buildDefaultCandidates(core, contactId));
 }
 
 class _RoutedTransport {

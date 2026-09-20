@@ -54,10 +54,16 @@ class WebrtcP2PTransport implements P2PTransport {
   Stream<Uint8List> get incoming => _webrtc.incoming;
 
   @override
+  Stream<Uint8List> get incomingFile => _webrtc.incomingFile;
+
+  @override
   Stream<TransportConnectionEvent> get connectionEvents => _webrtc.connectionEvents;
 
   @override
   Future<void> send(Uint8List envelope) => _webrtc.send(envelope);
+
+  @override
+  Future<void> sendFile(Uint8List bytes) => _webrtc.sendFile(bytes);
 
   @override
   Future<void> connect() async {

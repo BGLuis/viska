@@ -15,6 +15,7 @@
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 
 pub mod crypto;
+pub mod discovery;
 pub mod file;
 pub mod session;
 pub mod signaling;

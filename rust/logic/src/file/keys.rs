@@ -7,19 +7,23 @@
 //! independente mesmo com a mesma entrada:
 //!
 //! ```text
-//! K_file    = derive(FILE_KEY,    transfer_secret ‖ file_id)
-//! K_staging = derive(STAGING,     K_file)   — páginas do .staging (§7.5)
-//! K_name    = derive(FILE_NAME,   K_file)   — name_encrypted do manifesto (§7.1)
-//! K_symbol  = derive(FILE_SYMBOL, K_file)   — corpo de cada FILE_SYMBOL (§7.3, D11)
+//! K_file       = derive(FILE_KEY,    transfer_secret ‖ file_id)
+//! K_staging    = derive(STAGING,     K_file)   — páginas do .staging (§7.5)
+//! K_name       = derive(FILE_NAME,   K_file)   — name_encrypted do manifesto (§7.1)
+//! K_symbol     = derive(FILE_SYMBOL, K_file)   — corpo de cada FILE_SYMBOL (§7.3, D11)
+//! K_audio_chunk = derive(AUDIO_CHUNK, K_file)  — corpo de cada AUDIO_CHUNK (Fase 5, D16)
 //! ```
 //!
-//! `K_symbol` é a peça que faz `FILE_SYMBOL` não precisar de `session::Session`
-//! — mesmo padrão de `signaling::payload` (chave própria, fora do ratchet),
-//! confirmado por não haver contador confiável em símbolos de um canal não
-//! confiável, e por rodar milhares deles pela cadeia sequencial do ratchet
-//! (compartilhada com o chat) estressar o teto de chaves puladas (§5.5,
-//! 1000) para nada — um símbolo de arquivo nunca precisa da autenticação
+//! `K_symbol`/`K_audio_chunk` são a peça que faz `FILE_SYMBOL`/`AUDIO_CHUNK`
+//! não precisarem de `session::Session` — mesmo padrão de `signaling::payload`
+//! (chave própria, fora do ratchet), confirmado por não haver contador
+//! confiável em símbolos de um canal não confiável, e por rodar milhares
+//! deles pela cadeia sequencial do ratchet (compartilhada com o chat)
+//! estressar o teto de chaves puladas (§5.5, 1000) para nada — nem um
+//! símbolo de arquivo nem um pedaço de áudio precisam da autenticação
 //! deniável da sessão, só de confidencialidade e integridade próprias.
+//! `K_symbol` e `K_audio_chunk` nunca são a mesma chave, mesmo para o mesmo
+//! `(transfer_secret, file_id)`: contextos de KDF diferentes (D16).
 
 use crate::crypto::kdf::{self, Key};
 use crate::file::manifest::FILE_ID_LEN;
@@ -50,12 +54,21 @@ pub fn derive_symbol_key(transfer_secret: &[u8], file_id: &[u8; FILE_ID_LEN]) ->
     kdf::derive(kdf::context::FILE_SYMBOL, k_file.as_bytes())
 }
 
+/// `K_audio_chunk` — cifra cada `AUDIO_CHUNK` de uma nota de voz, fora do
+/// ratchet, no mesmo espírito de `K_symbol` (Fase 5, D16). Contexto de KDF
+/// próprio: nunca a mesma chave que `K_symbol`, mesmo para o mesmo
+/// `(transfer_secret, file_id)`.
+pub fn derive_audio_key(transfer_secret: &[u8], file_id: &[u8; FILE_ID_LEN]) -> Key {
+    let k_file = derive_file_key(transfer_secret, file_id);
+    kdf::derive(kdf::context::AUDIO_CHUNK, k_file.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn as_quatro_chaves_sao_todas_diferentes_entre_si() {
+    fn as_cinco_chaves_sao_todas_diferentes_entre_si() {
         let secret = b"segredo-de-transferencia";
         let file_id = [5u8; FILE_ID_LEN];
 
@@ -63,18 +76,30 @@ mod tests {
         let k_staging = derive_staging_key(secret, &file_id);
         let k_name = derive_name_key(secret, &file_id);
         let k_symbol = derive_symbol_key(secret, &file_id);
+        let k_audio = derive_audio_key(secret, &file_id);
 
         let all = [
             k_file.as_bytes(),
             k_staging.as_bytes(),
             k_name.as_bytes(),
             k_symbol.as_bytes(),
+            k_audio.as_bytes(),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 assert_ne!(all[i], all[j], "chaves {i} e {j} deveriam ser diferentes");
             }
         }
+    }
+
+    #[test]
+    fn k_audio_chunk_e_diferente_de_k_symbol_mesmo_par_secret_file_id() {
+        let secret = b"mesmo-segredo-para-os-dois-usos";
+        let file_id = [12u8; FILE_ID_LEN];
+        assert_ne!(
+            derive_symbol_key(secret, &file_id).as_bytes(),
+            derive_audio_key(secret, &file_id).as_bytes()
+        );
     }
 
     #[test]

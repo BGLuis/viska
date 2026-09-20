@@ -1,29 +1,65 @@
-//! Superfície FFI de transferência de arquivo — Fase 4.
+//! Superfície FFI de transferência de arquivo e nota de voz — Fase 4 e Fase
+//! 5 (D16, D17, D18).
 //!
-//! `FILE_SYMBOL` contorna `session::Session` inteiramente (ver o porquê em
-//! `viska_proto::file::transfer`, doc do módulo, confirmado com o usuário) —
-//! por isso `next_outgoing_file_symbol`/`ingest_incoming_file_symbol` abaixo
-//! nunca tocam `self.sessions`. `FILE_METADATA`/`FILE_FEEDBACK`/
-//! `FILE_COMPLETE` continuam pelo canal `control`, via `Session`, como
-//! `MSG_TEXT` — processados dentro de `Core::decrypt_incoming`
-//! (`ffi/session.rs`), não aqui: o dispatch por `packet_type` só pode
-//! acontecer depois que o AEAD do envelope já abriu, e `decrypt_incoming` é
-//! o único lugar que faz isso.
+//! `FILE_SYMBOL`/`AUDIO_CHUNK` contornam `session::Session` inteiramente
+//! (ver o porquê em `viska_proto::file::transfer`, doc do módulo, confirmado
+//! com o usuário) — por isso `next_outgoing_wire_chunk`/
+//! `ingest_incoming_wire_bytes` abaixo nunca tocam `self.sessions`.
+//! `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` continuam pelo canal
+//! `control`, via `Session`, como `MSG_TEXT` — processados dentro de
+//! `Core::decrypt_incoming` (`ffi/session.rs`), não aqui: o dispatch por
+//! `packet_type` só pode acontecer depois que o AEAD do envelope já abriu, e
+//! `decrypt_incoming` é o único lugar que faz isso. Nota de voz reusa
+//! exatamente esses três tipos de controle — a spec não define
+//! `AUDIO_METADATA`/`AUDIO_FEEDBACK`/`AUDIO_COMPLETE` (D16); só o `kind`
+//! dentro do corpo de `FILE_METADATA` diferencia as duas.
+//!
+//! ## Várias transferências concorrentes por contato — D17
+//!
+//! `ingest_incoming_wire_bytes` recebe o pacote do canal `file` **inteiro**
+//! (com o `file_id` em claro na frente, D17) e resolve sozinho para qual
+//! `ReceiveTransfer` ele vai — quem chama (o lado Dart) não precisa saber de
+//! antemão qual `file_id` está chegando. Isso é o que permite várias
+//! transferências (arquivo e/ou áudio) ativas ao mesmo tempo com o mesmo
+//! contato; antes de D17, só dava para ter uma por vez, porque nada no
+//! pacote selado se auto-identificava.
+//!
+//! Os métodos `..._file`/`..._audio` de início/oferta continuam pares finos
+//! em cima de helpers privados parametrizados por `TransferKind` — o estado
+//! (`SendTransfer`/`ReceiveTransfer`, RaptorQ, staging, Merkle) é idêntico
+//! para os dois; só a chave de símbolo (`K_symbol` vs. `K_audio_chunk`) e o
+//! nome do método na fronteira FFI mudam.
 //!
 //! Sem `StreamSink`: mesma filosofia síncrona de `ffi/session.rs`. Quem
 //! dirige o laço de envio/recebimento é o lado Dart.
 //!
+//! ## Timeline única (Fase 5) — nota de voz é uma `messages` row
+//!
+//! Decisão do usuário: nota de voz e mensagem de texto compartilham a mesma
+//! lista cronológica (`Core::list_messages`), não duas telas separadas.
+//! `start_send_audio` insere a linha `Pending` (mesmo padrão de
+//! `seal_outgoing_text`); `handle_incoming_file_metadata` insere a `Delivered`
+//! assim que a oferta chega, antes mesmo do primeiro `AUDIO_CHUNK` — a UI
+//! decide como renderizar "ainda recebendo" olhando se o `file_id` já tem
+//! conteúdo pronto, não pelo `delivery_state` (esse continua sendo só sobre
+//! entrega ao transporte, como para texto). O corpo dessas linhas é
+//! `hex(file_id)`, nunca texto de verdade — convenção só deste módulo e de
+//! `ffi/session.rs::message_dto`, que é quem decodifica de volta.
+//!
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
-//! - **Sem fluxo de aceitar/recusar oferta.** Uma `FILE_METADATA` recebida
-//!   inicia o recebimento (cria `.staging`) automaticamente. Antes de expor
-//!   isto a usuários de verdade, alguém precisa decidir se um contato já
-//!   pareado pode preencher disco sem confirmação — decisão de produto,
-//!   não técnica.
+//! - **Sem fluxo de aceitar/recusar oferta**, arquivo ou áudio — decisão do
+//!   usuário: manter automático por ora, mesmo comportamento de sempre.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
 //!   `use_lan: bool`.** Nenhum ajuste fino exposto.
 //! - **Controle de taxa de envio é só o que `SendTransfer` já faz**
 //!   (parar quando o bloco completa) — nenhum ritmo/pacing aqui.
+//! - **Sanitização do Opus (extração via `file::opus_container`) não é
+//!   feita aqui.** `start_send_audio` espera receber o caminho de um
+//!   arquivo que já esteja no formato interno de `RawOpusStream::encode`
+//!   (Fase 5, F1) — a chamada que desmonta o Ogg original do gravador é
+//!   outro método FFI, deliberadamente separado para poder ser testado (e
+//!   falhar) de forma independente do envio.
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -31,12 +67,15 @@ use std::path::Path;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::types::{FileOfferDto, SendFileStartedDto, TransferProgressDto};
+use crate::ffi::types::{
+    FileOfferDto, IngestedChunkDto, SendAudioStartedDto, SendFileStartedDto, TransferProgressDto,
+};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, MAX_BLOCK_SYMBOLS};
 use viska_proto::file::merkle;
 use viska_proto::file::transfer::{
-    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferProgress, TRANSFER_SECRET_LEN,
+    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferProgress,
+    TRANSFER_SECRET_LEN,
 };
 use viska_proto::store::transfers::Direction;
 use viska_proto::wire::packet_type::PacketType;
@@ -47,6 +86,15 @@ use viska_proto::wire::transport::Transport;
 pub(super) enum TransferHandle {
     Send(SendTransfer<File>),
     Receive(ReceiveTransfer),
+}
+
+/// Resultado interno de [`Core::start_send`] — `start_send_file`/
+/// `start_send_audio` cada um decide sozinho como virar isto num DTO
+/// público (só `start_send_audio` precisa inserir uma linha na timeline
+/// única antes de responder).
+struct StartedTransfer {
+    file_id: [u8; FILE_ID_LEN],
+    sealed_metadata: Vec<u8>,
 }
 
 fn to_device_id(bytes: Vec<u8>) -> Result<[u8; DEVICE_ID_LEN], FfiError> {
@@ -81,6 +129,54 @@ impl Core {
         file_path: String,
         use_lan: bool,
     ) -> Result<SendFileStartedDto, FfiError> {
+        let started = self.start_send(peer_device_id, file_path, use_lan, TransferKind::File)?;
+        Ok(SendFileStartedDto {
+            file_id: started.file_id.to_vec(),
+            sealed_metadata: started.sealed_metadata,
+        })
+    }
+
+    /// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
+    /// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
+    /// `audio_path` deve apontar para um arquivo já no formato interno de
+    /// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
+    /// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
+    /// produziu, que ainda carregaria `OpusTags` com metadados de
+    /// aparelho. Também insere a linha `Pending` na timeline única
+    /// (`store::messages`) — `message_id` no DTO devolvido é para quem
+    /// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
+    /// de `seal_outgoing_text`.
+    pub fn start_send_audio(
+        &self,
+        peer_device_id: Vec<u8>,
+        audio_path: String,
+        use_lan: bool,
+    ) -> Result<SendAudioStartedDto, FfiError> {
+        let device_id = to_device_id(peer_device_id.clone())?;
+        let started = self.start_send(peer_device_id, audio_path, use_lan, TransferKind::Audio)?;
+
+        let created_at = viska_proto::util::time::unix_seconds() as i64;
+        let message_id = self.store.insert_pending_message(
+            &device_id,
+            PacketType::AudioChunk,
+            &hex::encode(started.file_id),
+            created_at,
+        )?;
+
+        Ok(SendAudioStartedDto {
+            file_id: started.file_id.to_vec(),
+            sealed_metadata: started.sealed_metadata,
+            message_id,
+        })
+    }
+
+    fn start_send(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_path: String,
+        use_lan: bool,
+        kind: TransferKind,
+    ) -> Result<StartedTransfer, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
 
         let file_size = std::fs::metadata(&file_path)
@@ -132,12 +228,12 @@ impl Core {
             if !session.is_established() {
                 return Err(FfiError::NoActiveSession);
             }
-            let body = transfer::encode_metadata_body(&transfer_secret, &manifest)?;
+            let body = transfer::encode_metadata_body(kind, &transfer_secret, &manifest)?;
             session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?
         };
 
         let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
-        let send = SendTransfer::new(manifest.clone(), &transfer_secret, file);
+        let send = SendTransfer::new(manifest.clone(), kind, &transfer_secret, file);
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
@@ -148,23 +244,26 @@ impl Core {
             &manifest_cbor,
             &transfer_secret,
             created_at,
+            kind,
         )?;
 
         self.lock_transfers()?
             .insert(file_id, TransferHandle::Send(send));
 
-        Ok(SendFileStartedDto {
-            file_id: file_id.to_vec(),
+        Ok(StartedTransfer {
+            file_id,
             sealed_metadata,
         })
     }
 
-    /// Próximo símbolo a mandar no canal `file` do WebRTC — já selado com
-    /// `K_symbol` (contorna `Session`, ver doc do módulo). `Ok(None)`
-    /// quando o `file_id` não é uma transferência de envio conhecida (já
-    /// terminou, ou nunca existiu) ou quando o emissor esgotou o que tinha
-    /// a mandar para o estado atual.
-    pub fn next_outgoing_file_symbol(&self, file_id: Vec<u8>) -> Result<Option<Vec<u8>>, FfiError> {
+    /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
+    /// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
+    /// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
+    /// `file_id` não é uma transferência de envio conhecida (já terminou,
+    /// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
+    /// para o estado atual. Serve arquivo e áudio por igual — nada aqui
+    /// depende de `kind`.
+    pub fn next_outgoing_wire_chunk(&self, file_id: Vec<u8>) -> Result<Option<Vec<u8>>, FfiError> {
         let file_id = to_file_id(file_id)?;
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
@@ -173,8 +272,8 @@ impl Core {
         }
     }
 
-    /// Progresso de uma transferência conhecida, de qualquer lado — `None`
-    /// se `file_id` não corresponde a nada em andamento.
+    /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
+    /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
     pub fn transfer_progress(&self, file_id: Vec<u8>) -> Result<Option<TransferProgressDto>, FfiError> {
         let file_id = to_file_id(file_id)?;
         let transfers = self.lock_transfers()?;
@@ -187,15 +286,32 @@ impl Core {
 
     /// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
     /// para a UI listar e (por ora, automaticamente — ver doc do módulo)
-    /// já em recebimento.
+    /// já em recebimento. Só `kind = File`; ver
+    /// [`Core::pending_audio_offers`] para notas de voz.
     pub fn pending_file_offers(&self, peer_device_id: Vec<u8>) -> Result<Vec<FileOfferDto>, FfiError> {
+        self.pending_offers(peer_device_id, TransferKind::File)
+    }
+
+    /// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
+    pub fn pending_audio_offers(&self, peer_device_id: Vec<u8>) -> Result<Vec<FileOfferDto>, FfiError> {
+        self.pending_offers(peer_device_id, TransferKind::Audio)
+    }
+
+    fn pending_offers(
+        &self,
+        peer_device_id: Vec<u8>,
+        kind: TransferKind,
+    ) -> Result<Vec<FileOfferDto>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         let stored = self
             .store
             .list_file_transfers_for_contact(&device_id, Direction::Receiving)?;
 
-        let mut offers = Vec::with_capacity(stored.len());
+        let mut offers = Vec::new();
         for entry in stored {
+            if entry.kind != kind {
+                continue;
+            }
             let manifest = Manifest::decode(&entry.manifest_cbor)?;
             let name = manifest::decrypt_name(
                 &entry.transfer_secret,
@@ -211,20 +327,34 @@ impl Core {
         Ok(offers)
     }
 
-    /// Alimenta um símbolo recebido no canal `file` do WebRTC (selado,
-    /// contorna `Session` — ver doc do módulo).
-    pub fn ingest_incoming_file_symbol(
+    /// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
+    /// sozinho a qual transferência ele pertence (D17: `file_id` vai em
+    /// claro na frente, ver `peek_wire_file_id`) e roteia para a
+    /// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
+    /// pode ser um pacote de uma transferência já concluída/cancelada, ou
+    /// que chegou antes do `FILE_METADATA` correspondente terminar de
+    /// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
+    /// de quem chama. Serve arquivo e áudio por igual.
+    pub fn ingest_incoming_wire_bytes(
         &self,
-        file_id: Vec<u8>,
-        sealed_symbol: Vec<u8>,
-    ) -> Result<TransferProgressDto, FfiError> {
-        let file_id = to_file_id(file_id)?;
+        wire_bytes: Vec<u8>,
+    ) -> Result<Option<IngestedChunkDto>, FfiError> {
+        let file_id = transfer::peek_wire_file_id(&wire_bytes)?;
+        let sealed = wire_bytes
+            .get(FILE_ID_LEN..)
+            .ok_or(FfiError::Internal)?
+            .to_vec();
+
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
             Some(TransferHandle::Receive(recv)) => {
-                Ok(progress_dto(recv.ingest_sealed_symbol(sealed_symbol)?))
+                let progress = progress_dto(recv.ingest_sealed_symbol(sealed)?);
+                Ok(Some(IngestedChunkDto {
+                    file_id: file_id.to_vec(),
+                    progress,
+                }))
             }
-            _ => Err(FfiError::Internal),
+            _ => Ok(None),
         }
     }
 
@@ -239,6 +369,28 @@ impl Core {
         file_id: Vec<u8>,
         destination_path: String,
     ) -> Result<Vec<u8>, FfiError> {
+        self.finish_receive(peer_device_id, file_id, destination_path)
+    }
+
+    /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
+    /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
+    /// chama remonta o contêiner para reprodução (ver
+    /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
+    pub fn finish_receive_audio(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_id: Vec<u8>,
+        destination_path: String,
+    ) -> Result<Vec<u8>, FfiError> {
+        self.finish_receive(peer_device_id, file_id, destination_path)
+    }
+
+    fn finish_receive(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_id: Vec<u8>,
+        destination_path: String,
+    ) -> Result<Vec<u8>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         let file_id = to_file_id(file_id)?;
 
@@ -247,7 +399,7 @@ impl Core {
             .remove(&file_id)
             .ok_or(FfiError::Internal)?;
         let TransferHandle::Receive(recv) = handle else {
-            // Devolve o handle de envio — `finish_receive_file` não é o
+            // Devolve o handle de envio — `finish_receive_*` não é o
             // método certo para ele — em vez de descartá-lo em silêncio.
             self.lock_transfers()?.insert(file_id, handle);
             return Err(FfiError::Internal);
@@ -267,6 +419,33 @@ impl Core {
             complete.encode(),
             Transport::DataChannel,
         )?)
+    }
+
+    /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
+    /// metadados) e grava, em `destination_path`, só o formato interno de
+    /// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
+    /// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
+    /// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
+    /// silêncio — mesma política do resto do crate para bytes externos.
+    pub fn sanitize_and_stage_audio(
+        &self,
+        source_path: String,
+        destination_path: String,
+    ) -> Result<(), FfiError> {
+        let ogg_bytes = std::fs::read(&source_path).map_err(|_| FfiError::Internal)?;
+        let stream = viska_proto::file::opus_container::strip_container(&ogg_bytes)?;
+        std::fs::write(&destination_path, stream.encode()).map_err(|_| FfiError::Internal)?;
+        Ok(())
+    }
+
+    /// Decodifica o formato interno devolvido por
+    /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
+    /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
+    /// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
+    /// nenhum, com ou sem suporte a Opus (D18).
+    pub fn decode_audio_to_wav(&self, internal_bytes: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+        let stream = viska_proto::file::opus_container::RawOpusStream::decode(&internal_bytes)?;
+        Ok(viska_proto::file::opus_container::decode_to_wav(&stream)?)
     }
 
     /// Cancela uma transferência (de qualquer lado): remove o handle em
@@ -296,15 +475,21 @@ impl Core {
 
     /// Chamado de dentro de `Core::decrypt_incoming` (`ffi/session.rs`)
     /// quando um `FILE_METADATA` chega — não é público porque só faz
-    /// sentido depois que o AEAD do envelope já abriu.
+    /// sentido depois que o AEAD do envelope já abriu. `kind` (Fase 5, D16)
+    /// decide, aqui, se `ReceiveTransfer::start` deriva `K_symbol` ou
+    /// `K_audio_chunk`. Para `kind == Audio`, também insere a linha
+    /// `Delivered` na timeline única (`store::messages`) — a nota de voz
+    /// aparece na conversa assim que a oferta chega, antes do primeiro
+    /// `AUDIO_CHUNK` sequer existir; a UI decide "ainda recebendo" olhando
+    /// se o `file_id` já tem conteúdo pronto, não pelo `delivery_state`.
     pub(super) fn handle_incoming_file_metadata(
         &self,
         contact_device_id: [u8; DEVICE_ID_LEN],
         body: Vec<u8>,
     ) -> Result<(), FfiError> {
-        let (transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
+        let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
         let manifest_cbor = manifest.encode()?;
-        let created_at = viska_proto::util::time::unix_seconds() as i64;
+        let received_at = viska_proto::util::time::unix_seconds() as i64;
 
         self.store.insert_file_transfer(
             &manifest.file_id,
@@ -312,10 +497,20 @@ impl Core {
             &contact_device_id,
             &manifest_cbor,
             &transfer_secret,
-            created_at,
+            received_at,
+            kind,
         )?;
 
-        let receive = ReceiveTransfer::start(manifest.clone(), &transfer_secret, &self.staging_dir)?;
+        if kind == TransferKind::Audio {
+            self.store.insert_incoming_message(
+                &contact_device_id,
+                PacketType::AudioChunk,
+                &hex::encode(manifest.file_id),
+                received_at,
+            )?;
+        }
+
+        let receive = ReceiveTransfer::start(manifest.clone(), kind, &transfer_secret, &self.staging_dir)?;
         self.lock_transfers()?
             .insert(manifest.file_id, TransferHandle::Receive(receive));
         Ok(())
@@ -362,6 +557,7 @@ impl Core {
 mod tests {
     use super::*;
     use crate::ffi::core::Core;
+    use crate::ffi::types::{DeliveryStateDto, MessageKindDto};
     use std::io::Write;
 
     fn open_core(dir: &tempfile::TempDir) -> Core {
@@ -501,16 +697,17 @@ mod tests {
             if progress.map(|p| p.is_complete).unwrap_or(false) {
                 break;
             }
-            let Some(sealed_symbol) = pair
+            let Some(wire_chunk) = pair
                 .core_a
-                .next_outgoing_file_symbol(started.file_id.clone())
+                .next_outgoing_wire_chunk(started.file_id.clone())
                 .unwrap()
             else {
                 break;
             };
             pair.core_b
-                .ingest_incoming_file_symbol(started.file_id.clone(), sealed_symbol)
-                .unwrap();
+                .ingest_incoming_wire_bytes(wire_chunk)
+                .unwrap()
+                .expect("file_id vem em claro no próprio pacote — deveria ser reconhecido");
 
             // Feedback esparso de verdade seria a cada ~500ms; aqui, a cada
             // símbolo, para o teste não depender de tempo real.
@@ -582,6 +779,285 @@ mod tests {
             .find_file_transfer(&fid(&started.file_id))
             .unwrap()
             .is_none());
+    }
+
+    /// Alguns quadros Opus de verdade (não bytes arbitrários) — para que
+    /// `decode_audio_to_wav` (D18) tenha algo real para decodificar no fim
+    /// do teste ponta-a-ponta.
+    fn opus_real_stream(frames: usize) -> viska_proto::file::opus_container::RawOpusStream {
+        use audiopus::coder::Encoder;
+        use audiopus::{Application, Channels, SampleRate};
+
+        let encoder = Encoder::new(SampleRate::Hz48000, Channels::Mono, Application::Voip).unwrap();
+        let frame_samples = 960; // 20 ms a 48 kHz.
+        let mut packets = Vec::with_capacity(frames);
+        for i in 0..frames {
+            let pcm: Vec<i16> = (0..frame_samples)
+                .map(|n| (((i * frame_samples + n) as f32 * 0.05).sin() * 4000.0) as i16)
+                .collect();
+            let mut out = vec![0u8; 4000];
+            let len = encoder.encode(&pcm, &mut out).unwrap();
+            out.truncate(len);
+            packets.push(out);
+        }
+        viska_proto::file::opus_container::RawOpusStream {
+            channels: 1,
+            sample_rate: 48000,
+            pre_skip: 0,
+            packets,
+        }
+    }
+
+    /// Mesmo cenário do teste de arquivo, mas para uma nota de voz: passa
+    /// por `sanitize_and_stage_audio` (F1), atravessa o pipeline com
+    /// `start_send_audio`/`next_outgoing_wire_chunk`/
+    /// `ingest_incoming_wire_bytes`/`finish_receive_audio`, termina
+    /// decodificando para WAV do lado do receptor (D18), e confere que a
+    /// nota aparece na timeline única dos dois lados (Fase 5).
+    #[test]
+    fn transferencia_de_nota_de_voz_ponta_a_ponta_pela_fronteira_ffi() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        let original_stream = opus_real_stream(5);
+        let gravado_ogg = viska_proto::file::opus_container::rebuild_container(&original_stream);
+        let gravado_path = write_temp_file(&dir_src, "gravado.ogg", &gravado_ogg);
+        let sanitizado_path = dir_src.path().join("sanitizado.viska-audio").to_str().unwrap().to_owned();
+
+        pair.core_a
+            .sanitize_and_stage_audio(gravado_path, sanitizado_path.clone())
+            .unwrap();
+        // O que de fato entra no pipeline é o formato interno, não o Ogg —
+        // confere que bate exatamente com o que `strip_container` extrairia
+        // do Ogg original.
+        assert_eq!(
+            std::fs::read(&sanitizado_path).unwrap(),
+            original_stream.encode()
+        );
+
+        let started = pair
+            .core_a
+            .start_send_audio(pair.device_id_b.clone(), sanitizado_path, false)
+            .unwrap();
+
+        // Timeline única (Fase 5): a nota já aparece do lado de quem manda,
+        // Pending, antes de qualquer byte atravessar a rede.
+        let sender_timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(sender_timeline.len(), 1);
+        assert_eq!(sender_timeline[0].id, started.message_id);
+        assert_eq!(sender_timeline[0].kind, MessageKindDto::VoiceNote);
+        assert_eq!(sender_timeline[0].delivery_state, DeliveryStateDto::Pending);
+        assert_eq!(sender_timeline[0].audio_file_id.as_deref(), Some(started.file_id.as_slice()));
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        // ... e do lado de quem recebe, assim que o FILE_METADATA chega —
+        // antes do primeiro AUDIO_CHUNK sequer existir.
+        let receiver_timeline = pair.core_b.list_messages(pair.device_id_a.clone()).unwrap();
+        assert_eq!(receiver_timeline.len(), 1);
+        assert_eq!(receiver_timeline[0].kind, MessageKindDto::VoiceNote);
+        assert_eq!(receiver_timeline[0].delivery_state, DeliveryStateDto::Delivered);
+        assert_eq!(receiver_timeline[0].audio_file_id.as_deref(), Some(started.file_id.as_slice()));
+
+        let audio_offers = pair.core_b.pending_audio_offers(pair.device_id_a.clone()).unwrap();
+        assert_eq!(audio_offers.len(), 1, "oferta de áudio deveria aparecer em pending_audio_offers");
+        assert!(
+            pair.core_b.pending_file_offers(pair.device_id_a.clone()).unwrap().is_empty(),
+            "oferta de áudio não deveria vazar para pending_file_offers"
+        );
+
+        for _ in 0..1000 {
+            let progress = pair.core_b.transfer_progress(started.file_id.clone()).unwrap();
+            if progress.map(|p| p.is_complete).unwrap_or(false) {
+                break;
+            }
+            let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            else {
+                break;
+            };
+            pair.core_b
+                .ingest_incoming_wire_bytes(wire_chunk)
+                .unwrap()
+                .expect("file_id vem em claro no próprio pacote — deveria ser reconhecido");
+
+            let feedback_body = {
+                let transfers = pair.core_b.lock_transfers().unwrap();
+                let Some(TransferHandle::Receive(recv)) = transfers.get(&fid(&started.file_id)) else {
+                    panic!("receive transfer deveria existir");
+                };
+                recv.feedback().encode()
+            };
+            let mut sessions_b = pair.core_b.lock_sessions().unwrap();
+            let session_b = sessions_b.get_mut(&did(&pair.device_id_a)).unwrap();
+            let sealed_feedback = session_b
+                .encrypt_outgoing(
+                    viska_proto::wire::packet_type::PacketType::FileFeedback,
+                    feedback_body,
+                    Transport::DataChannel,
+                )
+                .unwrap();
+            drop(sessions_b);
+
+            pair.core_a
+                .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
+                .unwrap();
+        }
+
+        let progress = pair.core_b.transfer_progress(started.file_id.clone()).unwrap().unwrap();
+        assert!(progress.is_complete, "transferência de áudio não completou dentro do limite de iterações");
+
+        let dst_path = dir_dst.path().join("recebido.viska-audio");
+        let sealed_complete = pair
+            .core_b
+            .finish_receive_audio(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+
+        let internal_bytes = std::fs::read(&dst_path).unwrap();
+        let wav = pair.core_b.decode_audio_to_wav(internal_bytes).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF", "decode_audio_to_wav deveria produzir um WAV válido (D18)");
+        assert_eq!(&wav[8..12], b"WAVE");
+        let declared_data_len = u32::from_le_bytes(wav[40..44].try_into().unwrap());
+        assert_eq!(declared_data_len as usize, wav.len() - 44);
+        assert!(wav.len() > 44, "WAV não deveria ficar vazio — a nota tinha 5 quadros de áudio real");
+
+        // FILE_COMPLETE de volta ao emissor: o registro de transferência
+        // dele (não a linha da timeline, que fica como histórico) some.
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .unwrap();
+        assert!(pair
+            .core_a
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_none());
+
+        // A linha na timeline de quem mandou continua existindo (histórico
+        // de conversa) mesmo depois da transferência terminar — só o
+        // registro efêmero de `file_transfers` é removido.
+        let sender_timeline_final = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(sender_timeline_final.len(), 1);
+        assert_eq!(sender_timeline_final[0].kind, MessageKindDto::VoiceNote);
+    }
+
+    /// Regressão de D17: duas transferências ativas ao mesmo tempo com o
+    /// mesmo contato (um arquivo e uma nota de voz) — os pacotes dos dois
+    /// chegam intercalados no mesmo canal `file`, e
+    /// `ingest_incoming_wire_bytes` tem que rotear cada um pelo `file_id`
+    /// em claro (D17), sem que quem chama precise saber de antemão qual é
+    /// qual. Antes de D17 isto exigia rastrear "a" transferência ativa;
+    /// agora as duas terminam certas e sem contaminação cruzada.
+    #[test]
+    fn duas_transferencias_concorrentes_nao_se_contaminam() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        let arquivo_original: Vec<u8> = (0..20_000u32).map(|i| (i % 233) as u8).collect();
+        let arquivo_path = write_temp_file(&dir_src, "arquivo.bin", &arquivo_original);
+        let audio_stream = opus_real_stream(3);
+        let audio_path = dir_src.path().join("audio.viska-audio").to_str().unwrap().to_owned();
+        std::fs::write(&audio_path, audio_stream.encode()).unwrap();
+
+        let started_arquivo = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), arquivo_path, false)
+            .unwrap();
+        let started_audio = pair
+            .core_a
+            .start_send_audio(pair.device_id_b.clone(), audio_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started_arquivo.sealed_metadata)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started_audio.sealed_metadata)
+            .unwrap();
+
+        let mut alguma_pendente = true;
+        for _ in 0..20_000 {
+            if !alguma_pendente {
+                break;
+            }
+            alguma_pendente = false;
+
+            for file_id in [&started_arquivo.file_id, &started_audio.file_id] {
+                let progress = pair.core_b.transfer_progress(file_id.clone()).unwrap();
+                if progress.map(|p| p.is_complete).unwrap_or(true) {
+                    continue;
+                }
+                alguma_pendente = true;
+
+                let Some(wire_chunk) = pair.core_a.next_outgoing_wire_chunk(file_id.clone()).unwrap() else {
+                    continue;
+                };
+                let ingested = pair
+                    .core_b
+                    .ingest_incoming_wire_bytes(wire_chunk)
+                    .unwrap()
+                    .expect("file_id em claro deveria identificar a transferência certa");
+                assert_eq!(
+                    &ingested.file_id, file_id,
+                    "ingest_incoming_wire_bytes roteou o pacote para o file_id errado"
+                );
+
+                let feedback_body = {
+                    let transfers = pair.core_b.lock_transfers().unwrap();
+                    let Some(TransferHandle::Receive(recv)) = transfers.get(&fid(file_id)) else {
+                        panic!("receive transfer deveria existir");
+                    };
+                    recv.feedback().encode()
+                };
+                let mut sessions_b = pair.core_b.lock_sessions().unwrap();
+                let session_b = sessions_b.get_mut(&did(&pair.device_id_a)).unwrap();
+                let sealed_feedback = session_b
+                    .encrypt_outgoing(PacketType::FileFeedback, feedback_body, Transport::DataChannel)
+                    .unwrap();
+                drop(sessions_b);
+                pair.core_a
+                    .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
+                    .unwrap();
+            }
+        }
+
+        let progresso_arquivo = pair.core_b.transfer_progress(started_arquivo.file_id.clone()).unwrap().unwrap();
+        let progresso_audio = pair.core_b.transfer_progress(started_audio.file_id.clone()).unwrap().unwrap();
+        assert!(progresso_arquivo.is_complete, "arquivo não completou — provável contaminação cruzada");
+        assert!(progresso_audio.is_complete, "áudio não completou — provável contaminação cruzada");
+
+        let dst_arquivo = dir_dst.path().join("arquivo-recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started_arquivo.file_id.clone(),
+                dst_arquivo.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_arquivo).unwrap(), arquivo_original);
+
+        let dst_audio = dir_dst.path().join("audio-recebido.viska-audio");
+        pair.core_b
+            .finish_receive_audio(
+                pair.device_id_a.clone(),
+                started_audio.file_id.clone(),
+                dst_audio.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        let audio_recebido =
+            viska_proto::file::opus_container::RawOpusStream::decode(&std::fs::read(&dst_audio).unwrap())
+                .unwrap();
+        assert_eq!(audio_recebido, audio_stream);
     }
 
     #[test]

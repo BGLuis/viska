@@ -52,6 +52,11 @@ impl DeliveryState {
 pub struct StoredMessage {
     pub id: i64,
     pub direction: Direction,
+    /// `MsgText` ou `AudioChunk` (Fase 5) — os únicos dois tipos que chegam
+    /// a esta tabela. Para `AudioChunk`, `body` é `hex(file_id)`, não texto
+    /// de verdade — decidido em `ffi/transfer.rs`/`ffi/session.rs`, que são
+    /// quem monta e interpreta esse valor; esta camada só guarda e devolve.
+    pub packet_type: PacketType,
     pub body: String,
     pub delivery_state: DeliveryState,
     pub created_at_unix_secs: i64,
@@ -157,7 +162,7 @@ pub fn list_for_contact(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, body, delivery_state, created_at_unix_secs
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs
              FROM messages
              WHERE contact_device_id = ?1
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -183,7 +188,7 @@ pub fn list_pending(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, body, delivery_state, created_at_unix_secs
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs
              FROM messages
              WHERE contact_device_id = ?1 AND direction = ?2 AND delivery_state = ?3
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -211,21 +216,25 @@ pub fn list_pending(
 fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     let id: i64 = row.get(0)?;
     let direction: i64 = row.get(1)?;
-    let body: String = row.get(2)?;
-    let delivery_state: i64 = row.get(3)?;
-    let created_at_unix_secs: i64 = row.get(4)?;
+    let packet_type: i64 = row.get(2)?;
+    let body: String = row.get(3)?;
+    let delivery_state: i64 = row.get(4)?;
+    let created_at_unix_secs: i64 = row.get(5)?;
 
     let direction = match direction {
         0 => Direction::Outgoing,
         1 => Direction::Incoming,
         _ => return Err(rusqlite::Error::InvalidQuery),
     };
+    let packet_type =
+        PacketType::from_u8(packet_type as u8).map_err(|_| rusqlite::Error::InvalidQuery)?;
     let delivery_state =
         DeliveryState::from_i64(delivery_state).map_err(|_| rusqlite::Error::InvalidQuery)?;
 
     Ok(StoredMessage {
         id,
         direction,
+        packet_type,
         body,
         delivery_state,
         created_at_unix_secs,

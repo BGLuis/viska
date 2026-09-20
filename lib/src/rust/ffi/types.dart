@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -51,6 +51,61 @@ class ContactDto {
 /// `MSG_RECEIPT` e relato de falha de transporte existirem).
 enum DeliveryStateDto { pending, sent, delivered, failed }
 
+/// `BeaconID`s de descoberta local para um contato — `docs/protocol.md` §9.1.
+/// Os dois lados calculam o mesmo `advertise_beacon`, ao contrário dos
+/// tópicos de sinalização (que têm direção).
+class DiscoveryBeaconsDto {
+  /// Beacon para anunciar agora — só a época corrente.
+  final Uint8List advertiseBeacon;
+
+  /// Os três beacons aceitáveis para procurar — épocas
+  /// anterior/atual/seguinte.
+  final List<Uint8List> scanBeacons;
+
+  const DiscoveryBeaconsDto({
+    required this.advertiseBeacon,
+    required this.scanBeacons,
+  });
+
+  @override
+  int get hashCode => advertiseBeacon.hashCode ^ scanBeacons.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiscoveryBeaconsDto &&
+          runtimeType == other.runtimeType &&
+          advertiseBeacon == other.advertiseBeacon &&
+          scanBeacons == other.scanBeacons;
+}
+
+/// Uma oferta de arquivo recebida, pronta para a UI perguntar "aceitar?" —
+/// hoje sempre aceita automaticamente (sem fluxo de aceite/recusa ainda,
+/// ver relatório da Fase 4).
+class FileOfferDto {
+  final Uint8List fileId;
+  final String name;
+  final BigInt fileSize;
+
+  const FileOfferDto({
+    required this.fileId,
+    required this.name,
+    required this.fileSize,
+  });
+
+  @override
+  int get hashCode => fileId.hashCode ^ name.hashCode ^ fileSize.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FileOfferDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          name == other.name &&
+          fileSize == other.fileSize;
+}
+
 /// Uma mensagem recebida e decifrada, pronta para a UI.
 class IncomingMessageDto {
   /// `None` só para `MSG_TYPING` — indicador efêmero, nunca persistido
@@ -85,22 +140,58 @@ class IncomingMessageDto {
           receivedAtUnixSecs == other.receivedAtUnixSecs;
 }
 
+/// Resultado de alimentar um pacote do canal `file` — Fase 5, D17:
+/// `Core::ingest_incoming_wire_bytes` já descobre sozinho a qual
+/// transferência o pacote pertence (o `file_id` vem em claro no próprio
+/// pacote), então devolve qual foi para quem chama saber que progresso
+/// atualizar.
+class IngestedChunkDto {
+  final Uint8List fileId;
+  final TransferProgressDto progress;
+
+  const IngestedChunkDto({required this.fileId, required this.progress});
+
+  @override
+  int get hashCode => fileId.hashCode ^ progress.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IngestedChunkDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          progress == other.progress;
+}
+
 /// Direção de uma mensagem persistida — espelha `store::messages::Direction`,
 /// sem reexportar o tipo interno diretamente na fronteira FFI.
 enum MessageDirectionDto { outgoing, incoming }
 
-/// Uma mensagem já persistida, pronta para a tela de chat renderizar.
+/// Uma mensagem já persistida, pronta para a tela de chat renderizar — texto
+/// e nota de voz na mesma timeline (Fase 5: unificar as duas era decisão do
+/// usuário, não escolha técnica deste código).
 class MessageDto {
   final PlatformInt64 id;
   final MessageDirectionDto direction;
+  final MessageKindDto kind;
+
+  /// Corpo de texto — só significa algo quando `kind == Text`. Vazio para
+  /// `VoiceNote` (o conteúdo real é `audio_file_id`, resolvido à parte
+  /// via `Core::pending_audio_offers`/`Core::received_voice_notes`).
   final String body;
+
+  /// `file_id` da transferência de áudio — só preenchido quando
+  /// `kind == VoiceNote`.
+  final Uint8List? audioFileId;
   final DeliveryStateDto deliveryState;
   final PlatformInt64 createdAtUnixSecs;
 
   const MessageDto({
     required this.id,
     required this.direction,
+    required this.kind,
     required this.body,
+    this.audioFileId,
     required this.deliveryState,
     required this.createdAtUnixSecs,
   });
@@ -109,7 +200,9 @@ class MessageDto {
   int get hashCode =>
       id.hashCode ^
       direction.hashCode ^
+      kind.hashCode ^
       body.hashCode ^
+      audioFileId.hashCode ^
       deliveryState.hashCode ^
       createdAtUnixSecs.hashCode;
 
@@ -120,10 +213,19 @@ class MessageDto {
           runtimeType == other.runtimeType &&
           id == other.id &&
           direction == other.direction &&
+          kind == other.kind &&
           body == other.body &&
+          audioFileId == other.audioFileId &&
           deliveryState == other.deliveryState &&
           createdAtUnixSecs == other.createdAtUnixSecs;
 }
+
+/// Distingue uma mensagem de texto de uma nota de voz na timeline única —
+/// Fase 5. Espelha os dois valores de `packet_type` que hoje entram em
+/// `messages` (`MSG_TEXT`/`AUDIO_CHUNK`); qualquer outro `packet_type`
+/// nunca é persistido nesta tabela (`store::messages::reject_typing` e o
+/// resto do desenho da Fase 3).
+enum MessageKindDto { text, voiceNote }
 
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
@@ -172,6 +274,61 @@ class SealedMessageDto {
           runtimeType == other.runtimeType &&
           messageId == other.messageId &&
           bytes == other.bytes;
+}
+
+/// Como [`SendFileStartedDto`], para `Core::start_send_audio` — carrega
+/// também o `message_id` da linha `Pending` já inserida na timeline única
+/// (Fase 5), para quem chama poder marcá-la `Sent` depois
+/// (`Core::mark_message_sent`).
+class SendAudioStartedDto {
+  final Uint8List fileId;
+  final Uint8List sealedMetadata;
+  final PlatformInt64 messageId;
+
+  const SendAudioStartedDto({
+    required this.fileId,
+    required this.sealedMetadata,
+    required this.messageId,
+  });
+
+  @override
+  int get hashCode =>
+      fileId.hashCode ^ sealedMetadata.hashCode ^ messageId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SendAudioStartedDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          sealedMetadata == other.sealedMetadata &&
+          messageId == other.messageId;
+}
+
+/// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
+class SendFileStartedDto {
+  /// Identifica a transferência nas chamadas seguintes
+  /// (`next_outgoing_wire_chunk`, `transfer_progress`).
+  final Uint8List fileId;
+
+  /// Corpo do `FILE_METADATA` já selado — mandar pelo canal `control`.
+  final Uint8List sealedMetadata;
+
+  const SendFileStartedDto({
+    required this.fileId,
+    required this.sealedMetadata,
+  });
+
+  @override
+  int get hashCode => fileId.hashCode ^ sealedMetadata.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SendFileStartedDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          sealedMetadata == other.sealedMetadata;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de
@@ -250,4 +407,36 @@ class SignalingTopicsDto {
           runtimeType == other.runtimeType &&
           publishTopic == other.publishTopic &&
           subscribeTopics == other.subscribeTopics;
+}
+
+/// Progresso de uma transferência em andamento, de qualquer lado.
+class TransferProgressDto {
+  final int blocksDone;
+  final int totalBlocks;
+  final BigInt bytesDone;
+  final bool isComplete;
+
+  const TransferProgressDto({
+    required this.blocksDone,
+    required this.totalBlocks,
+    required this.bytesDone,
+    required this.isComplete,
+  });
+
+  @override
+  int get hashCode =>
+      blocksDone.hashCode ^
+      totalBlocks.hashCode ^
+      bytesDone.hashCode ^
+      isComplete.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransferProgressDto &&
+          runtimeType == other.runtimeType &&
+          blocksDone == other.blocksDone &&
+          totalBlocks == other.totalBlocks &&
+          bytesDone == other.bytesDone &&
+          isComplete == other.isComplete;
 }

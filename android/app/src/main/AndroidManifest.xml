@@ -1,7 +1,37 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- Leitura do QR Code de pareamento (spec §3) -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- Gravação de nota de voz (Fase 5, §6.6) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
+    <!-- Descoberta local por BLE (docs/protocol.md §9.1, Fase 6 F2) — UUID de
+         serviço rotativo, nunca usado para localização física de verdade,
+         daí `neverForLocation` nas versões novas. minSdk é 29 (Android 10),
+         então as permissões legadas (≤ API 30) também são necessárias. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <!-- Android 10–12L (API 29–32) exige localização para varredura BLE e
+         para Wi-Fi Aware, mesmo sem nenhum uso de localização de verdade —
+         `neverForLocation` só existe a partir da API 31, e só para BLE. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32"/>
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
+    <!-- Wi-Fi Aware (docs/protocol.md §9, Fase 6 F4) — transporte P2P sem
+         ponto de acesso. `NEARBY_WIFI_DEVICES` substitui a localização a
+         partir da API 33. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"/>
+    <uses-feature android:name="android.hardware.wifi.aware" android:required="false"/>
     <application
         android:label="viska"
         android:name="${applicationName}"

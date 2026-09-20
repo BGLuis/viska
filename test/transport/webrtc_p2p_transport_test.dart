@@ -74,11 +74,22 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<DiscoveryBeaconsDto> discoveryBeacons({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) =>
       throw UnimplementedError();
 
   @override
   Future<List<ContactDto>> listContacts() => throw UnimplementedError();
+
+  @override
+  Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List> myDeviceId() => throw UnimplementedError();
 
   @override
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) =>
@@ -113,6 +124,75 @@ class _FakeCore implements Core {
 
   @override
   bool get isDisposed => false;
+
+  // Fase 4/5 — transferência de arquivo e nota de voz: nada neste teste de
+  // transporte chama estes métodos; stubs só para o fake continuar
+  // implementando `Core` por inteiro.
+  @override
+  Future<void> cancelTransfer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<Uint8List> finishReceiveAudio({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List> finishReceiveFile({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<IngestedChunkDto?> ingestIncomingWireBytes({required List<int> wireBytes}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<FileOfferDto>> pendingAudioOffers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List> decodeAudioToWav({required List<int> internalBytes}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> sanitizeAndStageAudio({
+    required String sourcePath,
+    required String destinationPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SendAudioStartedDto> startSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SendFileStartedDto> startSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<TransferProgressDto?> transferProgress({required List<int> fileId}) =>
+      throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {
@@ -121,6 +201,7 @@ class _FakeRawP2PChannel implements RawP2PChannel {
   final remoteAnswerCalls = <String>[];
   final remoteCandidateCalls = <Map<String, Object?>>[];
   final sendCalls = <Uint8List>[];
+  final sendFileCalls = <Uint8List>[];
   var closed = false;
 
   String offerSdpToReturn = 'v=0 OFFER';
@@ -129,6 +210,7 @@ class _FakeRawP2PChannel implements RawP2PChannel {
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
   final _localIceCandidates = StreamController<RTCIceCandidate>.broadcast();
   final _incoming = StreamController<Uint8List>.broadcast();
+  final _incomingFile = StreamController<Uint8List>.broadcast();
 
   @override
   Future<String> createOffer() async {
@@ -166,7 +248,15 @@ class _FakeRawP2PChannel implements RawP2PChannel {
   }
 
   @override
+  Future<void> sendFile(Uint8List bytes) async {
+    sendFileCalls.add(bytes);
+  }
+
+  @override
   Stream<Uint8List> get incoming => _incoming.stream;
+
+  @override
+  Stream<Uint8List> get incomingFile => _incomingFile.stream;
 
   @override
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
@@ -182,6 +272,7 @@ class _FakeRawP2PChannel implements RawP2PChannel {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
   void emitLocalCandidate(RTCIceCandidate candidate) => _localIceCandidates.add(candidate);
   void emitIncoming(Uint8List bytes) => _incoming.add(bytes);
+  void emitIncomingFile(Uint8List bytes) => _incomingFile.add(bytes);
 }
 
 class _FakeSignalingBackend implements SignalingBackend {
@@ -429,7 +520,7 @@ void main() {
       expect(channel.remoteCandidateCalls, isEmpty);
     });
 
-    test('send/incoming/connectionEvents proxeiam direto para o canal', () async {
+    test('send/sendFile/incoming/incomingFile/connectionEvents proxeiam direto para o canal', () async {
       final status = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -448,17 +539,24 @@ void main() {
 
       final received = <Uint8List>[];
       transport.incoming.listen(received.add);
+      final receivedFile = <Uint8List>[];
+      transport.incomingFile.listen(receivedFile.add);
       final events = <TransportConnectionEvent>[];
       transport.connectionEvents.listen(events.add);
 
       await transport.send(Uint8List.fromList([9, 9, 9]));
       expect(channel.sendCalls, [Uint8List.fromList([9, 9, 9])]);
 
+      await transport.sendFile(Uint8List.fromList([4, 4]));
+      expect(channel.sendFileCalls, [Uint8List.fromList([4, 4])]);
+
       channel.emitIncoming(Uint8List.fromList([7, 7]));
+      channel.emitIncomingFile(Uint8List.fromList([8, 8]));
       channel.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.failed));
       await Future<void>.delayed(Duration.zero);
 
       expect(received, [Uint8List.fromList([7, 7])]);
+      expect(receivedFile, [Uint8List.fromList([8, 8])]);
       expect(events, [const TransportConnectionEvent(TransportConnectionState.failed)]);
     });
 

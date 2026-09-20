@@ -23,7 +23,19 @@ abstract class RawP2PChannel {
 
   Future<void> send(Uint8List envelope);
 
+  /// Como [send], mas no canal `file` — Fase 4/5: símbolos RaptorQ e pedaços
+  /// de nota de voz, selados com chave própria fora do ratchet, contornando
+  /// `Session` por completo (ver `viska_proto::file::transfer`, doc do
+  /// módulo). Canal separado do `control` (`docs/protocol.md` §11.4).
+  Future<void> sendFile(Uint8List bytes);
+
   Stream<Uint8List> get incoming;
+
+  /// Bytes crus recebidos no canal `file` — símbolo ou pedaço de áudio
+  /// selado, pronto para `Core.ingestIncomingFileSymbol`/
+  /// `ingestIncomingAudioChunk`.
+  Stream<Uint8List> get incomingFile;
+
   Stream<TransportConnectionEvent> get connectionEvents;
   Stream<RTCIceCandidate> get localIceCandidates;
 

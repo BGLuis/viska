@@ -35,9 +35,12 @@
 //! abaixo são deste código, relatadas aqui, não decididas em silêncio:
 //!
 //! - **[`FileSymbol`]**: deslocamento fixo, no padrão de `crypto::pairing`/
-//!   `wire::plaintext` — `block_index (u32 BE) ‖ symbol_id (u32 BE) ‖ dados`.
-//!   CBOR custaria bytes de mais num pacote que se repete aos milhares por
-//!   transferência; deslocamento fixo tem overhead zero além dos campos.
+//!   `wire::plaintext` — `block_index (u32 BE) ‖ symbol_id (u32 BE) ‖ dados`,
+//!   o que de fato é cifrado. **No fio** (D17, Fase 5), o pacote completo do
+//!   canal `file` é `file_id (16 B, em claro) ‖ selado(...)` — ver
+//!   [`peek_wire_file_id`]. CBOR custaria bytes de mais num pacote que se
+//!   repete aos milhares por transferência; deslocamento fixo tem overhead
+//!   zero além dos campos.
 //! - **[`FileFeedback`]**: mesmo padrão —
 //!   `file_id (16 B) ‖ block_index (u32 BE) ‖ symbols_received (u32 BE) ‖
 //!   bitmap`. O tamanho do bitmap não vai no fio: quem decodifica já sabe
@@ -45,15 +48,53 @@
 //! - **[`FileComplete`]**: só `file_id (16 B)` — confirmação do receptor ao
 //!   emissor de que a raiz Merkle completa bateu e o commit atômico (§7.5)
 //!   aconteceu. Direção receptor→emissor: é o receptor quem verifica.
-//! - **Corpo de `FILE_METADATA`**: `transfer_secret (32 B) ‖ manifest_cbor`.
-//!   `transfer_secret` (D15) **não** é gerado por cada lado independente —
-//!   isso derivaria chaves diferentes dos dois lados e nada decifraria. É
-//!   gerado uma vez pelo emissor e viaja aqui, na frente do manifesto,
-//!   protegido pelo envelope normal do ratchet (`FILE_METADATA` vai pelo
-//!   canal `control`, via `Session`, como qualquer outra mensagem). Precisa
-//!   estar disponível antes até de decodificar o manifesto porque `K_name`
-//!   (usada para `name_encrypted`, um campo *dentro* do CBOR) já depende
-//!   dele — ver [`encode_metadata_body`]/[`decode_metadata_body`].
+//! - **Corpo de `FILE_METADATA`**: `kind (1 B) ‖ transfer_secret (32 B) ‖
+//!   manifest_cbor`. `transfer_secret` (D15) **não** é gerado por cada lado
+//!   independente — isso derivaria chaves diferentes dos dois lados e nada
+//!   decifraria. É gerado uma vez pelo emissor e viaja aqui, na frente do
+//!   manifesto, protegido pelo envelope normal do ratchet (`FILE_METADATA`
+//!   vai pelo canal `control`, via `Session`, como qualquer outra
+//!   mensagem). Precisa estar disponível antes até de decodificar o
+//!   manifesto porque `K_name` (usada para `name_encrypted`, um campo
+//!   *dentro* do CBOR) já depende dele — ver
+//!   [`encode_metadata_body`]/[`decode_metadata_body`].
+//!
+//! ## `file_id` em claro no canal `file` — D17
+//!
+//! Até a Fase 5, o canal `file` só suportava uma transferência ativa por
+//! vez por contato: nada no pacote selado se auto-identifica (o corpo
+//! cifrado não pode ser aberto sem já saber qual chave tentar, e a chave
+//! depende do `file_id`). D17 resolve a referência circular pondo
+//! `file_id` **em claro** na frente de cada pacote do canal `file` —
+//! [`peek_wire_file_id`] lê isso sem decifrar nada, e é o que permite ao
+//! receptor rotear cada pacote para a `ReceiveTransfer` certa antes de
+//! tentar abrir. Vazamento aceito: `file_id` é um identificador aleatório
+//! sem relação com conteúdo, nome ou tamanho do arquivo — mesma categoria
+//! de metadado necessário já aceita para `Counter`/`dh_pub` no envelope do
+//! canal `control` (D4/D14). Este módulo nunca vê o prefixo: quem despacha
+//! por `file_id` (a fronteira FFI, via [`peek_wire_file_id`]) já escolheu a
+//! `ReceiveTransfer` certa e tira o prefixo antes de chamar
+//! [`ReceiveTransfer::ingest_sealed_symbol`] — um `file_id` que não
+//! corresponde a nenhuma transferência conhecida simplesmente não chega
+//! aqui.
+//!
+//! ## `kind` — Fase 5 (notas de voz), D16
+//!
+//! A spec não define `AUDIO_METADATA`/`AUDIO_FEEDBACK`/`AUDIO_COMPLETE`
+//! dedicados — só `AUDIO_CHUNK` (0x30) existe como tipo de pacote de áudio
+//! (`docs/protocol.md` §6.2), e `Manifest` é agnóstica de conteúdo por
+//! desenho (não ganha, e não deveria ganhar, um campo de tipo). O receptor
+//! ainda assim precisa saber, ao processar um `FILE_METADATA`, se deriva
+//! `K_symbol` ou `K_audio_chunk` — a chave certa tem que existir *antes* do
+//! primeiro pedaço chegar. [`TransferKind`] resolve isso com um byte na
+//! frente do corpo de `FILE_METADATA`, no mesmo espírito de "formato que a
+//! spec não fixa, decidido e relatado aqui" do resto desta seção — nunca um
+//! campo do `Manifest`/CBOR. `AUDIO_CHUNK`, como `FILE_SYMBOL`, nunca
+//! aparece de fato como byte de `packet_type` num envelope: os dois
+//! contornam `session::Session` por completo (ver acima). O "tipo de
+//! pacote" de cada um se materializa só como escolha de contexto de KDF
+//! (`FILE_SYMBOL` vs. `AUDIO_CHUNK` em `crypto::kdf::context`) e como nome
+//! de método na fronteira FFI (`start_send_file` vs. `start_send_audio`).
 //!
 //! ## O que fica para depois — não implementado aqui
 //!
@@ -89,6 +130,19 @@ use crate::{Error, Result};
 const SYMBOL_BLOCK_INDEX_AT: usize = 0;
 const SYMBOL_SYMBOL_ID_AT: usize = SYMBOL_BLOCK_INDEX_AT + 4;
 const SYMBOL_DATA_AT: usize = SYMBOL_SYMBOL_ID_AT + 4;
+
+/// Lê o `file_id` em claro na frente de um pacote do canal `file` (D17) —
+/// sem decifrar nada, é só isto que permite escolher qual `ReceiveTransfer`
+/// roteia o pacote antes de tentar abrir o AEAD. `bytes` é o pacote inteiro
+/// como chegou do transporte; o restante (a partir de `FILE_ID_LEN`) é o
+/// que [`ReceiveTransfer::ingest_sealed_symbol`] espera.
+pub fn peek_wire_file_id(bytes: &[u8]) -> Result<[u8; FILE_ID_LEN]> {
+    bytes
+        .get(..FILE_ID_LEN)
+        .ok_or(Error::Malformed("pacote do canal file curto demais para file_id"))?
+        .try_into()
+        .map_err(|_| Error::Malformed("pacote do canal file curto demais para file_id"))
+}
 
 /// Corpo de um pacote `FILE_SYMBOL` (0x21).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,25 +308,66 @@ impl FileComplete {
 /// qualquer material de chave no Viska.
 pub const TRANSFER_SECRET_LEN: usize = 32;
 
-/// Monta o corpo de `FILE_METADATA`: `transfer_secret ‖ manifest_cbor`.
-/// Chamado pelo emissor, que é quem gera `transfer_secret` (D15) — nunca o
-/// receptor, que só o lê daqui.
+/// Discriminador de conteúdo transportado no corpo de `FILE_METADATA` —
+/// Fase 5, D16. Nunca vai para o `Manifest`/CBOR; é só o byte que decide, do
+/// lado do receptor, qual chave derivar (`K_symbol` ou `K_audio_chunk`)
+/// antes do primeiro pedaço chegar. Ver doc do módulo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TransferKind {
+    File = 0x00,
+    Audio = 0x01,
+}
+
+impl TransferKind {
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_u8(value: u8) -> Result<Self> {
+        match value {
+            0x00 => Ok(Self::File),
+            0x01 => Ok(Self::Audio),
+            _ => Err(Error::Malformed("kind de FILE_METADATA desconhecido")),
+        }
+    }
+}
+
+const METADATA_KIND_AT: usize = 0;
+const METADATA_TRANSFER_SECRET_AT: usize = METADATA_KIND_AT + 1;
+const METADATA_MANIFEST_AT: usize = METADATA_TRANSFER_SECRET_AT + TRANSFER_SECRET_LEN;
+
+/// Monta o corpo de `FILE_METADATA`: `kind ‖ transfer_secret ‖
+/// manifest_cbor`. Chamado pelo emissor, que é quem gera `transfer_secret`
+/// (D15) — nunca o receptor, que só o lê daqui.
 pub fn encode_metadata_body(
+    kind: TransferKind,
     transfer_secret: &[u8; TRANSFER_SECRET_LEN],
     manifest: &Manifest,
 ) -> Result<Vec<u8>> {
-    let mut body = transfer_secret.to_vec();
+    let mut body = Vec::with_capacity(METADATA_MANIFEST_AT);
+    body.push(kind.to_u8());
+    body.extend_from_slice(transfer_secret);
     body.extend_from_slice(&manifest.encode()?);
     Ok(body)
 }
 
-/// Desmonta o corpo de `FILE_METADATA` recebido, devolvendo `transfer_secret`
-/// e o [`Manifest`] já validado — nessa ordem, porque decodificar/validar o
-/// manifesto não depende do segredo, só decifrar `name_encrypted` depende
-/// (responsabilidade de quem chama, via `manifest::decrypt_name`).
-pub fn decode_metadata_body(body: &[u8]) -> Result<([u8; TRANSFER_SECRET_LEN], Manifest)> {
+/// Desmonta o corpo de `FILE_METADATA` recebido, devolvendo `kind`,
+/// `transfer_secret` e o [`Manifest`] já validado — nessa ordem, porque
+/// decodificar/validar o manifesto não depende do segredo, só decifrar
+/// `name_encrypted` depende (responsabilidade de quem chama, via
+/// `manifest::decrypt_name`).
+pub fn decode_metadata_body(
+    body: &[u8],
+) -> Result<(TransferKind, [u8; TRANSFER_SECRET_LEN], Manifest)> {
+    let kind = TransferKind::from_u8(
+        *body
+            .get(METADATA_KIND_AT)
+            .ok_or(Error::Malformed("FILE_METADATA curto demais para kind"))?,
+    )?;
+
     let transfer_secret: [u8; TRANSFER_SECRET_LEN] = body
-        .get(..TRANSFER_SECRET_LEN)
+        .get(METADATA_TRANSFER_SECRET_AT..METADATA_MANIFEST_AT)
         .ok_or(Error::Malformed(
             "FILE_METADATA curto demais para transfer_secret",
         ))?
@@ -280,11 +375,11 @@ pub fn decode_metadata_body(body: &[u8]) -> Result<([u8; TRANSFER_SECRET_LEN], M
         .expect("fatia do tamanho de TRANSFER_SECRET_LEN já garantida acima");
 
     let manifest_bytes = body
-        .get(TRANSFER_SECRET_LEN..)
+        .get(METADATA_MANIFEST_AT..)
         .ok_or(Error::Malformed("FILE_METADATA sem manifesto"))?;
     let manifest = Manifest::decode(manifest_bytes)?;
 
-    Ok((transfer_secret, manifest))
+    Ok((kind, transfer_secret, manifest))
 }
 
 /// Tamanho, em bytes, do source block em `block_index` — todos iguais a
@@ -337,8 +432,14 @@ impl<R: Read> core::fmt::Debug for SendTransfer<R> {
 }
 
 impl<R: Read> SendTransfer<R> {
-    pub fn new(manifest: Manifest, transfer_secret: &[u8], file: R) -> Self {
-        let symbol_key = keys::derive_symbol_key(transfer_secret, &manifest.file_id);
+    /// `kind` decide entre `K_symbol` e `K_audio_chunk` (Fase 5, D16) — o
+    /// resto do estado (RaptorQ, controle de bloco) é idêntico para os
+    /// dois, daí não existir um `SendTransfer` separado para áudio.
+    pub fn new(manifest: Manifest, kind: TransferKind, transfer_secret: &[u8], file: R) -> Self {
+        let symbol_key = match kind {
+            TransferKind::File => keys::derive_symbol_key(transfer_secret, &manifest.file_id),
+            TransferKind::Audio => keys::derive_audio_key(transfer_secret, &manifest.file_id),
+        };
         Self {
             manifest,
             symbol_key,
@@ -412,16 +513,17 @@ impl<R: Read> SendTransfer<R> {
     }
 
     /// Como [`SendTransfer::next_symbol`], mas já selado com `K_symbol`
-    /// (`aead::seal_xchacha`, D11/D15) — o que de fato vai no canal `file`
-    /// do WebRTC, sem passar por `session::Session`. `aad` é `file_id`: liga
-    /// cada símbolo à transferência, sem depender de nenhum estado de
-    /// sessão.
+    /// (`aead::seal_xchacha`, D11/D15) e prefixado com `file_id` em claro
+    /// (D17) — o que de fato vai no canal `file` do WebRTC, sem passar por
+    /// `session::Session`. `aad` é `file_id`: liga cada símbolo à
+    /// transferência, sem depender de nenhum estado de sessão.
     pub fn next_sealed_symbol(&mut self) -> Result<Option<Vec<u8>>> {
         let Some(symbol) = self.next_symbol()? else {
             return Ok(None);
         };
         let mut buffer = symbol.encode();
         aead::seal_xchacha(&self.symbol_key, &self.manifest.file_id, &mut buffer)?;
+        buffer.splice(0..0, self.manifest.file_id);
         Ok(Some(buffer))
     }
 
@@ -469,10 +571,21 @@ impl core::fmt::Debug for ReceiveTransfer {
 
 impl ReceiveTransfer {
     /// Inicia o recebimento: deriva `K_staging` (D15) e cria o `.staging`
-    /// vazio em `staging_dir`.
-    pub fn start(manifest: Manifest, transfer_secret: &[u8], staging_dir: &Path) -> Result<Self> {
+    /// vazio em `staging_dir`. `kind` decide entre `K_symbol` e
+    /// `K_audio_chunk` (Fase 5, D16) — `K_staging` não depende de `kind`,
+    /// só o conteúdo em si (arquivo comum ou nota de voz) é indistinguível
+    /// uma vez em staging.
+    pub fn start(
+        manifest: Manifest,
+        kind: TransferKind,
+        transfer_secret: &[u8],
+        staging_dir: &Path,
+    ) -> Result<Self> {
         let key = staging::derive_staging_key(transfer_secret, &manifest.file_id);
-        let symbol_key = keys::derive_symbol_key(transfer_secret, &manifest.file_id);
+        let symbol_key = match kind {
+            TransferKind::File => keys::derive_symbol_key(transfer_secret, &manifest.file_id),
+            TransferKind::Audio => keys::derive_audio_key(transfer_secret, &manifest.file_id),
+        };
         let staging = StagingWriter::create(staging_dir, manifest.file_id, key.clone())?;
         let first_block_len = block_len_at(&manifest, 0);
         let current_decoder = BlockDecoder::new(manifest.symbol_size, first_block_len)?;
@@ -530,11 +643,15 @@ impl ReceiveTransfer {
         Ok(self.progress())
     }
 
-    /// Abre um símbolo selado (o que de fato chega pelo canal `file` do
-    /// WebRTC — ver doc do módulo) com `K_symbol` e alimenta
-    /// [`ReceiveTransfer::ingest_symbol`]. Tag inválida, `aad` errado ou
-    /// buffer curto demais viram `Error::AeadFailure`, sem distinção — a
-    /// mesma política do resto do crate para AEAD.
+    /// Abre um pacote selado do canal `file` (ver doc do módulo): confere o
+    /// prefixo `file_id` em claro (D17) contra o desta transferência, abre
+    /// com `K_symbol`/`K_audio_chunk` e alimenta
+    /// [`ReceiveTransfer::ingest_symbol`]. Prefixo que não bate, tag
+    /// inválida, `aad` errado ou buffer curto demais viram
+    /// `Error::AeadFailure`, sem distinção — a mesma política do resto do
+    /// crate para AEAD, para não abrir oráculo. `sealed` já vem sem o
+    /// prefixo: quem despacha por `file_id` ([`peek_wire_file_id`]) é
+    /// responsável por tirá-lo antes de chamar isto.
     pub fn ingest_sealed_symbol(&mut self, sealed: Vec<u8>) -> Result<TransferProgress> {
         let mut buffer = sealed;
         aead::open_xchacha(&self.symbol_key, &self.manifest.file_id, &mut buffer)?;
@@ -653,10 +770,14 @@ mod tests {
         let transfer_secret = b"segredo-de-transferencia-de-teste";
         let staging_dir = tempfile::tempdir().unwrap();
 
-        let mut sender =
-            SendTransfer::new(manifest.clone(), transfer_secret, Cursor::new(original.clone()));
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            transfer_secret,
+            Cursor::new(original.clone()),
+        );
         let mut receiver =
-            ReceiveTransfer::start(manifest.clone(), transfer_secret, staging_dir.path()).unwrap();
+            ReceiveTransfer::start(manifest.clone(), TransferKind::File, transfer_secret, staging_dir.path()).unwrap();
 
         for _ in 0..1000 {
             if receiver.is_complete() {
@@ -676,6 +797,14 @@ mod tests {
         assert_eq!(destino, original);
     }
 
+    /// Tira o `file_id` em claro (D17) do pacote — o que a fronteira FFI
+    /// (`ingest_incoming_wire_bytes`) faz de verdade depois de rotear por
+    /// [`peek_wire_file_id`], antes de chamar
+    /// [`ReceiveTransfer::ingest_sealed_symbol`].
+    fn strip_wire_prefix(bytes: Vec<u8>) -> Vec<u8> {
+        bytes[FILE_ID_LEN..].to_vec()
+    }
+
     /// Mesmo cenário do primeiro teste, mas pelos métodos selados
     /// (`next_sealed_symbol`/`ingest_sealed_symbol`) — o caminho que de fato
     /// atravessaria o canal `file` do WebRTC, com `K_symbol` de verdade.
@@ -685,20 +814,25 @@ mod tests {
         let transfer_secret = b"segredo-para-simbolos-selados";
         let staging_dir = tempfile::tempdir().unwrap();
 
-        let mut sender =
-            SendTransfer::new(manifest.clone(), transfer_secret, Cursor::new(original.clone()));
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::Audio,
+            transfer_secret,
+            Cursor::new(original.clone()),
+        );
         let mut receiver =
-            ReceiveTransfer::start(manifest.clone(), transfer_secret, staging_dir.path()).unwrap();
+            ReceiveTransfer::start(manifest.clone(), TransferKind::Audio, transfer_secret, staging_dir.path()).unwrap();
 
         for _ in 0..1000 {
             if receiver.is_complete() {
                 break;
             }
-            let sealed = sender
+            let wire = sender
                 .next_sealed_symbol()
                 .unwrap()
                 .expect("sem símbolos restantes antes de completar");
-            receiver.ingest_sealed_symbol(sealed).unwrap();
+            assert_eq!(peek_wire_file_id(&wire).unwrap(), manifest.file_id);
+            receiver.ingest_sealed_symbol(strip_wire_prefix(wire)).unwrap();
             sender.ingest_feedback(&receiver.feedback());
         }
         assert!(receiver.is_complete());
@@ -713,16 +847,48 @@ mod tests {
         let (manifest, original) = manifesto_de_teste(4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
 
-        let mut sender =
-            SendTransfer::new(manifest.clone(), b"segredo-certo", Cursor::new(original));
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            b"segredo-certo",
+            Cursor::new(original),
+        );
         let mut receiver =
-            ReceiveTransfer::start(manifest, b"segredo-errado", staging_dir.path()).unwrap();
+            ReceiveTransfer::start(manifest, TransferKind::File, b"segredo-errado", staging_dir.path()).unwrap();
 
-        let sealed = sender.next_sealed_symbol().unwrap().unwrap();
+        let wire = sender.next_sealed_symbol().unwrap().unwrap();
         assert!(matches!(
-            receiver.ingest_sealed_symbol(sealed),
+            receiver.ingest_sealed_symbol(strip_wire_prefix(wire)),
             Err(Error::AeadFailure)
         ));
+    }
+
+    #[test]
+    fn peek_wire_file_id_le_o_prefixo_sem_decifrar() {
+        let (manifest, original) = manifesto_de_teste(4096, 512, 8);
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            b"segredo-qualquer",
+            Cursor::new(original),
+        );
+        let wire = sender.next_sealed_symbol().unwrap().unwrap();
+        assert_eq!(peek_wire_file_id(&wire).unwrap(), manifest.file_id);
+    }
+
+    #[test]
+    fn peek_wire_file_id_rejeita_pacote_curto_demais_sem_panico() {
+        assert!(matches!(
+            peek_wire_file_id(&[0u8; FILE_ID_LEN - 1]),
+            Err(Error::Malformed(_))
+        ));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn peek_wire_file_id_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=64)) {
+            let _ = peek_wire_file_id(&bytes);
+        }
     }
 
     #[test]
@@ -730,11 +896,14 @@ mod tests {
         let (manifest, _original) = manifesto_de_teste(2 * 65536, 16384, 4);
         let secret = [42u8; TRANSFER_SECRET_LEN];
 
-        let body = encode_metadata_body(&secret, &manifest).unwrap();
-        let (decoded_secret, decoded_manifest) = decode_metadata_body(&body).unwrap();
+        for kind in [TransferKind::File, TransferKind::Audio] {
+            let body = encode_metadata_body(kind, &secret, &manifest).unwrap();
+            let (decoded_kind, decoded_secret, decoded_manifest) = decode_metadata_body(&body).unwrap();
 
-        assert_eq!(decoded_secret, secret);
-        assert_eq!(decoded_manifest, manifest);
+            assert_eq!(decoded_kind, kind);
+            assert_eq!(decoded_secret, secret);
+            assert_eq!(decoded_manifest, manifest);
+        }
     }
 
     #[test]
@@ -743,6 +912,14 @@ mod tests {
             decode_metadata_body(&[0u8; TRANSFER_SECRET_LEN - 1]),
             Err(Error::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn metadata_body_rejeita_kind_desconhecido() {
+        let (manifest, _original) = manifesto_de_teste(2 * 65536, 16384, 4);
+        let mut body = encode_metadata_body(TransferKind::File, &[7u8; TRANSFER_SECRET_LEN], &manifest).unwrap();
+        body[METADATA_KIND_AT] = 0xff;
+        assert!(matches!(decode_metadata_body(&body), Err(Error::Malformed(_))));
     }
 
     #[test]
@@ -771,10 +948,14 @@ mod tests {
         let transfer_secret = b"outro-segredo-de-transferencia";
         let staging_dir = tempfile::tempdir().unwrap();
 
-        let mut sender =
-            SendTransfer::new(manifest.clone(), transfer_secret, Cursor::new(original.clone()));
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            transfer_secret,
+            Cursor::new(original.clone()),
+        );
         let mut receiver =
-            ReceiveTransfer::start(manifest.clone(), transfer_secret, staging_dir.path()).unwrap();
+            ReceiveTransfer::start(manifest.clone(), TransferKind::File, transfer_secret, staging_dir.path()).unwrap();
 
         let mut enviados = 0u32;
         for _ in 0..10_000 {
@@ -804,7 +985,8 @@ mod tests {
     fn finish_antes_de_completo_e_rejeitado() {
         let (manifest, _original) = manifesto_de_teste(4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
-        let receiver = ReceiveTransfer::start(manifest, b"segredo", staging_dir.path()).unwrap();
+        let receiver =
+            ReceiveTransfer::start(manifest, TransferKind::File, b"segredo", staging_dir.path()).unwrap();
 
         let mut destino = Vec::new();
         assert!(matches!(
@@ -818,7 +1000,7 @@ mod tests {
         let (manifest, _original) = manifesto_de_teste(2 * 4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
         let mut receiver =
-            ReceiveTransfer::start(manifest, b"segredo", staging_dir.path()).unwrap();
+            ReceiveTransfer::start(manifest, TransferKind::File, b"segredo", staging_dir.path()).unwrap();
 
         let progresso_antes = receiver.progress();
         let simbolo_do_bloco_seguinte = FileSymbol {

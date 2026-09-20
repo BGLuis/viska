@@ -33,6 +33,7 @@ ciborium = "0.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 # Código de fonte RaptorQ (RFC 6330) para o canal não confiável (D6, §7.3).
 raptorq = "2.0.1"
+audiopus = { version = "0.2.0", default-features = false, features = ["decoder", "encoder"] }
 
 [dev-dependencies]
 proptest = "1"

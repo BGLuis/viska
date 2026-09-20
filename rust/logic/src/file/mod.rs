@@ -10,5 +10,6 @@ pub mod fountain;
 pub mod keys;
 pub mod manifest;
 pub mod merkle;
+pub mod opus_container;
 pub mod staging;
 pub mod transfer;

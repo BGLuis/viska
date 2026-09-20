@@ -138,6 +138,7 @@ impl Store {
         manifest_cbor: &[u8],
         transfer_secret: &[u8],
         created_at_unix_secs: i64,
+        kind: crate::file::transfer::TransferKind,
     ) -> Result<()> {
         let conn = self.lock()?;
         transfers::insert(
@@ -148,6 +149,7 @@ impl Store {
             manifest_cbor,
             transfer_secret,
             created_at_unix_secs,
+            kind,
         )
     }
 

@@ -6,7 +6,8 @@ import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
 import 'chat_controller.dart';
 
-/// Tela de chat com um contato — Fase 3, F6.
+/// Tela de chat com um contato — Fase 3, F6; nota de voz (Fase 5) na mesma
+/// lista de mensagens, decisão do usuário de unificar a timeline.
 ///
 /// `StatefulWidget` puro, mesmo padrão do resto do projeto (sem lib de
 /// state management): a lógica mora em [ChatController], esta classe só
@@ -53,6 +54,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     setState(() {});
     _scrollToEndSoon();
+  }
+
+  Future<void> _handleMicTap() async {
+    if (_controller.isRecording) {
+      await _controller.stopRecordingAndSend();
+    } else {
+      await _controller.startRecording();
+    }
   }
 
   void _scrollToEndSoon() {
@@ -112,6 +121,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+          if (_controller.voiceError != null)
+            Container(
+              width: double.infinity,
+              color: Theme.of(context).colorScheme.errorContainer,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Text(
+                _controller.voiceError!,
+                style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+              ),
+            ),
           Expanded(
             child: _controller.messages.isEmpty
                 ? const Center(child: Text('Nenhuma mensagem ainda'))
@@ -119,8 +138,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     controller: _scrollController,
                     padding: const EdgeInsets.all(12),
                     itemCount: _controller.messages.length,
-                    itemBuilder: (context, index) =>
-                        _MessageBubble(message: _controller.messages[index]),
+                    itemBuilder: (context, index) => _MessageBubble(
+                      message: _controller.messages[index],
+                      controller: _controller,
+                    ),
                   ),
           ),
           SafeArea(
@@ -139,6 +160,18 @@ class _ChatScreenState extends State<ChatScreen> {
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _handleSend(),
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    tooltip: _controller.isRecording ? 'Parar e enviar nota de voz' : 'Gravar nota de voz',
+                    onPressed: _controller.isSendingVoice ? null : _handleMicTap,
+                    icon: Icon(_controller.isRecording ? Icons.stop : Icons.mic),
+                    style: _controller.isRecording
+                        ? IconButton.styleFrom(
+                            backgroundColor: Theme.of(context).colorScheme.error,
+                            foregroundColor: Theme.of(context).colorScheme.onError,
+                          )
+                        : null,
                   ),
                   const SizedBox(width: 8),
                   IconButton.filled(
@@ -161,9 +194,10 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, required this.controller});
 
   final MessageDto message;
+  final ChatController controller;
 
   @override
   Widget build(BuildContext context) {
@@ -186,7 +220,10 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(message.body),
+            if (message.kind == MessageKindDto.voiceNote)
+              _VoiceNoteRow(message: message, controller: controller)
+            else
+              Text(message.body),
             if (outgoing) ...[
               const SizedBox(height: 2),
               Text(
@@ -211,5 +248,42 @@ class _MessageBubble extends StatelessWidget {
       case DeliveryStateDto.failed:
         return 'Falhou';
     }
+  }
+}
+
+/// Conteúdo de uma linha de nota de voz na timeline única (Fase 5) — play/
+/// pause quando pronta ([ChatController.isVoiceNoteReady]), indicador de
+/// progresso enquanto ainda chega.
+class _VoiceNoteRow extends StatelessWidget {
+  const _VoiceNoteRow({required this.message, required this.controller});
+
+  final MessageDto message;
+  final ChatController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final ready = controller.isVoiceNoteReady(message);
+    final playing = controller.playingMessageId == message.id;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!ready)
+          const Padding(
+            padding: EdgeInsets.all(4),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else
+          IconButton(
+            icon: Icon(playing ? Icons.stop_circle : Icons.play_circle),
+            onPressed: () => playing ? controller.stopVoicePlayback() : controller.play(message),
+          ),
+        Text(ready ? 'Nota de voz' : 'Recebendo nota de voz…'),
+      ],
+    );
   }
 }
