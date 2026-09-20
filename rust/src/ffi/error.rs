@@ -32,6 +32,11 @@ pub enum FfiError {
     /// uso da API do FFI: quem chama precisa ter chamado `ensure_session`
     /// primeiro.
     NoActiveSession,
+    /// Raiz de Merkle recomputada não bate com a do manifesto — arquivo
+    /// corrompido ou adulterado em trânsito (§7.2/§7.5). Distinto de
+    /// `Internal` porque a UI precisa oferecer "tentar de novo", não só
+    /// relatar uma falha genérica.
+    FileCorrupted,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -50,6 +55,7 @@ impl From<viska_proto::Error> for FfiError {
             Error::Store => FfiError::StoreFailure,
             Error::ContactNotFound => FfiError::ContactNotFound,
             Error::NeedsRehandshake => FfiError::SessionExpired,
+            Error::MerkleMismatch => FfiError::FileCorrupted,
             Error::AeadFailure
             | Error::InvalidState(_)
             | Error::UndecryptableMessage
@@ -108,6 +114,10 @@ mod tests {
         assert_eq!(
             FfiError::from(Error::NeedsRehandshake),
             FfiError::SessionExpired
+        );
+        assert_eq!(
+            FfiError::from(Error::MerkleMismatch),
+            FfiError::FileCorrupted
         );
 
         for err in [

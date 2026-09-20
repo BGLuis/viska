@@ -15,6 +15,7 @@
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 
 pub mod crypto;
+pub mod file;
 pub mod session;
 pub mod signaling;
 pub mod store;
@@ -41,6 +42,9 @@ pub enum Error {
 
     #[error("falha na autenticação do AEAD")]
     AeadFailure,
+
+    #[error("raiz de Merkle recomputada não bate com a esperada")]
+    MerkleMismatch,
 
     #[error("chave pública inválida: {0}")]
     InvalidPublicKey(&'static str),
