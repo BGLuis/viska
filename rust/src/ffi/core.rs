@@ -7,10 +7,11 @@
 //! nele, nunca lê os campos diretamente.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::ffi::error::FfiError;
+use crate::ffi::transfer::TransferHandle;
 use crate::ffi::types::{ContactDto, SafetyNumberDto};
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
@@ -19,6 +20,7 @@ use viska_proto::session::Session;
 use viska_proto::store::{keyring, Store};
 
 const DB_FILE_NAME: &str = "viska.sqlite3";
+const STAGING_DIR_NAME: &str = "staging";
 
 pub struct Core {
     // `pub(super)`, não privado: `ffi::session` (mesmo módulo pai `ffi`)
@@ -38,6 +40,13 @@ pub struct Core {
     /// FFI são despachados pelo `flutter_rust_bridge` em threads do próprio
     /// pool, potencialmente diferentes a cada chamada.
     pub(super) sessions: Mutex<HashMap<[u8; 16], Session>>,
+    /// Transferências de arquivo em andamento, uma por `file_id` — nunca
+    /// persistidas em si (`store::transfers` guarda só o necessário para
+    /// retomar dentro da mesma execução, ver `file::transfer`).
+    pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
+    /// ficam (§7.5). Não é segredo, só um caminho de diretório.
+    pub(super) staging_dir: PathBuf,
 }
 
 impl Core {
@@ -49,10 +58,21 @@ impl Core {
         let store = Store::open(&dir.join(DB_FILE_NAME), &master_secret)?;
         let identity = store.load_or_create_identity()?;
 
+        let staging_dir = dir.join(STAGING_DIR_NAME);
+        // Varre `.staging` órfão de uma execução anterior (crash, força
+        // bruta do processo) — nunca apaga o de uma transferência que o
+        // banco ainda considera ativa (armadilha da Fase 4: "`.staging`
+        // sobrevive a crash e vaza espaço em disco").
+        let active_ids: std::collections::HashSet<[u8; 16]> =
+            store.list_active_file_transfer_ids()?.into_iter().collect();
+        viska_proto::file::staging::sweep_orphaned(&staging_dir, &active_ids)?;
+
         Ok(Core {
             identity,
             store,
             sessions: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
+            staging_dir,
         })
     }
 

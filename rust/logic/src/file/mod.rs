@@ -6,4 +6,9 @@
 //! transferência precisa ser uma camada própria — ver `transfer` mais adiante
 //! nesta fase.
 
+pub mod fountain;
+pub mod keys;
+pub mod manifest;
 pub mod merkle;
+pub mod staging;
+pub mod transfer;

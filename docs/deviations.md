@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D14). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D15). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -237,3 +237,30 @@ D4 ("nada além do contador em claro"), mas exige uma máquina de estados nova d
 `crypto/ratchet.rs`, um projeto à parte. Descartada para a Fase 3 pelo custo, não por ser inviável.
 
 **Custo de reverter:** header encryption completo — projeto à parte, não uma correção pontual.
+
+---
+
+## D15 — `K_staging` de um segredo local por transferência, não do ratchet
+**Spec:** `docs/protocol.md` §7.5, `K_file = derive_key("viska-file-key-v1", session_secret ‖ file_id)`
+— `session_secret` sugere uma chave do ratchet.
+**Aqui:** um segredo aleatório de 32 B (`transfer_secret`), gerado por `crate::util::rng` uma vez por
+transferência, guardado cifrado no banco local enquanto a transferência está ativa e apagado ao
+completar ou abortar. `K_file`/`K_staging` derivam dele, nunca de uma chave do ratchet.
+
+Descoberto ao planejar a Fase 4: `session::Session` nunca expõe chave de mensagem para fora de si —
+nem `encrypt_outgoing` nem `decrypt_incoming` devolvem a `MK` usada — e essa é uma propriedade
+deliberada da camada de sessão, não um descuido. Romper isso pela primeira vez só para alimentar o
+staging custaria mais em superfície de API do que resolveria.
+
+Mais decisivo: uma `MK` do ratchet é de uso único por desenho (§5.3) — é exatamente isso que dá à
+sessão sigilo de encaminhamento. Uma transferência de arquivo grande precisa sobreviver a queda de
+conexão e retomar depois (D6, D9), reabrindo o mesmo `.staging` com a mesma chave — impossível se a
+chave de origem for, por construção, irrecuperável depois de consumida uma vez. Um segredo local
+dedicado, gerado uma vez por transferência e mantido (cifrado em repouso pelo banco, já coberto por
+D7/D13) até o fim ou o aborto, resolve as duas pontas ao mesmo tempo: "abortar destrói a chave"
+(crypto-shredding, §7.5) fica sob controle total do dispositivo — basta apagar a linha do banco — e
+retomar uma transferência não depende de reconstruir um estado de ratchet específico.
+
+**Custo de reverter:** perder a capacidade de retomar uma transferência grande após queda de conexão
+sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
+desenhada dentro do ratchet — projeto à parte.

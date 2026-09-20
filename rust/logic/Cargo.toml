@@ -27,6 +27,12 @@ subtle = "2.6"
 thiserror = "2"
 # Persistência cifrada (D7)
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-sqlcipher-vendored-openssl"] }
+# CBOR canônico do manifesto de arquivo (§7.1) — pura em Rust, mantida
+# ativamente (ao contrário de serde_cbor, hoje sem manutenção).
+ciborium = "0.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+# Código de fonte RaptorQ (RFC 6330) para o canal não confiável (D6, §7.3).
+raptorq = "2.0.1"
 
 [dev-dependencies]
 proptest = "1"

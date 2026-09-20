@@ -10,6 +10,7 @@ mod identity;
 pub mod keyring;
 pub mod messages;
 mod schema;
+pub mod transfers;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -122,6 +123,66 @@ impl Store {
     ) -> Result<Vec<messages::StoredMessage>> {
         let conn = self.lock()?;
         messages::list_pending(&conn, contact_device_id)
+    }
+
+    /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência
+    /// nova — o suficiente para reabrir a mesma `Manifest`/`K_staging` se a
+    /// conexão cair no meio (dentro da mesma execução do app; ver lacuna
+    /// registrada em `store::transfers`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_file_transfer(
+        &self,
+        file_id: &[u8; 16],
+        direction: transfers::Direction,
+        contact_device_id: &[u8; 16],
+        manifest_cbor: &[u8],
+        transfer_secret: &[u8],
+        created_at_unix_secs: i64,
+    ) -> Result<()> {
+        let conn = self.lock()?;
+        transfers::insert(
+            &conn,
+            file_id,
+            direction,
+            contact_device_id,
+            manifest_cbor,
+            transfer_secret,
+            created_at_unix_secs,
+        )
+    }
+
+    /// Busca uma transferência persistida pelo `file_id`.
+    pub fn find_file_transfer(
+        &self,
+        file_id: &[u8; 16],
+    ) -> Result<Option<transfers::StoredTransfer>> {
+        let conn = self.lock()?;
+        transfers::find(&conn, file_id)
+    }
+
+    /// Transferências de um contato numa direção — usado para listar
+    /// ofertas de recebimento pendentes.
+    pub fn list_file_transfers_for_contact(
+        &self,
+        contact_device_id: &[u8; 16],
+        direction: transfers::Direction,
+    ) -> Result<Vec<transfers::StoredTransfer>> {
+        let conn = self.lock()?;
+        transfers::list_for_contact(&conn, contact_device_id, direction)
+    }
+
+    /// Todo `file_id` com transferência persistida — usado para varrer
+    /// `.staging` órfão sem apagar o de uma transferência ainda ativa.
+    pub fn list_active_file_transfer_ids(&self) -> Result<Vec<[u8; 16]>> {
+        let conn = self.lock()?;
+        transfers::list_active_file_ids(&conn)
+    }
+
+    /// Remove o registro ao completar ou abortar — é isso que torna
+    /// `K_staging` irrecuperável (D15).
+    pub fn delete_file_transfer(&self, file_id: &[u8; 16]) -> Result<()> {
+        let conn = self.lock()?;
+        transfers::delete(&conn, file_id)
     }
 
     /// Trava a conexão. Um mutex envenenado (por pânico em outra chamada)

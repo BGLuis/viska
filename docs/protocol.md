@@ -392,12 +392,18 @@ A cada 500 ms o receptor envia `(file_id, block_index, symbols_received, blocks_
 Serve para o emissor parar de gerar reparo e para controle de taxa. Não revela nada além do volume,
 que já é observável.
 
-### 7.5 Staging cifrado (D13)
+### 7.5 Staging cifrado (D13, D15)
 
 ```
-K_file    = derive_key("viska-file-key-v1",    session_secret ‖ file_id)
+K_file    = derive_key("viska-file-key-v1",    transfer_secret ‖ file_id)
 K_staging = derive_key("viska-staging-v1",     K_file)
 ```
+
+`transfer_secret` é um segredo aleatório de 32 B gerado localmente uma vez por transferência (D15)
+— não uma chave do ratchet. `Session` nunca expõe chave de mensagem para fora de si, e uma `MK` do
+ratchet é de uso único por desenho (§5.3): não sobreviveria a uma transferência retomada depois de
+queda de conexão. `transfer_secret` fica cifrado em repouso no banco local enquanto a transferência
+está ativa (D7/D13) e é apagado ao completar ou abortar — é isso que destrói `K_staging` abaixo.
 
 Bytes decodificados são gravados imediatamente em `<app_dir>/staging/<file_id>.staging`, cifrados
 com XChaCha20-Poly1305 por página de 64 KB. Nada além de um source block fica em RAM.

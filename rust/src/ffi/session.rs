@@ -116,9 +116,22 @@ impl Core {
     /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
     /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
     /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-    /// DTO efêmero, sem `message_id`. Outros tipos de pacote (arquivo,
-    /// controle) estão fora do escopo desta fase e são descartados como se a
-    /// decifragem tivesse falhado.
+    /// DTO efêmero, sem `message_id`.
+    ///
+    /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
+    /// processados aqui como efeito colateral — inicia/atualiza/encerra o
+    /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
+    /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
+    /// deste método para acomodar isso quebraria `chat_controller.dart`
+    /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
+    /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+    /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
+    /// política de silêncio de qualquer corpo malformado nesta fronteira, e
+    /// nunca deveria acontecer vindo de um par honesto.
+    ///
+    /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
+    /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
+    /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
     pub fn decrypt_incoming(
         &self,
         peer_device_id: Vec<u8>,
@@ -162,6 +175,18 @@ impl Core {
                 is_typing: true,
                 received_at_unix_secs: received_at,
             })),
+            PacketType::FileMetadata => {
+                let _ = self.handle_incoming_file_metadata(device_id, inner.body);
+                Ok(None)
+            }
+            PacketType::FileFeedback => {
+                let _ = self.handle_incoming_file_feedback(inner.body);
+                Ok(None)
+            }
+            PacketType::FileComplete => {
+                let _ = self.handle_incoming_file_complete(inner.body);
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -234,7 +259,7 @@ impl Core {
         Ok(stored.into_iter().map(message_dto).collect())
     }
 
-    fn lock_sessions(&self) -> Result<MutexGuard<'_, HashMap<[u8; 16], Session>>, FfiError> {
+    pub(super) fn lock_sessions(&self) -> Result<MutexGuard<'_, HashMap<[u8; 16], Session>>, FfiError> {
         self.sessions.lock().map_err(|_| FfiError::Internal)
     }
 }

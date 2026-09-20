@@ -24,7 +24,7 @@ decisão explícita do usuário:
 | Arquivo | O que é |
 |---|---|
 | `docs/protocol.md` | **Especificação normativa.** Divergência entre código e este arquivo é bug no código. |
-| `docs/deviations.md` | Por que o protocolo se afasta da especificação de arquitetura original (D1–D13), com o custo de reverter cada desvio. |
+| `docs/deviations.md` | Por que o protocolo se afasta da especificação de arquitetura original (D1–D15), com o custo de reverter cada desvio. |
 | `docs/threat-model.md` | O que é defendido, e o que explicitamente não é. |
 
 Se for implementar uma seção do protocolo, leia a seção correspondente em `docs/protocol.md` **antes**

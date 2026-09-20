@@ -54,6 +54,14 @@ pub mod context {
     pub const BEACON: &str = "viska-beacon-v1";
     pub const FILE_KEY: &str = "viska-file-key-v1";
     pub const STAGING: &str = "viska-staging-v1";
+    /// Cifra o nome original do arquivo dentro do corpo do manifesto (§7.1).
+    pub const FILE_NAME: &str = "viska-file-name-v1";
+    /// Cifra cada símbolo RaptorQ no canal não confiável — fora do ratchet,
+    /// no mesmo espírito de `SIGNALING` (D6/D11): um símbolo precisa
+    /// decifrar mesmo depois de a sessão ter sido reaberta, e o volume de
+    /// símbolos por transferência estressaria o teto de chaves puladas do
+    /// ratchet (§5.5) se corresse pela cadeia normal.
+    pub const FILE_SYMBOL: &str = "viska-file-symbol-v1";
     pub const DATABASE: &str = "viska-db-key-v1";
 }
 

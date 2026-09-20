@@ -17,11 +17,13 @@ pub mod error;
 pub mod jitter;
 pub mod session;
 pub mod signaling;
+pub mod transfer;
 pub mod types;
 
 pub use self::core::Core;
 pub use error::FfiError;
 pub use types::{
-    ContactDto, DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto,
-    SafetyNumberDto, SealedMessageDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto,
+    ContactDto, DeliveryStateDto, FileOfferDto, IncomingMessageDto, MessageDirectionDto,
+    MessageDto, SafetyNumberDto, SealedMessageDto, SendFileStartedDto, SessionStateKind,
+    SessionStatusDto, SignalingTopicsDto, TransferProgressDto,
 };

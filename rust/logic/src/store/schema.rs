@@ -34,6 +34,15 @@ const MIGRATIONS: &[&str] = &[
         created_at_unix_secs  INTEGER NOT NULL
     );
     CREATE INDEX idx_messages_contact ON messages (contact_device_id, created_at_unix_secs);",
+    "\
+    CREATE TABLE file_transfers (
+        file_id               BLOB PRIMARY KEY,
+        direction             INTEGER NOT NULL,
+        contact_device_id     BLOB NOT NULL REFERENCES contacts(device_id),
+        manifest_cbor         BLOB NOT NULL,
+        transfer_secret       BLOB NOT NULL,
+        created_at_unix_secs  INTEGER NOT NULL
+    );",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -70,7 +79,7 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
 
-        for table in ["local_identity", "contacts", "messages"] {
+        for table in ["local_identity", "contacts", "messages", "file_transfers"] {
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",

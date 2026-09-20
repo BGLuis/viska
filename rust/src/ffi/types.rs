@@ -128,6 +128,35 @@ pub struct MessageDto {
     pub created_at_unix_secs: i64,
 }
 
+/// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendFileStartedDto {
+    /// Identifica a transferência nas chamadas seguintes
+    /// (`next_outgoing_file_symbol`, `send_progress`).
+    pub file_id: Vec<u8>,
+    /// Corpo do `FILE_METADATA` já selado — mandar pelo canal `control`.
+    pub sealed_metadata: Vec<u8>,
+}
+
+/// Uma oferta de arquivo recebida, pronta para a UI perguntar "aceitar?" —
+/// hoje sempre aceita automaticamente (sem fluxo de aceite/recusa ainda,
+/// ver relatório da Fase 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileOfferDto {
+    pub file_id: Vec<u8>,
+    pub name: String,
+    pub file_size: u64,
+}
+
+/// Progresso de uma transferência em andamento, de qualquer lado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferProgressDto {
+    pub blocks_done: u32,
+    pub total_blocks: u32,
+    pub bytes_done: u64,
+    pub is_complete: bool,
+}
+
 /// Tópicos de sinalização para um contato — `docs/protocol.md` §8.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalingTopicsDto {
