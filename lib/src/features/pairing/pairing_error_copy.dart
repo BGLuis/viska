@@ -30,6 +30,8 @@ String pairingErrorMessage(FfiError error) {
       return 'Nenhuma sessão de conversa está aberta com este contato.';
     case FfiError.fileCorrupted:
       return 'O arquivo recebido está corrompido ou foi adulterado.';
+    case FfiError.locked:
+      return 'O aplicativo está bloqueado. Desbloqueie para continuar.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

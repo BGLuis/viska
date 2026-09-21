@@ -193,6 +193,35 @@ class _FakeCore implements Core {
   @override
   Future<TransferProgressDto?> transferProgress({required List<int> fileId}) =>
       throw UnimplementedError();
+
+  @override
+  Future<void> emergencyErase() => throw UnimplementedError();
+
+  @override
+  Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<bool> isLocked() => throw UnimplementedError();
+
+  @override
+  Future<void> lock() => throw UnimplementedError();
+
+  @override
+  Future<void> markMessageRead({required PlatformInt64 messageId}) => throw UnimplementedError();
+
+  @override
+  Future<void> setEphemeralTtl({
+    required List<int> contactDeviceId,
+    required PlatformInt64 ttlSecs,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<int> sweepExpiredMessages() => throw UnimplementedError();
+
+  @override
+  Future<void> unlock() => throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {

@@ -332,6 +332,33 @@ class _FakeCore implements Core {
   @override
   Future<List<FileOfferDto>> pendingAudioOffers({required List<int> peerDeviceId}) async =>
       pendingAudioOffersToReturn;
+
+  @override
+  Future<bool> isLocked() async => false;
+
+  @override
+  Future<void> lock() async {}
+
+  @override
+  Future<void> unlock() async {}
+
+  @override
+  Future<void> emergencyErase() async {}
+
+  @override
+  Future<void> setEphemeralTtl({
+    required List<int> contactDeviceId,
+    required PlatformInt64 ttlSecs,
+  }) async {}
+
+  @override
+  Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId}) async => 0;
+
+  @override
+  Future<void> markMessageRead({required PlatformInt64 messageId}) async {}
+
+  @override
+  Future<int> sweepExpiredMessages() async => 0;
 }
 
 class _FakeP2PTransport implements P2PTransport {
@@ -416,6 +443,7 @@ void main() {
         body: 'oi',
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 1000,
+        isEphemeral: false,
       ),
     ];
     controller = makeController();
@@ -520,6 +548,7 @@ void main() {
         body: 'recebida',
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 123,
+        isEphemeral: false,
       ),
     ];
     controller = makeController();
@@ -680,6 +709,7 @@ void main() {
           audioFileId: fileId,
           deliveryState: DeliveryStateDto.sent,
           createdAtUnixSecs: 0,
+          isEphemeral: false,
         );
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
@@ -711,6 +741,7 @@ void main() {
             audioFileId: fileId,
             deliveryState: DeliveryStateDto.delivered,
             createdAtUnixSecs: 500,
+            isEphemeral: false,
           ),
         ];
         core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
@@ -799,6 +830,7 @@ void main() {
         audioFileId: fileId,
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 0,
+        isEphemeral: false,
       );
 
       await controller.play(message);
