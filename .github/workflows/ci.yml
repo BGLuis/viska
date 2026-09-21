@@ -5,29 +5,32 @@ on:
     branches: [ main, develop, developer ]
   pull_request:
     branches: [ main, develop, developer ]
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
 jobs:
   rust-check:
-    name: Núcleo Rust — Testes e Clippy
-    runs-on: ubuntu-latest
+    name: Núcleo Rust — Testes, Clippy e Features
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout do código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Instalar Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
-          components: clippy, rustfmt
+          toolchain: stable
+          components: clippy
 
       - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
         with:
           workspaces: |
             rust -> rust/target
@@ -37,44 +40,33 @@ jobs:
 
       - name: Testes do Núcleo
         working-directory: rust
-        run: |
-          cargo test --workspace
+        run: cargo test --workspace
 
       - name: Clippy (zero warnings)
         working-directory: rust
-        run: |
-          cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
-  flutter-audit:
-    name: Auditoria de APK e Zero Telemetria (D13 / F6)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+      - name: Compilação com todas as features (GEMINI.md)
+        working-directory: rust
+        run: cargo build --all-features
+
+      - name: Compilação sem features padrão (GEMINI.md)
+        working-directory: rust
+        run: cargo build --no-default-features
+
+  flutter-check:
+    name: Flutter — Análise Estática e Testes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configurar Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+      - name: Checkout do código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
         with:
           channel: 'stable'
           cache: true
-
-      - name: Instalar Rust para compilação FFI
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, x86_64-linux-android
-
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            rust -> rust/target
 
       - name: Obter dependências Flutter
         run: flutter pub get
@@ -84,6 +76,43 @@ jobs:
 
       - name: Testes do Flutter
         run: flutter test
+
+  android-audit:
+    name: Android — Build APK e Auditoria Zero Telemetria (D13 / F6)
+    needs: [rust-check, flutter-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Configurar Java
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165  # v5.0.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Instalar Rust para compilação FFI
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
+        with:
+          workspaces: |
+            rust -> rust/target
+
+      - name: Obter dependências Flutter
+        run: flutter pub get
 
       - name: Build do APK em modo Release
         run: flutter build apk --release --target-platform android-arm64,android-x64
