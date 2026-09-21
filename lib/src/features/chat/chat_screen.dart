@@ -38,6 +38,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
 
+  int _ephemeralTtlSecs = 0;
+
   @override
   void initState() {
     super.initState();
@@ -48,6 +50,56 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     _controller.addListener(_onControllerChanged);
     _controller.initialize();
+    _loadEphemeralTtl();
+  }
+
+  Future<void> _loadEphemeralTtl() async {
+    try {
+      final ttl = await widget.core.getEphemeralTtl(
+        contactDeviceId: widget.contactId.deviceId,
+      );
+      if (mounted) {
+        setState(() => _ephemeralTtlSecs = ttl);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _showEphemeralDialog() async {
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Mensagens temporárias'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 0),
+            child: const Text('Desativado (permanentes)'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 3600),
+            child: const Text('1 hora'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 86400),
+            child: const Text('24 horas'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 604800),
+            child: const Text('7 dias'),
+          ),
+        ],
+      ),
+    );
+    if (chosen != null) {
+      try {
+        await widget.core.setEphemeralTtl(
+          contactDeviceId: widget.contactId.deviceId,
+          ttlSecs: chosen,
+        );
+        if (mounted) {
+          setState(() => _ephemeralTtlSecs = chosen);
+        }
+      } catch (_) {}
+    }
   }
 
   void _onControllerChanged() {
@@ -96,6 +148,18 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.contactLabel ?? 'Conversa'),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _ephemeralTtlSecs > 0 ? Icons.timer : Icons.timer_outlined,
+              color: _ephemeralTtlSecs > 0 ? Colors.amber : null,
+            ),
+            tooltip: _ephemeralTtlSecs > 0
+                ? 'Mensagens temporárias ativas'
+                : 'Configurar mensagens temporárias',
+            onPressed: _showEphemeralDialog,
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(24),
           child: Padding(
@@ -153,6 +217,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _textController,
+                      autocorrect: false,
+                      enableSuggestions: false,
                       decoration: const InputDecoration(
                         hintText: 'Mensagem',
                         border: OutlineInputBorder(),
@@ -224,11 +290,21 @@ class _MessageBubble extends StatelessWidget {
               _VoiceNoteRow(message: message, controller: controller)
             else
               Text(message.body),
-            if (outgoing) ...[
+            if (message.isEphemeral || outgoing) ...[
               const SizedBox(height: 2),
-              Text(
-                _deliveryLabel(message.deliveryState),
-                style: Theme.of(context).textTheme.labelSmall,
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (message.isEphemeral) ...[
+                    const Icon(Icons.timer_outlined, size: 12),
+                    const SizedBox(width: 4),
+                  ],
+                  if (outgoing)
+                    Text(
+                      _deliveryLabel(message.deliveryState),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                ],
               ),
             ],
           ],

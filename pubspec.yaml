@@ -13,6 +13,7 @@ dependencies:
   flutter_rust_bridge: 2.13.0
   flutter_webrtc: ^1.6.2
   just_audio: ^0.10.6
+  local_auth: ^2.3.0
   mobile_scanner: ^7.4.2
   mqtt_client: ^10.9.0
   nsd: ^5.0.1

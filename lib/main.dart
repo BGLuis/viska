@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
+import 'package:viska/src/features/lock/inactivity_detector.dart';
+import 'package:viska/src/features/lock/lock_controller.dart';
+import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/features/pairing/pairing_scan_screen.dart';
 import 'package:viska/src/features/pairing/pairing_show_screen.dart';
 import 'package:viska/src/features/pairing/widgets/safety_number_view.dart';
+import 'package:viska/src/features/settings/settings_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/rust/frb_generated.dart';
@@ -19,29 +23,61 @@ Future<void> main() async {
   // Um único router para o app inteiro: ele cria (e conecta) um transporte
   // por contato sob demanda — Fase 3, F5.
   final router = P2PTransportRouter(core: core);
+  final lockController = LockController(
+    core: core,
+    appDirPath: appDir.path,
+  );
 
-  runApp(MainApp(core: core, router: router));
+  runApp(MainApp(core: core, router: router, lockController: lockController));
 }
 
 class MainApp extends StatelessWidget {
-  const MainApp({super.key, required this.core, required this.router});
+  const MainApp({
+    super.key,
+    required this.core,
+    required this.router,
+    required this.lockController,
+  });
 
   final Core core;
   final P2PTransportRouter router;
+  final LockController lockController;
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(home: PairingHomeScreen(core: core, router: router));
+    return MaterialApp(
+      home: ValueListenableBuilder<bool>(
+        valueListenable: lockController.isLocked,
+        builder: (context, isLocked, _) {
+          return InactivityDetector(
+            controller: lockController,
+            child: isLocked
+                ? LockScreen(controller: lockController)
+                : PairingHomeScreen(
+                    core: core,
+                    router: router,
+                    lockController: lockController,
+                  ),
+          );
+        },
+      ),
+    );
   }
 }
 
 /// Tela inicial mínima: lista contatos já pareados e dá acesso às telas de
 /// exibição e leitura do QR Code, além da conversa com cada um.
 class PairingHomeScreen extends StatefulWidget {
-  const PairingHomeScreen({super.key, required this.core, required this.router});
+  const PairingHomeScreen({
+    super.key,
+    required this.core,
+    required this.router,
+    required this.lockController,
+  });
 
   final Core core;
   final P2PTransportRouter router;
+  final LockController lockController;
 
   @override
   State<PairingHomeScreen> createState() => _PairingHomeScreenState();
@@ -102,7 +138,20 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Viska')),
+      appBar: AppBar(
+        title: const Text('Viska'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Configurações de Segurança',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => SettingsScreen(controller: widget.lockController),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: FutureBuilder<List<ContactDto>>(
         future: _contacts,
         builder: (context, snapshot) {

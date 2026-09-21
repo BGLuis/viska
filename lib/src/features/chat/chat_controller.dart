@@ -390,6 +390,11 @@ class ChatController extends ChangeNotifier {
     final loaded = await _core.listMessages(peerDeviceId: _contactId.deviceId);
     if (_disposed) return;
     _messages = loaded;
+    for (final m in loaded) {
+      if (m.direction == MessageDirectionDto.incoming) {
+        _core.markMessageRead(messageId: m.id).catchError((_) {});
+      }
+    }
     notifyListeners();
   }
 
