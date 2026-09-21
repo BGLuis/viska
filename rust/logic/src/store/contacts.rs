@@ -63,6 +63,36 @@ pub fn find_by_device_id(
     .map_err(|_| Error::Store)
 }
 
+/// Define o TTL (em segundos) das mensagens efêmeras trocadas com este contato.
+/// `0` significa mensagens permanentes (desligado).
+pub fn set_ephemeral_ttl(
+    conn: &rusqlite::Connection,
+    device_id: &[u8; DEVICE_ID_LEN],
+    ttl_secs: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE contacts SET ephemeral_ttl = ?1 WHERE device_id = ?2",
+        rusqlite::params![ttl_secs, device_id.as_slice()],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Consulta o TTL configurado para o contato.
+pub fn get_ephemeral_ttl(
+    conn: &rusqlite::Connection,
+    device_id: &[u8; DEVICE_ID_LEN],
+) -> Result<i64> {
+    conn.query_row(
+        "SELECT ephemeral_ttl FROM contacts WHERE device_id = ?1",
+        [device_id.as_slice()],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|_| Error::Store)?
+    .ok_or(Error::ContactNotFound)
+}
+
 fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PublicIdentity, i64)> {
     let device_id: Vec<u8> = row.get(0)?;
     let signing: Vec<u8> = row.get(1)?;

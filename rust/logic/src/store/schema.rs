@@ -45,6 +45,16 @@ const MIGRATIONS: &[&str] = &[
     );",
     "\
     ALTER TABLE file_transfers ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;",
+    "\
+    ALTER TABLE contacts ADD COLUMN ephemeral_ttl INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN is_ephemeral INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE ephemeral_message_keys (
+        message_id           INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+        key                  BLOB NOT NULL,
+        read_at              INTEGER,
+        expires_at           INTEGER NOT NULL
+    );
+    CREATE INDEX idx_ephemeral_keys_expiry ON ephemeral_message_keys (expires_at);",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -81,7 +91,13 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
 
-        for table in ["local_identity", "contacts", "messages", "file_transfers"] {
+        for table in [
+            "local_identity",
+            "contacts",
+            "messages",
+            "file_transfers",
+            "ephemeral_message_keys",
+        ] {
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",

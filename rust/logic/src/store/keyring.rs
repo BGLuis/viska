@@ -15,14 +15,59 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
+use zeroize::Zeroize;
 
 use crate::crypto::kdf::{Key, KEY_LEN};
 use crate::{Error, Result};
 
 const FILE_NAME: &str = "master.key";
 
-/// Carrega o segredo mestre em `app_dir`, gerando um na primeira execução.
+static INJECTED_SECRET: Mutex<Option<[u8; KEY_LEN]>> = Mutex::new(None);
+
+/// Injeta uma chave mestra fornecida diretamente pela camada nativa de plataforma
+/// (Android KeyStore via JNI / iOS Secure Enclave via C ABI), mantendo o segredo
+/// fora do heap gerenciado do Dart.
+pub fn set_injected_master_secret(mut secret: [u8; KEY_LEN]) {
+    if let Ok(mut guard) = INJECTED_SECRET.lock() {
+        if let Some(ref mut old) = *guard {
+            old.zeroize();
+        }
+        *guard = Some(secret);
+    }
+    secret.zeroize();
+}
+
+/// Limpa o segredo injetado da memória com zeroize.
+pub fn clear_injected_master_secret() {
+    if let Ok(mut guard) = INJECTED_SECRET.lock() {
+        if let Some(ref mut old) = *guard {
+            old.zeroize();
+        }
+        *guard = None;
+    }
+}
+
+/// Destrói o segredo mestre: zera a chave injetada em memória e remove o arquivo
+/// `master.key` em disco, garantindo crypto-shredding no apagamento de emergência.
+pub fn delete_master_secret(app_dir: &Path) -> Result<()> {
+    clear_injected_master_secret();
+    let path = app_dir.join(FILE_NAME);
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    Ok(())
+}
+
+/// Carrega o segredo mestre em `app_dir`, gerando um na primeira execução
+/// caso não exista segredo injetado pela plataforma nem arquivo em disco.
 pub fn load_or_create_master_secret(app_dir: &Path) -> Result<Key> {
+    if let Ok(guard) = INJECTED_SECRET.lock() {
+        if let Some(secret) = *guard {
+            return Ok(Key::from_bytes(secret));
+        }
+    }
+
     let path = app_dir.join(FILE_NAME);
 
     if let Ok(bytes) = fs::read(&path) {
@@ -98,5 +143,33 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn segredo_injetado_tem_precedencia_e_limpeza_funciona() {
+        let dir = tempfile::tempdir().unwrap();
+        let injetado = [42u8; KEY_LEN];
+        set_injected_master_secret(injetado);
+
+        let carregado = load_or_create_master_secret(dir.path()).unwrap();
+        assert_eq!(carregado.as_bytes(), &injetado);
+
+        // Não deve ter criado master.key enquanto injetado estava ativo
+        assert!(!dir.path().join(FILE_NAME).exists());
+
+        clear_injected_master_secret();
+        let do_arquivo = load_or_create_master_secret(dir.path()).unwrap();
+        assert_ne!(do_arquivo.as_bytes(), &injetado);
+        assert!(dir.path().join(FILE_NAME).exists());
+    }
+
+    #[test]
+    fn delete_master_secret_apaga_arquivo_e_limpa_memoria() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_master_secret(dir.path()).unwrap();
+        assert!(dir.path().join(FILE_NAME).exists());
+
+        delete_master_secret(dir.path()).unwrap();
+        assert!(!dir.path().join(FILE_NAME).exists());
     }
 }

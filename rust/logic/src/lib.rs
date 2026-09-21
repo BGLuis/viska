@@ -79,6 +79,9 @@ pub enum Error {
 
     #[error("contato não encontrado")]
     ContactNotFound,
+
+    #[error("núcleo ou banco de dados trancado")]
+    Locked,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

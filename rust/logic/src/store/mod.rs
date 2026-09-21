@@ -27,56 +27,92 @@ use crate::{Error, Result};
 /// `Send + Sync` para virar tipo opaco do FFI, cujos métodos são despachados
 /// de forma assíncrona e podem correr em threads diferentes do pool do
 /// `flutter_rust_bridge`. Acesso concorrente a uma única conexão SQLite sem
-/// essa serialização já seria incorreto com ou sem FFI.
+/// Banco de dados cifrado de um dispositivo: identidade local e contatos.
+///
+/// A conexão fica atrás de um `Mutex<Option<Connection>>` para permitir
+/// fechar a conexão sob demanda no bloqueio / auto-lock do aplicativo (D13),
+/// liberando caches descriptografados e chaves em RAM.
 pub struct Store {
-    conn: Mutex<rusqlite::Connection>,
+    conn: Mutex<Option<rusqlite::Connection>>,
 }
 
 impl Store {
     /// Abre (criando se necessário) o banco em `path`, cifrado com a chave
     /// derivada de `master_secret`.
-    ///
-    /// Erros de chave errada, arquivo corrompido ou falha de I/O colapsam todos
-    /// em [`Error::Store`] — mesma filosofia de [`Error::AeadFailure`]: a causa
-    /// exata de uma falha de abertura de banco cifrado não deveria ser
-    /// diferenciável por quem só tem a chave errada.
     pub fn open(path: &Path, master_secret: &kdf::Key) -> Result<Self> {
         let conn = rusqlite::Connection::open(path).map_err(|_| Error::Store)?;
 
         let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
         apply_key(&conn, &db_key)?;
 
-        // `PRAGMA key` só falha de fato na primeira operação subsequente: até
-        // aqui, uma chave errada ainda não foi rejeitada.
         schema::migrate(&conn).map_err(|_| Error::Store)?;
 
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Mutex::new(Some(conn)),
         })
+    }
+
+    /// Executa uma operação sobre a conexão ativa. Se o banco estiver trancado
+    /// (`None`), devolve [`Error::Locked`].
+    fn with_conn<T, F: FnOnce(&rusqlite::Connection) -> Result<T>>(&self, f: F) -> Result<T> {
+        let guard = self.conn.lock().map_err(|_| Error::Store)?;
+        let conn = guard.as_ref().ok_or(Error::Locked)?;
+        f(conn)
+    }
+
+    /// Fecha a conexão com o banco cifrado, liberando da memória páginas
+    /// em cache e contexto criptográfico do SQLCipher (D13 / F1).
+    pub fn close(&self) -> Result<()> {
+        let mut guard = self.conn.lock().map_err(|_| Error::Store)?;
+        *guard = None;
+        Ok(())
+    }
+
+    /// Reabre a conexão cifrada em `path` utilizando a chave mestre informada.
+    pub fn reopen(&self, path: &Path, master_secret: &kdf::Key) -> Result<()> {
+        let mut guard = self.conn.lock().map_err(|_| Error::Store)?;
+        let conn = rusqlite::Connection::open(path).map_err(|_| Error::Store)?;
+        let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
+        apply_key(&conn, &db_key)?;
+        schema::migrate(&conn).map_err(|_| Error::Store)?;
+        *guard = Some(conn);
+        Ok(())
+    }
+
+    /// Informa se o banco está trancado / fechado.
+    pub fn is_closed(&self) -> Result<bool> {
+        let guard = self.conn.lock().map_err(|_| Error::Store)?;
+        Ok(guard.is_none())
     }
 
     /// Carrega a identidade local, criando uma na primeira execução.
     pub fn load_or_create_identity(&self) -> Result<LocalIdentity> {
-        let conn = self.lock()?;
-        identity::load_or_create(&conn)
+        self.with_conn(identity::load_or_create)
     }
 
     /// Persiste um contato recém-pareado.
     pub fn insert_contact(&self, contact: &PublicIdentity, paired_at_unix_secs: i64) -> Result<()> {
-        let conn = self.lock()?;
-        contacts::insert(&conn, contact, paired_at_unix_secs)
+        self.with_conn(|conn| contacts::insert(conn, contact, paired_at_unix_secs))
     }
 
     /// Lista todos os contatos pareados.
     pub fn list_contacts(&self) -> Result<Vec<(PublicIdentity, i64)>> {
-        let conn = self.lock()?;
-        contacts::list(&conn)
+        self.with_conn(contacts::list)
     }
 
     /// Busca um contato pelo `device_id`.
     pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<(PublicIdentity, i64)>> {
-        let conn = self.lock()?;
-        contacts::find_by_device_id(&conn, device_id)
+        self.with_conn(|conn| contacts::find_by_device_id(conn, device_id))
+    }
+
+    /// Define o TTL (em segundos) de mensagens efêmeras para o contato.
+    pub fn set_ephemeral_ttl(&self, device_id: &[u8; 16], ttl_secs: i64) -> Result<()> {
+        self.with_conn(|conn| contacts::set_ephemeral_ttl(conn, device_id, ttl_secs))
+    }
+
+    /// Consulta o TTL configurado para o contato.
+    pub fn get_ephemeral_ttl(&self, device_id: &[u8; 16]) -> Result<i64> {
+        self.with_conn(|conn| contacts::get_ephemeral_ttl(conn, device_id))
     }
 
     /// Persiste uma mensagem de saída como `Pending`, antes de qualquer
@@ -88,8 +124,9 @@ impl Store {
         body: &str,
         created_at_unix_secs: i64,
     ) -> Result<i64> {
-        let conn = self.lock()?;
-        messages::insert_pending(&conn, contact_device_id, packet_type, body, created_at_unix_secs)
+        self.with_conn(|conn| {
+            messages::insert_pending(conn, contact_device_id, packet_type, body, created_at_unix_secs)
+        })
     }
 
     /// Persiste uma mensagem recebida e já decifrada.
@@ -100,20 +137,29 @@ impl Store {
         body: &str,
         received_at_unix_secs: i64,
     ) -> Result<i64> {
-        let conn = self.lock()?;
-        messages::insert_incoming(&conn, contact_device_id, packet_type, body, received_at_unix_secs)
+        self.with_conn(|conn| {
+            messages::insert_incoming(conn, contact_device_id, packet_type, body, received_at_unix_secs)
+        })
     }
 
     /// Marca uma mensagem de saída como entregue ao transporte.
     pub fn mark_message_sent(&self, message_id: i64) -> Result<()> {
-        let conn = self.lock()?;
-        messages::mark_sent(&conn, message_id)
+        self.with_conn(|conn| messages::mark_sent(conn, message_id))
+    }
+
+    /// Marca mensagem efêmera como lida, disparando o temporizador regressivo.
+    pub fn mark_message_read(&self, message_id: i64, unix_now: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_message_read(conn, message_id, unix_now))
+    }
+
+    /// Varre e destrói chaves de mensagens efêmeras vencidas.
+    pub fn sweep_expired_ephemeral_messages(&self, unix_now: i64) -> Result<usize> {
+        self.with_conn(|conn| messages::sweep_expired_ephemeral_messages(conn, unix_now))
     }
 
     /// Todas as mensagens de um contato, mais antigas primeiro.
     pub fn list_messages(&self, contact_device_id: &[u8; 16]) -> Result<Vec<messages::StoredMessage>> {
-        let conn = self.lock()?;
-        messages::list_for_contact(&conn, contact_device_id)
+        self.with_conn(|conn| messages::list_for_contact(conn, contact_device_id))
     }
 
     /// Mensagens de saída ainda não entregues.
@@ -121,14 +167,10 @@ impl Store {
         &self,
         contact_device_id: &[u8; 16],
     ) -> Result<Vec<messages::StoredMessage>> {
-        let conn = self.lock()?;
-        messages::list_pending(&conn, contact_device_id)
+        self.with_conn(|conn| messages::list_pending(conn, contact_device_id))
     }
 
-    /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência
-    /// nova — o suficiente para reabrir a mesma `Manifest`/`K_staging` se a
-    /// conexão cair no meio (dentro da mesma execução do app; ver lacuna
-    /// registrada em `store::transfers`).
+    /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência nova.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_file_transfer(
         &self,
@@ -140,17 +182,18 @@ impl Store {
         created_at_unix_secs: i64,
         kind: crate::file::transfer::TransferKind,
     ) -> Result<()> {
-        let conn = self.lock()?;
-        transfers::insert(
-            &conn,
-            file_id,
-            direction,
-            contact_device_id,
-            manifest_cbor,
-            transfer_secret,
-            created_at_unix_secs,
-            kind,
-        )
+        self.with_conn(|conn| {
+            transfers::insert(
+                conn,
+                file_id,
+                direction,
+                contact_device_id,
+                manifest_cbor,
+                transfer_secret,
+                created_at_unix_secs,
+                kind,
+            )
+        })
     }
 
     /// Busca uma transferência persistida pelo `file_id`.
@@ -158,40 +201,26 @@ impl Store {
         &self,
         file_id: &[u8; 16],
     ) -> Result<Option<transfers::StoredTransfer>> {
-        let conn = self.lock()?;
-        transfers::find(&conn, file_id)
+        self.with_conn(|conn| transfers::find(conn, file_id))
     }
 
-    /// Transferências de um contato numa direção — usado para listar
-    /// ofertas de recebimento pendentes.
+    /// Transferências de um contato numa direção.
     pub fn list_file_transfers_for_contact(
         &self,
         contact_device_id: &[u8; 16],
         direction: transfers::Direction,
     ) -> Result<Vec<transfers::StoredTransfer>> {
-        let conn = self.lock()?;
-        transfers::list_for_contact(&conn, contact_device_id, direction)
+        self.with_conn(|conn| transfers::list_for_contact(conn, contact_device_id, direction))
     }
 
-    /// Todo `file_id` com transferência persistida — usado para varrer
-    /// `.staging` órfão sem apagar o de uma transferência ainda ativa.
+    /// Todo `file_id` com transferência persistida.
     pub fn list_active_file_transfer_ids(&self) -> Result<Vec<[u8; 16]>> {
-        let conn = self.lock()?;
-        transfers::list_active_file_ids(&conn)
+        self.with_conn(transfers::list_active_file_ids)
     }
 
-    /// Remove o registro ao completar ou abortar — é isso que torna
-    /// `K_staging` irrecuperável (D15).
+    /// Remove o registro ao completar ou abortar.
     pub fn delete_file_transfer(&self, file_id: &[u8; 16]) -> Result<()> {
-        let conn = self.lock()?;
-        transfers::delete(&conn, file_id)
-    }
-
-    /// Trava a conexão. Um mutex envenenado (por pânico em outra chamada)
-    /// vira `Error::Store` em vez de propagar o pânico — o banco continua
-    /// utilizável, só essa operação falha.
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>> {
-        self.conn.lock().map_err(|_| Error::Store)
+        self.with_conn(|conn| transfers::delete(conn, file_id))
     }
 }
 
@@ -297,5 +326,45 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert!(listed.iter().any(|(c, _)| c == &a));
         assert!(listed.iter().any(|(c, _)| c == &b));
+    }
+
+    #[test]
+    fn trancamento_fecha_banco_e_reabertura_restaura_acesso() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(6);
+
+        let store = Store::open(&path, &k).unwrap();
+        let id = store.load_or_create_identity().unwrap();
+        assert!(!store.is_closed().unwrap());
+
+        // Fecha / tranca o banco
+        store.close().unwrap();
+        assert!(store.is_closed().unwrap());
+
+        // Operação sobre banco trancado falha com Error::Locked
+        assert!(matches!(store.load_or_create_identity(), Err(Error::Locked)));
+
+        // Reabre com a chave mestre
+        store.reopen(&path, &k).unwrap();
+        assert!(!store.is_closed().unwrap());
+        let reaberta = store.load_or_create_identity().unwrap();
+        assert_eq!(id.public(), reaberta.public());
+    }
+
+    #[test]
+    fn configuracao_de_ttl_efemero_persiste_e_recupera() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(7);
+
+        let store = Store::open(&path, &k).unwrap();
+        let contact = LocalIdentity::generate().unwrap().public();
+        store.insert_contact(&contact, 100).unwrap();
+
+        assert_eq!(store.get_ephemeral_ttl(&contact.device_id).unwrap(), 0);
+
+        store.set_ephemeral_ttl(&contact.device_id, 3600).unwrap();
+        assert_eq!(store.get_ephemeral_ttl(&contact.device_id).unwrap(), 3600);
     }
 }

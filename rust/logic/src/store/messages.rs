@@ -12,8 +12,15 @@
 //! `Error::InvalidState` em vez de silenciosamente persistir, como uma
 //! segunda barreira além da checagem que a camada FFI já faz.
 
+use rusqlite::OptionalExtension;
+use zeroize::Zeroize;
+
 use crate::wire::packet_type::PacketType;
 use crate::{Error, Result};
+
+pub const UNREAD_EXPIRATION_CEILING_SECS: i64 = 7 * 86400; // 7 dias de teto se não lida
+pub const EPHEMERAL_AAD: &[u8] = b"viska-ephemeral-body-v1";
+pub const EXPIRED_BODY_PLACEHOLDER: &str = "<mensagem expirada e destruída>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -60,6 +67,7 @@ pub struct StoredMessage {
     pub body: String,
     pub delivery_state: DeliveryState,
     pub created_at_unix_secs: i64,
+    pub is_ephemeral: bool,
 }
 
 fn reject_typing(packet_type: PacketType) -> Result<()> {
@@ -72,8 +80,8 @@ fn reject_typing(packet_type: PacketType) -> Result<()> {
 }
 
 /// Persiste uma mensagem de saída como `Pending`, antes de qualquer tentativa
-/// de envio — a cifragem e o envio acontecem depois, de posse do `id`
-/// devolvido aqui.
+/// de envio. Se o contato tiver TTL efêmero configurado, o corpo é cifrado
+/// com uma chave individual descartável `K_msg` (F3 / D13).
 pub fn insert_pending(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
@@ -82,7 +90,8 @@ pub fn insert_pending(
     created_at_unix_secs: i64,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
-    insert(
+    let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
+    insert_with_ttl(
         conn,
         contact_device_id,
         Direction::Outgoing,
@@ -90,10 +99,11 @@ pub fn insert_pending(
         body,
         DeliveryState::Pending,
         created_at_unix_secs,
+        ttl,
     )
 }
 
-/// Persiste uma mensagem recebida e já decifrada.
+/// Persiste uma mensagem recebida e já decifrada pela sessão.
 pub fn insert_incoming(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
@@ -102,7 +112,8 @@ pub fn insert_incoming(
     received_at_unix_secs: i64,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
-    insert(
+    let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
+    insert_with_ttl(
         conn,
         contact_device_id,
         Direction::Incoming,
@@ -110,11 +121,13 @@ pub fn insert_incoming(
         body,
         DeliveryState::Delivered,
         received_at_unix_secs,
+        ttl,
     )
 }
 
+/// Inserção de mensagem com TTL efêmero explícito.
 #[allow(clippy::too_many_arguments)]
-fn insert(
+pub fn insert_with_ttl(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
     direction: Direction,
@@ -122,30 +135,129 @@ fn insert(
     body: &str,
     delivery_state: DeliveryState,
     created_at_unix_secs: i64,
+    ttl_secs: i64,
 ) -> Result<i64> {
-    conn.execute(
-        "INSERT INTO messages
-            (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
-        rusqlite::params![
-            contact_device_id.as_slice(),
-            direction as i64,
-            packet_type.to_u8(),
-            body,
-            delivery_state as i64,
-            created_at_unix_secs,
-        ],
-    )
-    .map_err(|_| Error::Store)?;
+    reject_typing(packet_type)?;
 
-    Ok(conn.last_insert_rowid())
+    let is_ephemeral = ttl_secs > 0;
+    if is_ephemeral {
+        // Criptografia individual por mensagem com chave descartável K_msg (F3 / D13).
+        let k_msg_bytes = crate::util::rng::array::<32>()?;
+        let k_msg = crate::crypto::kdf::Key::from_bytes(k_msg_bytes);
+        let mut cipher_buf = body.as_bytes().to_vec();
+        crate::crypto::aead::seal_xchacha(&k_msg, EPHEMERAL_AAD, &mut cipher_buf)?;
+        let hex_body = hex::encode(&cipher_buf);
+        cipher_buf.zeroize();
+
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1)",
+            rusqlite::params![
+                contact_device_id.as_slice(),
+                direction as i64,
+                packet_type.to_u8(),
+                hex_body,
+                delivery_state as i64,
+                created_at_unix_secs,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+
+        let message_id = conn.last_insert_rowid();
+
+        let (read_at, expires_at) = match direction {
+            Direction::Outgoing => {
+                // Mensagem de saída: conta a partir da criação
+                (Some(created_at_unix_secs), created_at_unix_secs.saturating_add(ttl_secs))
+            }
+            Direction::Incoming => {
+                // Mensagem de entrada: aguarda leitura (com teto máximo se não lida)
+                (None, created_at_unix_secs.saturating_add(UNREAD_EXPIRATION_CEILING_SECS))
+            }
+        };
+
+        conn.execute(
+            "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                message_id,
+                k_msg.as_bytes().as_slice(),
+                read_at,
+                expires_at,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+
+        Ok(message_id)
+    } else {
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 0)",
+            rusqlite::params![
+                contact_device_id.as_slice(),
+                direction as i64,
+                packet_type.to_u8(),
+                body,
+                delivery_state as i64,
+                created_at_unix_secs,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+
+        Ok(conn.last_insert_rowid())
+    }
+}
+
+/// Marca uma mensagem efêmera como lida, disparando o temporizador regressivo
+/// a partir do carimbo de data/hora atual (`unix_now`).
+pub fn mark_message_read(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+    unix_now: i64,
+) -> Result<()> {
+    let ttl: Option<i64> = conn
+        .query_row(
+            "SELECT c.ephemeral_ttl FROM messages m
+             JOIN contacts c ON m.contact_device_id = c.device_id
+             WHERE m.id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+
+    if let Some(ttl) = ttl {
+        if ttl > 0 {
+            let expires_at = unix_now.saturating_add(ttl);
+            conn.execute(
+                "UPDATE ephemeral_message_keys
+                 SET read_at = ?1, expires_at = ?2
+                 WHERE message_id = ?3 AND read_at IS NULL",
+                rusqlite::params![unix_now, expires_at, message_id],
+            )
+            .map_err(|_| Error::Store)?;
+        }
+    }
+    Ok(())
+}
+
+/// Destrói chaves de mensagens efêmeras vencidas (crypto-shredding por mensagem).
+pub fn sweep_expired_ephemeral_messages(
+    conn: &rusqlite::Connection,
+    unix_now: i64,
+) -> Result<usize> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM ephemeral_message_keys WHERE expires_at <= ?1",
+            [unix_now],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(deleted)
 }
 
 /// Marca uma mensagem de saída como entregue ao transporte.
-///
-/// Idempotente por construção da query (`UPDATE` sem condição de estado): se
-/// a linha não existe mais, ou já está marcada, isso não é um erro — quem
-/// chama já tem o resultado que queria.
 pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     conn.execute(
         "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
@@ -162,7 +274,7 @@ pub fn list_for_contact(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral
              FROM messages
              WHERE contact_device_id = ?1
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -170,25 +282,57 @@ pub fn list_for_contact(
         .map_err(|_| Error::Store)?;
 
     let rows = statement
-        .query_map([contact_device_id.as_slice()], row_to_message)
+        .query_map([contact_device_id.as_slice()], |row| {
+            let id: i64 = row.get(0)?;
+            let direction: i64 = row.get(1)?;
+            let packet_type: i64 = row.get(2)?;
+            let raw_body: String = row.get(3)?;
+            let delivery_state: i64 = row.get(4)?;
+            let created_at_unix_secs: i64 = row.get(5)?;
+            let is_ephemeral: i64 = row.get(6)?;
+            Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral))
+        })
         .map_err(|_| Error::Store)?;
 
     let mut messages = Vec::new();
     for row in rows {
-        messages.push(row.map_err(|_| Error::Store)?);
+        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral) =
+            row.map_err(|_| Error::Store)?;
+
+        let direction = match direction {
+            0 => Direction::Outgoing,
+            1 => Direction::Incoming,
+            _ => return Err(Error::Store),
+        };
+        let packet_type =
+            PacketType::from_u8(packet_type as u8).map_err(|_| Error::Store)?;
+        let delivery_state =
+            DeliveryState::from_i64(delivery_state)?;
+        let is_ephemeral = is_ephemeral != 0;
+
+        let body = decode_ephemeral_or_plain(conn, id, raw_body, is_ephemeral)?;
+
+        messages.push(StoredMessage {
+            id,
+            direction,
+            packet_type,
+            body,
+            delivery_state,
+            created_at_unix_secs,
+            is_ephemeral,
+        });
     }
     Ok(messages)
 }
 
-/// Mensagens de saída ainda não entregues, mais antigas primeiro — a fila que
-/// o outbox (Fase 3, F6) drena assim que o transporte fica disponível.
+/// Mensagens de saída ainda não entregues, mais antigas primeiro.
 pub fn list_pending(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral
              FROM messages
              WHERE contact_device_id = ?1 AND direction = ?2 AND delivery_state = ?3
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -202,43 +346,92 @@ pub fn list_pending(
                 Direction::Outgoing as i64,
                 DeliveryState::Pending as i64,
             ],
-            row_to_message,
+            |row| {
+                let id: i64 = row.get(0)?;
+                let direction: i64 = row.get(1)?;
+                let packet_type: i64 = row.get(2)?;
+                let raw_body: String = row.get(3)?;
+                let delivery_state: i64 = row.get(4)?;
+                let created_at_unix_secs: i64 = row.get(5)?;
+                let is_ephemeral: i64 = row.get(6)?;
+                Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral))
+            },
         )
         .map_err(|_| Error::Store)?;
 
     let mut messages = Vec::new();
     for row in rows {
-        messages.push(row.map_err(|_| Error::Store)?);
+        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral) =
+            row.map_err(|_| Error::Store)?;
+
+        let direction = match direction {
+            0 => Direction::Outgoing,
+            1 => Direction::Incoming,
+            _ => return Err(Error::Store),
+        };
+        let packet_type =
+            PacketType::from_u8(packet_type as u8).map_err(|_| Error::Store)?;
+        let delivery_state =
+            DeliveryState::from_i64(delivery_state)?;
+        let is_ephemeral = is_ephemeral != 0;
+
+        let body = decode_ephemeral_or_plain(conn, id, raw_body, is_ephemeral)?;
+
+        messages.push(StoredMessage {
+            id,
+            direction,
+            packet_type,
+            body,
+            delivery_state,
+            created_at_unix_secs,
+            is_ephemeral,
+        });
     }
     Ok(messages)
 }
 
-fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
-    let id: i64 = row.get(0)?;
-    let direction: i64 = row.get(1)?;
-    let packet_type: i64 = row.get(2)?;
-    let body: String = row.get(3)?;
-    let delivery_state: i64 = row.get(4)?;
-    let created_at_unix_secs: i64 = row.get(5)?;
+fn decode_ephemeral_or_plain(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+    raw_body: String,
+    is_ephemeral: bool,
+) -> Result<String> {
+    if !is_ephemeral {
+        return Ok(raw_body);
+    }
 
-    let direction = match direction {
-        0 => Direction::Outgoing,
-        1 => Direction::Incoming,
-        _ => return Err(rusqlite::Error::InvalidQuery),
-    };
-    let packet_type =
-        PacketType::from_u8(packet_type as u8).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let delivery_state =
-        DeliveryState::from_i64(delivery_state).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let key_opt: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT key FROM ephemeral_message_keys WHERE message_id = ?1",
+            [message_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
 
-    Ok(StoredMessage {
-        id,
-        direction,
-        packet_type,
-        body,
-        delivery_state,
-        created_at_unix_secs,
-    })
+    match key_opt {
+        Some(key_bytes) if key_bytes.len() == 32 => {
+            let mut key_arr = [0u8; 32];
+            key_arr.copy_from_slice(&key_bytes);
+            let key = crate::crypto::kdf::Key::from_bytes(key_arr);
+            match hex::decode(&raw_body) {
+                Ok(mut cipher_buf) => {
+                    let result = match crate::crypto::aead::open_xchacha(
+                        &key,
+                        EPHEMERAL_AAD,
+                        &mut cipher_buf,
+                    ) {
+                        Ok(()) => String::from_utf8_lossy(&cipher_buf).to_string(),
+                        Err(_) => "<mensagem efêmera corrompida>".to_string(),
+                    };
+                    cipher_buf.zeroize();
+                    Ok(result)
+                }
+                Err(_) => Ok("<mensagem efêmera malformada>".to_string()),
+            }
+        }
+        _ => Ok(EXPIRED_BODY_PLACEHOLDER.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -348,5 +541,60 @@ mod tests {
         let listed = list_for_contact(&conn, &contact).unwrap();
         let bodies: Vec<&str> = listed.iter().map(|m| m.body.as_str()).collect();
         assert_eq!(bodies, vec!["primeira", "segunda", "terceira"]);
+    }
+
+    #[test]
+    fn mensagem_efemera_cifrada_com_k_msg_e_destruida_ao_vencer() {
+        let contact = [14u8; 16];
+        let conn = conn_with_contact(contact);
+
+        // Ativa TTL de 60 segundos
+        crate::store::contacts::set_ephemeral_ttl(&conn, &contact, 60).unwrap();
+
+        let id = insert_incoming(&conn, &contact, PacketType::MsgText, "segredo efêmero", 1000).unwrap();
+
+        // Antes da leitura: mensagem pode ser lida (com teto padrão de não lida)
+        let listed = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].body, "segredo efêmero");
+        assert!(listed[0].is_ephemeral);
+
+        // Marca como lida no tempo 1010 -> expiração passa a ser 1010 + 60 = 1070
+        mark_message_read(&conn, id, 1010).unwrap();
+
+        // No tempo 1060: ainda não expirou
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].body, "segredo efêmero");
+
+        // No tempo 1071: expira e é varrida
+        let swept = sweep_expired_ephemeral_messages(&conn, 1071).unwrap();
+        assert_eq!(swept, 1);
+
+        // Releitura: chave K_msg foi destruída (crypto-shredding), corpo exibe placeholder
+        let listed_after = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed_after[0].body, EXPIRED_BODY_PLACEHOLDER);
+
+        // Verifica que o corpo bruto no banco é hex cifrado, não plaintext
+        let raw_body: String = conn
+            .query_row("SELECT body FROM messages WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_ne!(raw_body, "segredo efêmero");
+        assert!(hex::decode(&raw_body).is_ok());
+    }
+
+    #[test]
+    fn mensagem_efemera_nao_lida_respeita_teto_de_expiracao() {
+        let contact = [15u8; 16];
+        let conn = conn_with_contact(contact);
+        crate::store::contacts::set_ephemeral_ttl(&conn, &contact, 60).unwrap();
+
+        insert_incoming(&conn, &contact, PacketType::MsgText, "nunca aberta", 1000).unwrap();
+
+        // 6 dias depois: ainda viva
+        sweep_expired_ephemeral_messages(&conn, 1000 + 6 * 86400).unwrap();
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].body, "nunca aberta");
+
+        // 8 dias depois (acima do teto de 7 dias): deve ser destruída
+        sweep_expired_ephemeral_messages(&conn, 1000 + 8 * 86400).unwrap();
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].body, EXPIRED_BODY_PLACEHOLDER);
     }
 }
