@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
@@ -14,11 +16,27 @@ import 'package:viska/src/rust/frb_generated.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
 
-  final appDir = await getApplicationSupportDirectory();
+  String? profile;
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] == '--profile' && i + 1 < args.length) {
+      profile = args[i + 1];
+      break;
+    }
+  }
+  profile ??= Platform.environment['VISKA_PROFILE'];
+
+  final baseDir = await getApplicationSupportDirectory();
+  final appDir = profile != null
+      ? Directory('${baseDir.path}/profiles/$profile')
+      : baseDir;
+  if (!await appDir.exists()) {
+    await appDir.create(recursive: true);
+  }
+
   final core = await Core.open(appDir: appDir.path);
   // Um único router para o app inteiro: ele cria (e conecta) um transporte
   // por contato sob demanda — Fase 3, F5.
@@ -28,7 +46,12 @@ Future<void> main() async {
     appDirPath: appDir.path,
   );
 
-  runApp(MainApp(core: core, router: router, lockController: lockController));
+  runApp(MainApp(
+    core: core,
+    router: router,
+    lockController: lockController,
+    profileName: profile,
+  ));
 }
 
 class MainApp extends StatelessWidget {
@@ -37,15 +60,18 @@ class MainApp extends StatelessWidget {
     required this.core,
     required this.router,
     required this.lockController,
+    this.profileName,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final LockController lockController;
+  final String? profileName;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      title: profileName != null ? 'Viska ($profileName)' : 'Viska',
       home: ValueListenableBuilder<bool>(
         valueListenable: lockController.isLocked,
         builder: (context, isLocked, _) {
@@ -57,6 +83,7 @@ class MainApp extends StatelessWidget {
                     core: core,
                     router: router,
                     lockController: lockController,
+                    profileName: profileName,
                   ),
           );
         },
@@ -73,11 +100,13 @@ class PairingHomeScreen extends StatefulWidget {
     required this.core,
     required this.router,
     required this.lockController,
+    this.profileName,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final LockController lockController;
+  final String? profileName;
 
   @override
   State<PairingHomeScreen> createState() => _PairingHomeScreenState();
@@ -139,7 +168,7 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Viska'),
+        title: Text(widget.profileName != null ? 'Viska (${widget.profileName})' : 'Viska'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings_outlined),

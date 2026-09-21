@@ -60,8 +60,7 @@ Na ordem real, que divergiu do plano em um ponto registrado no passo 4.
 
 2. **`flutter create`** com `--org app.viska --project-name viska --platforms=android,ios,linux
    --empty`. O alvo `linux` entrou como ferramenta de desenvolvimento, não como alvo de produto:
-   é a única forma de rodar dois pares na mesma máquina, já que o único aparelho Android conectado
-   é um Quest 3, sem acesso normal de câmera para ler QR Code.
+   permite rodar dois pares na mesma máquina e validar fluxos de rede e estado localmente.
 
 3. **Especificação normativa** — `docs/protocol.md` (424 linhas na primeira versão) e
    `docs/deviations.md` (213 linhas), este último registrando os desvios D1–D13 em relação à
