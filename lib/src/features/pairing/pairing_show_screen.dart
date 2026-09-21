@@ -1,6 +1,7 @@
-import 'dart:typed_data';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 
@@ -36,26 +37,38 @@ class _PairingShowScreenState extends State<PairingShowScreen> {
               return const CircularProgressIndicator();
             }
 
-            // Latin-1: cada byte do payload vira exatamente uma code unit,
-            // preservando o conteúdo binário 1:1 na string que o `qr`
-            // repassa ao codificador de modo byte.
-            final data = String.fromCharCodes(payload);
-
-            return Padding(
+            return SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  QrImageView(
-                    data: data,
-                    version: 7,
-                    errorCorrectionLevel: QrErrorCorrectLevel.M,
+                  QrImageView.withQr(
+                    qr: QrCode.fromUint8List(
+                      data: payload,
+                      errorCorrectLevel: QrErrorCorrectLevel.M,
+                    ),
                     size: 260,
                   ),
                   const SizedBox(height: 16),
                   const Text(
                     'Peça para a outra pessoa escanear este código com o app dela.',
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final b64 = base64Encode(payload);
+                      await Clipboard.setData(ClipboardData(text: b64));
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Código de pareamento copiado.'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copiar código'),
                   ),
                 ],
               ),

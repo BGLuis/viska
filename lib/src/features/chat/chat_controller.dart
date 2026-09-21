@@ -117,7 +117,8 @@ class ChatController extends ChangeNotifier {
     _incomingFileSub = _router.incomingFileFor(_contactId).listen(_handleIncomingFileBytes);
     _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
-    unawaited(_tryPublishOutgoingHandshake());
+    final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+    unawaited(_tryPublishOutgoingHandshake(status));
   }
 
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
@@ -301,8 +302,8 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingRaw(Uint8List bytes) async {
-    final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
-    final alreadyEstablished = status?.state == SessionStateKind.established;
+    final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+    final alreadyEstablished = status.state == SessionStateKind.established;
 
     if (!alreadyEstablished) {
       final response = await _core.feedHandshake(
@@ -341,8 +342,8 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _tryPublishOutgoingHandshake() async {
-    final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+  Future<void> _tryPublishOutgoingHandshake([SessionStatusDto? currentStatus]) async {
+    final status = currentStatus ?? await _core.ensureSession(peerDeviceId: _contactId.deviceId);
     if (status.state == SessionStateKind.established) {
       await _refreshEstablishedStateAndFlushIfNeeded();
       return;

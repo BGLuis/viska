@@ -14,19 +14,22 @@ pub fn insert(
     conn: &rusqlite::Connection,
     contact: &PublicIdentity,
     paired_at_unix_secs: i64,
+    nickname: Option<&str>,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
-         VALUES (?1, ?2, ?3, ?4, NULL)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (device_id) DO UPDATE SET
             signing_pubkey = excluded.signing_pubkey,
             dh_pubkey = excluded.dh_pubkey,
-            paired_at = excluded.paired_at",
+            paired_at = excluded.paired_at,
+            nickname = COALESCE(excluded.nickname, contacts.nickname)",
         rusqlite::params![
             contact.device_id.as_slice(),
             contact.signing.as_slice(),
             contact.dh.as_bytes().as_slice(),
             paired_at_unix_secs,
+            nickname,
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -34,9 +37,26 @@ pub fn insert(
     Ok(())
 }
 
-pub fn list(conn: &rusqlite::Connection) -> Result<Vec<(PublicIdentity, i64)>> {
+pub fn update_nickname(
+    conn: &rusqlite::Connection,
+    device_id: &[u8; DEVICE_ID_LEN],
+    nickname: &str,
+) -> Result<()> {
+    let count = conn.execute(
+        "UPDATE contacts SET nickname = ?1 WHERE device_id = ?2",
+        rusqlite::params![nickname, device_id.as_slice()],
+    )
+    .map_err(|_| Error::Store)?;
+
+    if count == 0 {
+        return Err(Error::ContactNotFound);
+    }
+    Ok(())
+}
+
+pub fn list(conn: &rusqlite::Connection) -> Result<Vec<(PublicIdentity, i64, Option<String>)>> {
     let mut statement = conn
-        .prepare("SELECT device_id, signing_pubkey, dh_pubkey, paired_at FROM contacts")
+        .prepare("SELECT device_id, signing_pubkey, dh_pubkey, paired_at, nickname FROM contacts")
         .map_err(|_| Error::Store)?;
 
     let rows = statement
@@ -53,9 +73,9 @@ pub fn list(conn: &rusqlite::Connection) -> Result<Vec<(PublicIdentity, i64)>> {
 pub fn find_by_device_id(
     conn: &rusqlite::Connection,
     device_id: &[u8; DEVICE_ID_LEN],
-) -> Result<Option<(PublicIdentity, i64)>> {
+) -> Result<Option<(PublicIdentity, i64, Option<String>)>> {
     conn.query_row(
-        "SELECT device_id, signing_pubkey, dh_pubkey, paired_at FROM contacts WHERE device_id = ?1",
+        "SELECT device_id, signing_pubkey, dh_pubkey, paired_at, nickname FROM contacts WHERE device_id = ?1",
         [device_id.as_slice()],
         row_to_contact,
     )
@@ -93,11 +113,12 @@ pub fn get_ephemeral_ttl(
     .ok_or(Error::ContactNotFound)
 }
 
-fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PublicIdentity, i64)> {
+fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PublicIdentity, i64, Option<String>)> {
     let device_id: Vec<u8> = row.get(0)?;
     let signing: Vec<u8> = row.get(1)?;
     let dh: Vec<u8> = row.get(2)?;
     let paired_at: i64 = row.get(3)?;
+    let nickname: Option<String> = row.get(4)?;
 
     let device_id: [u8; DEVICE_ID_LEN] = device_id
         .try_into()
@@ -114,5 +135,6 @@ fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PublicIdentity, 
             dh,
         },
         paired_at,
+        nickname,
     ))
 }

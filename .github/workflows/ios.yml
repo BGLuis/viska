@@ -3,6 +3,7 @@ name: CI/CD iOS — Viska
 on:
   push:
     branches: [ main, develop, developer ]
+    tags: [ 'v*' ]
     paths:
       - 'ios/**'
       - 'rust/**'
@@ -31,8 +32,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-${{ github.ref }}
-  cancel-in-progress: true
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Job 1: Validacao continua de compilacao e linkage sem assinatura (F0–F3)
@@ -40,24 +41,25 @@ jobs:
     name: Compilação iOS e Linkage Rust (No-Codesign)
     runs-on: macos-14
     timeout-minutes: 30
-    if: "!startsWith(github.ref, 'refs/tags/v') && !inputs.deploy_testflight"
+    if: "!inputs.deploy_testflight"
     steps:
       - name: Checkout do código
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Configurar Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
+          toolchain: stable
           targets: aarch64-apple-ios, aarch64-apple-ios-sim
 
       - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
         with:
           workspaces: |
             rust -> rust/target
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
         with:
           channel: 'stable'
           cache: true
@@ -66,7 +68,7 @@ jobs:
         run: flutter config --no-enable-swift-package-manager
 
       - name: Configurar Ruby e Bundler
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@277ba2a127aba66d45bad0fa2dc56f80dbfedffa  # v1.222.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -91,24 +93,37 @@ jobs:
     name: Publicação TestFlight (Fastlane)
     runs-on: macos-14
     timeout-minutes: 30
-    if: "startsWith(github.ref, 'refs/tags/v') || inputs.deploy_testflight"
+    if: "inputs.deploy_testflight"
     steps:
       - name: Checkout do código
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Validar presença de segredos Apple
+        env:
+          CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CERT_BASE64" ] || [ -z "$ASC_KEY" ]; then
+            echo "[-] Erro: Segredos de assinatura da Apple (IOS_DISTRIBUTION_CERTIFICATE_BASE64 ou APP_STORE_CONNECT_PRIVATE_KEY) não configurados." >&2
+            echo "[-] Configure os secrets necessários no GitHub antes de disparar deploy_testflight." >&2
+            exit 1
+          fi
+          echo "[+] Segredos de distribuição detectados."
 
       - name: Configurar Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
         with:
+          toolchain: stable
           targets: aarch64-apple-ios
 
       - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
         with:
           workspaces: |
             rust -> rust/target
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
         with:
           channel: 'stable'
           cache: true
@@ -117,7 +132,7 @@ jobs:
         run: flutter config --no-enable-swift-package-manager
 
       - name: Configurar Ruby e Bundler
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@277ba2a127aba66d45bad0fa2dc56f80dbfedffa  # v1.222.0
         with:
           ruby-version: '3.3'
           bundler-cache: true

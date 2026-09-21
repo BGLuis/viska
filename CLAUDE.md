@@ -105,10 +105,9 @@ testar o `wire` exaustivamente com property tests sem precisar de nenhuma chave.
 
 - Esta máquina é **Linux**, sem Xcode. O código iOS é escrito aqui mas só compila em runner macOS no
   CI ou em um Mac. Não presuma que dá para testar iOS localmente.
-- O aparelho Android conectado é um **Quest 3**. Roda o app, mas não tem acesso normal de câmera,
-  então o fluxo de leitura de QR Code não pode ser validado nele. Para testar dois pares na mesma
-  máquina, o alvo `linux` do Flutter existe como ferramenta de desenvolvimento — não é alvo de
-  produto.
+- O projeto é voltado para smartphones **Android** (e iOS) normais. Para testar dois pares na mesma
+  máquina durante o desenvolvimento, o alvo `linux` do Flutter existe como ferramenta de
+  suporte — não é alvo de produto.
 - BLE e Wi-Fi Aware só podem ser validados em hardware real.
 
 ## Ao terminar uma tarefa

@@ -1,6 +1,7 @@
-import 'dart:typed_data';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
@@ -8,12 +9,11 @@ import 'package:viska/src/rust/ffi/error.dart';
 
 import 'pairing_error_copy.dart';
 
-/// Tela de leitura do QR Code de um contato.
+/// Tela de leitura e inserção do código de pareamento de um contato.
 ///
-/// Pede permissão de câmera explicitamente (armadilha 5 do relatório: o
-/// aparelho de teste desta máquina não tem câmera normal, então este fluxo
-/// não pôde ser validado opticamente aqui — só o mapeamento de erro e a
-/// integração com `Core.pairFromQr`, via testes que não dependem de câmera).
+/// Suporta leitura ótica de QR Code via câmera (Android e iOS) e inserção manual
+/// via código de texto/Base64 (`docs/protocol.md` §8.3), garantindo o pareamento
+/// mesmo em ambientes de desenvolvimento ou situações de câmera indisponível.
 class PairingScanScreen extends StatefulWidget {
   const PairingScanScreen({super.key, required this.core});
 
@@ -28,17 +28,36 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
   String? _errorMessage;
   PermissionStatus? _cameraPermission;
 
+  late final MobileScannerController _scannerController = MobileScannerController(
+    formats: const [BarcodeFormat.qrCode],
+    facing: CameraFacing.back,
+  );
+
   @override
   void initState() {
     super.initState();
     _requestCameraPermission();
   }
 
-  Future<void> _requestCameraPermission() async {
-    final status = await Permission.camera.request();
-    if (!mounted) return;
-    setState(() => _cameraPermission = status);
+  @override
+  void dispose() {
+    _scannerController.dispose();
+    super.dispose();
   }
+
+  Future<void> _requestCameraPermission() async {
+    try {
+      final status = await Permission.camera.request();
+      if (!mounted) return;
+      setState(() => _cameraPermission = status);
+    } catch (_) {
+      if (!mounted) return;
+      // Em plataformas sem suporte a permissões de câmera (ex.: Linux desktop)
+      setState(() => _cameraPermission = PermissionStatus.denied);
+    }
+  }
+
+  bool _hasScanned = false;
 
   /// `rawValue` é `String` e não sobrevive a um payload binário de 145 bytes
   /// — nunca usar aqui. `rawDecodedBytes.bytes` preserva os bytes crus como o
@@ -50,17 +69,19 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
         DecodedVisionBarcodeBytes(:final bytes) => bytes,
         null => null,
       };
-      if (bytes != null) return bytes;
+      if (bytes != null && bytes.length == 145) return bytes;
     }
     return null;
   }
 
   Future<void> _handleDetection(BarcodeCapture capture) async {
-    if (_processing) return;
+    if (_hasScanned || _processing) return;
 
     final bytes = _payloadBytesFrom(capture);
     if (bytes == null) return;
 
+    // Trava imediatamente antes de qualquer await para descartar frames seguintes
+    _hasScanned = true;
     setState(() {
       _processing = true;
       _errorMessage = null;
@@ -71,10 +92,85 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
       if (!mounted) return;
       Navigator.of(context).pop(contact);
     } on FfiError catch (error) {
+      _hasScanned = false;
       if (!mounted) return;
       setState(() => _errorMessage = pairingErrorMessage(error));
+    } catch (_) {
+      _hasScanned = false;
+      if (!mounted) return;
+      setState(() => _errorMessage = 'Erro ao processar o código lido.');
     } finally {
       if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  Future<void> _pairWithBase64(String input) async {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return;
+
+    setState(() {
+      _processing = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final bytes = base64Decode(trimmed);
+      final contact = await widget.core.pairFromQr(payload: bytes);
+      if (!mounted) return;
+      Navigator.of(context).pop(contact);
+    } on FfiError catch (error) {
+      if (!mounted) return;
+      setState(() => _errorMessage = pairingErrorMessage(error));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _errorMessage = 'Código de pareamento inválido (deve ser Base64 de 145 bytes).');
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('A área de transferência está vazia.')),
+      );
+      return;
+    }
+    await _pairWithBase64(text);
+  }
+
+  Future<void> _showManualInputDialog() async {
+    final textController = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Inserir código de pareamento'),
+        content: TextField(
+          controller: textController,
+          maxLines: 4,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Cole o código Base64 aqui...',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(textController.text),
+            child: const Text('Parear'),
+          ),
+        ],
+      ),
+    );
+    if (result != null && result.isNotEmpty) {
+      await _pairWithBase64(result);
     }
   }
 
@@ -83,7 +179,21 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
     final permission = _cameraPermission;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Escanear código')),
+      appBar: AppBar(
+        title: const Text('Escanear código'),
+        actions: [
+          IconButton(
+            tooltip: 'Colar código',
+            icon: const Icon(Icons.content_paste),
+            onPressed: _processing ? null : _pasteFromClipboard,
+          ),
+          IconButton(
+            tooltip: 'Digitar manualmente',
+            icon: const Icon(Icons.edit_note),
+            onPressed: _processing ? null : _showManualInputDialog,
+          ),
+        ],
+      ),
       body: Column(
         children: [
           if (_errorMessage != null)
@@ -111,13 +221,13 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
 
     if (!permission.isGranted) {
       return Center(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'É preciso permitir o uso da câmera para ler o código.',
+                'É preciso permitir o uso da câmera para ler o código óptico.',
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
@@ -125,12 +235,57 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
                 onPressed: _requestCameraPermission,
                 child: const Text('Permitir câmera'),
               ),
+              const SizedBox(height: 24),
+              const Divider(),
+              const SizedBox(height: 16),
+              const Text(
+                'Ou você pode parear inserindo o código manualmente:',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _pasteFromClipboard,
+                icon: const Icon(Icons.content_paste),
+                label: const Text('Colar código copiado'),
+              ),
             ],
           ),
         ),
       );
     }
 
-    return MobileScanner(onDetect: _handleDetection);
+    return MobileScanner(
+      controller: _scannerController,
+      onDetect: _handleDetection,
+      errorBuilder: (context, error) {
+        return Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.videocam_off, size: 48, color: Colors.amber),
+                const SizedBox(height: 12),
+                Text(
+                  'Câmera não disponível (${error.errorCode.name}).',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _pasteFromClipboard,
+                  icon: const Icon(Icons.content_paste),
+                  label: const Text('Colar código copiado'),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _showManualInputDialog,
+                  child: const Text('Digitar código manualmente'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 }

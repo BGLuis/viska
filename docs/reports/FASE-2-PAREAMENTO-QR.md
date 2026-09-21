@@ -95,7 +95,7 @@ retrabalho na camada de estado, que precisaria passar de memória para banco dep
 | Gerar o QR em modo alfanumérico infla a matriz | Forçar modo byte no `qr_flutter`; 145 B cabem em Versão 7 com correção M. |
 | Chave do banco em `flutter_secure_storage` (lado Dart) viola a regra de fronteira | A chave mestra deve ser desembrulhada **dentro** do Rust. O Dart pode segurar o *blob* embrulhado, nunca a chave em claro. |
 | `decode_qr` devolve seis erros distintos e a UI colapsar tudo em "QR inválido" esconde ataque de MitM | `Error::SelfPairing` e `Error::LowOrderPoint` merecem mensagem própria — o segundo é sinal de payload forjado, não de leitura ruim. |
-| Aparelho de teste é um Quest 3, sem acesso normal de câmera | Validar o fluxo óptico em telefone real ou AVD com câmera emulada. Ver seção 6 do relatório da Fase 0. |
+| Testes óticos de câmera | Validar o fluxo óptico em smartphone Android físico ou AVD com câmera emulada. |
 
 ---
 

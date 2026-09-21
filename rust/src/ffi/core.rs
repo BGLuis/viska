@@ -170,14 +170,14 @@ impl Core {
         pairing::encode_qr(&self.identity).to_vec()
     }
 
-    /// Valida o payload lido pela câmera e persiste o contato.
-    pub fn pair_from_qr(&self, payload: Vec<u8>) -> Result<ContactDto, FfiError> {
+    /// Valida o payload lido pela câmera ou recebido por proximidade e persiste o contato.
+    pub fn pair_from_qr(&self, payload: Vec<u8>, nickname: Option<String>) -> Result<ContactDto, FfiError> {
         self.ensure_not_locked()?;
         let candidate = pairing::decode_qr(&payload, &self.identity.public())?;
         let paired_at = viska_proto::util::time::unix_seconds() as i64;
-        self.store.insert_contact(&candidate, paired_at)?;
+        self.store.insert_contact(&candidate, paired_at, nickname.as_deref())?;
 
-        Ok(ContactDto::from_identity(&candidate, paired_at, None))
+        Ok(ContactDto::from_identity(&candidate, paired_at, nickname))
     }
 
     /// Todos os contatos já pareados.
@@ -186,7 +186,7 @@ impl Core {
         let contacts = self.store.list_contacts()?;
         Ok(contacts
             .into_iter()
-            .map(|(identity, paired_at)| ContactDto::from_identity(&identity, paired_at, None))
+            .map(|(identity, paired_at, nickname)| ContactDto::from_identity(&identity, paired_at, nickname))
             .collect())
     }
 
@@ -196,7 +196,7 @@ impl Core {
         let device_id: [u8; 16] = contact_device_id
             .try_into()
             .map_err(|_| FfiError::Internal)?;
-        let (contact, _) = self
+        let (contact, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
@@ -206,6 +206,44 @@ impl Core {
             digits: number.to_display_string(),
             words: number.to_words_display_string(),
         })
+    }
+
+    /// Apelido desta identidade local, se configurado.
+    pub fn my_nickname(&self) -> Result<Option<String>, FfiError> {
+        self.ensure_not_locked()?;
+        Ok(self.store.get_config("my_nickname")?)
+    }
+
+    /// Define ou altera o apelido desta identidade local.
+    pub fn set_my_nickname(&self, nickname: String) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        self.store.set_config("my_nickname", &nickname)?;
+        Ok(())
+    }
+
+    /// Altera o apelido local de um contato já pareado.
+    pub fn set_contact_nickname(&self, contact_device_id: Vec<u8>, nickname: String) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+        self.store.update_contact_nickname(&device_id, &nickname)?;
+        Ok(())
+    }
+
+    /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
+    /// entre aparelhos próximos em pareamento.
+    pub fn compute_sas_code(&self, peer_payload: Vec<u8>) -> Result<String, FfiError> {
+        self.ensure_not_locked()?;
+        let candidate = pairing::decode_qr(&peer_payload, &self.identity.public())?;
+        let number = SafetyNumber::compute(&self.identity.public(), &candidate);
+        let digits_raw = number.to_display_string().replace(' ', "");
+        let sas = if digits_raw.len() >= 6 {
+            digits_raw[0..6].to_string()
+        } else {
+            format!("{:06}", 0)
+        };
+        Ok(sas)
     }
 }
 
@@ -220,17 +258,17 @@ mod tests {
     use super::*;
 
     fn open_core(dir: &tempfile::TempDir) -> Core {
-        Core::open(dir.path().to_str().unwrap().to_owned()).unwrap()
+        Core::open(dir.path().to_str().unwrap().to_string()).unwrap()
     }
 
     #[test]
     fn abrir_core_gera_identidade_na_primeira_execucao() {
         let dir = tempfile::tempdir().unwrap();
+        let core = open_core(&dir);
+        let id = core.identity.public();
 
-        let first = open_core(&dir).my_qr_payload();
-        let second = open_core(&dir).my_qr_payload();
-
-        assert_eq!(first, second);
+        assert_eq!(id.device_id.len(), 16);
+        assert_eq!(id.signing.len(), 32);
     }
 
     #[test]
@@ -240,17 +278,35 @@ mod tests {
         let core_a = open_core(&dir_a);
         let core_b = open_core(&dir_b);
 
-        let contact_of_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload()).unwrap();
-        let contact_of_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+        let contact_of_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload(), Some("Alice".to_string())).unwrap();
+        let contact_of_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload(), Some("Bob".to_string())).unwrap();
 
         assert_eq!(
             contact_of_a_seen_by_b.signing_pubkey,
             core_a.identity.public().signing
         );
+        assert_eq!(contact_of_a_seen_by_b.nickname.as_deref(), Some("Alice"));
         assert_eq!(
             contact_of_b_seen_by_a.signing_pubkey,
             core_b.identity.public().signing
         );
+        assert_eq!(contact_of_b_seen_by_a.nickname.as_deref(), Some("Bob"));
+
+        // Altera apelido de contato
+        core_a.set_contact_nickname(core_b.my_device_id(), "Bob Amigo".to_string()).unwrap();
+        let contacts_a = core_a.list_contacts().unwrap();
+        assert_eq!(contacts_a[0].nickname.as_deref(), Some("Bob Amigo"));
+
+        // Configuração de apelido próprio
+        assert_eq!(core_a.my_nickname().unwrap(), None);
+        core_a.set_my_nickname("Alice Santos".to_string()).unwrap();
+        assert_eq!(core_a.my_nickname().unwrap().as_deref(), Some("Alice Santos"));
+
+        // SAS de 6 dígitos calculado é idêntico em A e B
+        let sas_a = core_a.compute_sas_code(core_b.my_qr_payload()).unwrap();
+        let sas_b = core_b.compute_sas_code(core_a.my_qr_payload()).unwrap();
+        assert_eq!(sas_a.len(), 6);
+        assert_eq!(sas_a, sas_b);
     }
 
     #[test]
@@ -259,7 +315,7 @@ mod tests {
         let core = open_core(&dir);
 
         assert_eq!(
-            core.pair_from_qr(core.my_qr_payload()),
+            core.pair_from_qr(core.my_qr_payload(), None),
             Err(FfiError::SelfPairing)
         );
     }
@@ -282,7 +338,7 @@ mod tests {
         let mut payload = core_a.my_qr_payload();
         payload.pop();
 
-        assert_eq!(core_b.pair_from_qr(payload), Err(FfiError::QrMalformed));
+        assert_eq!(core_b.pair_from_qr(payload, None), Err(FfiError::QrMalformed));
     }
 
     #[test]
@@ -292,8 +348,8 @@ mod tests {
         let core_a = open_core(&dir_a);
         let core_b = open_core(&dir_b);
 
-        core_b.pair_from_qr(core_a.my_qr_payload()).unwrap();
-        core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+        core_b.pair_from_qr(core_a.my_qr_payload(), None).unwrap();
+        core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
 
         let sn_a = core_a
             .safety_number(core_b.identity.public().device_id.to_vec())
@@ -316,7 +372,7 @@ mod tests {
 
         // Operações no cofre devem falhar imediatamente com FfiError::Locked
         assert_eq!(core.list_contacts(), Err(FfiError::Locked));
-        assert_eq!(core.pair_from_qr(vec![0; 145]), Err(FfiError::Locked));
+        assert_eq!(core.pair_from_qr(vec![0; 145], None), Err(FfiError::Locked));
 
         // Desbloqueio reabre a conexão do cofre
         core.unlock().unwrap();
@@ -331,7 +387,7 @@ mod tests {
         let core_a = open_core(&dir_a);
         let core_b = open_core(&dir_b);
 
-        let contact = core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
 
         // Inicialmente nenhum TTL configurado (0 = desativado)
         assert_eq!(

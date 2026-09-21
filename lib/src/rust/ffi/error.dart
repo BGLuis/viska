@@ -6,47 +6,50 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`, `fmt`, `from`
 
-            // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`, `fmt`, `from`
-
-
-            
-
-            /// Erro devolvido por uma chamada FFI.
+/// Erro devolvido por uma chamada FFI.
 enum FfiError {
-                    /// Comprimento errado, versão desconhecida ou campo malformado.
-qrMalformed,
-/// A assinatura do payload não confere.
-qrBadSignature,
-/// O QR lido é o desta própria identidade.
-selfPairing,
-/// Chave X25519 de ordem baixa — sinal de payload forjado, não de leitura
-/// ruim. Merece mensagem própria na UI (ver armadilha 4 do relatório).
-forgedKey,
-/// Falha ao abrir, ler ou gravar no banco cifrado.
-storeFailure,
-/// Nenhum contato com o `device_id` informado.
-contactNotFound,
-/// O contador de envio da sessão cruzou o limiar de segurança — a UI
-/// precisa iniciar uma sessão nova (nova sinalização/handshake) com este
-/// contato, não é um erro para simplesmente relatar e ignorar.
-sessionExpired,
-/// Chamou `feed_handshake`/`decrypt_incoming` para um contato sem sessão
-/// aberta ainda. Não vem de `viska_proto::Error` — é puramente um erro de
-/// uso da API do FFI: quem chama precisa ter chamado `ensure_session`
-/// primeiro.
-noActiveSession,
-/// Raiz de Merkle recomputada não bate com a do manifesto — arquivo
-/// corrompido ou adulterado em trânsito (§7.2/§7.5). Distinto de
-/// `Internal` porque a UI precisa oferecer "tentar de novo", não só
-/// relatar uma falha genérica.
-fileCorrupted,
-/// O núcleo ou banco está trancado (auto-lock ou segundo plano) e requer
-/// autenticação prévia para executar operações.
-locked,
-/// Qualquer outra falha interna, sem informação útil para a UI.
-internal,
-                    ;
-                    
-                }
-            
+  /// Comprimento errado, versão desconhecida ou campo malformado.
+  qrMalformed,
+
+  /// A assinatura do payload não confere.
+  qrBadSignature,
+
+  /// O QR lido é o desta própria identidade.
+  selfPairing,
+
+  /// Chave X25519 de ordem baixa — sinal de payload forjado, não de leitura
+  /// ruim. Merece mensagem própria na UI (ver armadilha 4 do relatório).
+  forgedKey,
+
+  /// Falha ao abrir, ler ou gravar no banco cifrado.
+  storeFailure,
+
+  /// Nenhum contato com o `device_id` informado.
+  contactNotFound,
+
+  /// O contador de envio da sessão cruzou o limiar de segurança — a UI
+  /// precisa iniciar uma sessão nova (nova sinalização/handshake) com este
+  /// contato, não é um erro para simplesmente relatar e ignorar.
+  sessionExpired,
+
+  /// Chamou `feed_handshake`/`decrypt_incoming` para um contato sem sessão
+  /// aberta ainda. Não vem de `viska_proto::Error` — é puramente um erro de
+  /// uso da API do FFI: quem chama precisa ter chamado `ensure_session`
+  /// primeiro.
+  noActiveSession,
+
+  /// Raiz de Merkle recomputada não bate com a do manifesto — arquivo
+  /// corrompido ou adulterado em trânsito (§7.2/§7.5). Distinto de
+  /// `Internal` porque a UI precisa oferecer "tentar de novo", não só
+  /// relatar uma falha genérica.
+  fileCorrupted,
+
+  /// O núcleo ou banco está trancado (auto-lock ou segundo plano) e requer
+  /// autenticação prévia para executar operações.
+  locked,
+
+  /// Qualquer outra falha interna, sem informação útil para a UI.
+  internal,
+}

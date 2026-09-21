@@ -72,7 +72,7 @@ abaixo são o plano original, mantidas como registro histórico.
 ### Pendências que continuam em aberto (não resolvíveis nesta máquina)
 
 - Verificação em aparelho físico (gravar/ouvir, Android↔iOS) — limitação de ambiente já registrada
-  no `CLAUDE.md` (sem Xcode, Quest 3 sem câmera normal — microfone não testado).
+  no `CLAUDE.md` (sem Xcode — microfone não testado em hardware real).
 - Cross-compilação de `audiopus`/`libopus` para Android/iOS não verificada nesta máquina (só build
   para Linux, o host de desenvolvimento).
 - Sem fluxo de aceitar/recusar oferta — decisão de produto do usuário, não pendência técnica.

@@ -203,7 +203,23 @@ class _FakeCore implements Core {
   Future<Uint8List> myQrPayload() => throw UnimplementedError();
 
   @override
-  Future<ContactDto> pairFromQr({required List<int> payload}) => throw UnimplementedError();
+  Future<ContactDto> pairFromQr({required List<int> payload, String? nickname}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String?> myNickname() async => null;
+
+  @override
+  Future<void> setMyNickname({required String nickname}) async {}
+
+  @override
+  Future<void> setContactNickname({
+    required List<int> contactDeviceId,
+    required String nickname,
+  }) async {}
+
+  @override
+  Future<String> computeSasCode({required List<int> peerPayload}) async => '123456';
 
   @override
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) =>
@@ -763,9 +779,11 @@ void main() {
 
         transport.emitIncomingFile(Uint8List.fromList([9, 9]));
         // A conclusão encadeia vários `await` de verdade (I/O de arquivo
-        // real no diretório temporário de teste) — um só `Duration.zero`
-        // esvazia a fila de microtarefas, não necessariamente todos eles.
-        await pumpEventQueue();
+        // real no diretório temporário de teste) — aguarda até o processamento
+        // assíncrono refletir o WAV decodificado em memória.
+        for (var i = 0; i < 50 && !controller.isVoiceNoteReady(message); i++) {
+          await pumpEventQueue(times: 10);
+        }
 
         expect(core.ingestIncomingWireBytesCalls, [Uint8List.fromList([9, 9])]);
         expect(transport.sendCalls, [Uint8List.fromList([5, 5, 5])], reason: 'FILE_COMPLETE de volta ao emissor, pelo canal control');
@@ -819,9 +837,6 @@ void main() {
       controller = makeController();
       await controller.initialize();
 
-      transport.emitIncomingFile(Uint8List.fromList([1]));
-      await pumpEventQueue();
-
       final message = MessageDto(
         id: 1,
         direction: MessageDirectionDto.incoming,
@@ -832,6 +847,11 @@ void main() {
         createdAtUnixSecs: 0,
         isEphemeral: false,
       );
+
+      transport.emitIncomingFile(Uint8List.fromList([1]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(message); i++) {
+        await pumpEventQueue(times: 10);
+      }
 
       await controller.play(message);
       expect(player.playedBytes, [Uint8List.fromList([8, 8, 8])]);

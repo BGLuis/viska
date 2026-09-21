@@ -55,6 +55,11 @@ const MIGRATIONS: &[&str] = &[
         expires_at           INTEGER NOT NULL
     );
     CREATE INDEX idx_ephemeral_keys_expiry ON ephemeral_message_keys (expires_at);",
+    "\
+    CREATE TABLE app_config (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    );",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -97,6 +102,7 @@ mod tests {
             "messages",
             "file_transfers",
             "ephemeral_message_keys",
+            "app_config",
         ] {
             let exists: bool = conn
                 .query_row(

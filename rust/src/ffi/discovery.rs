@@ -32,7 +32,7 @@ impl Core {
     /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
     pub fn discovery_beacons(&self, peer_device_id: Vec<u8>) -> Result<DiscoveryBeaconsDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
-        let (peer, _) = self
+        let (peer, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
@@ -55,10 +55,10 @@ impl Core {
     pub fn match_discovered_beacon(&self, beacon: Vec<u8>) -> Result<Option<ContactDto>, FfiError> {
         let beacon: [u8; 16] = beacon.try_into().map_err(|_| FfiError::Internal)?;
 
-        for (peer, paired_at) in self.store.list_contacts()? {
+        for (peer, paired_at, nickname) in self.store.list_contacts()? {
             let k_sig = signaling_key(&self.identity, &peer)?;
             if beacon_ids_for_window(&k_sig).contains(&beacon) {
-                return Ok(Some(ContactDto::from_identity(&peer, paired_at, None)));
+                return Ok(Some(ContactDto::from_identity(&peer, paired_at, nickname)));
             }
         }
         Ok(None)
@@ -79,8 +79,8 @@ mod tests {
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
         let core_b = open_core(&dir_b);
-        let contact_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload()).unwrap();
-        let contact_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+        let contact_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload(), None).unwrap();
+        let contact_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
         (
             dir_a,
             core_a,
