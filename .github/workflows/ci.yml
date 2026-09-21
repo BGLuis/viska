@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [ main, develop, developer ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   rust-check:
     name: Núcleo Rust — Testes e Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +25,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> rust/target
 
       - name: Instalar dependências nativas
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev
@@ -34,14 +48,16 @@ jobs:
   flutter-audit:
     name: Auditoria de APK e Zero Telemetria (D13 / F6)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - name: Configurar Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@v2
@@ -71,11 +87,18 @@ jobs:
           chmod +x scripts/audit_apk.sh
           ./scripts/audit_apk.sh build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Verificação de Build Reproduzível
+      - name: Verificação de Integridade do APK
         run: |
-          HASH1=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
-          echo "Hash do build 1: ${HASH1}"
-          # Rebuild e comparação de componentes determinísticos
-          flutter build apk --release --target-platform android-arm64,android-x64
-          HASH2=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
-          echo "Hash do build 2: ${HASH2}"
+          APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
+          if [ ! -f "${APK_PATH}" ]; then
+            echo "[-] Erro: APK não encontrado em ${APK_PATH}" >&2
+            exit 1
+          fi
+          TAMANHO=$(stat -c%s "${APK_PATH}" 2>/dev/null || stat -f%z "${APK_PATH}")
+          echo "[+] Tamanho do APK: ${TAMANHO} bytes"
+          if [ "${TAMANHO}" -lt 5242880 ]; then
+            echo "[-] Erro: Tamanho do APK suspeito ou corrompido (${TAMANHO} bytes, esperado > 5 MB)" >&2
+            exit 1
+          fi
+          SHA256=$(sha256sum "${APK_PATH}" | awk '{print $1}')
+          echo "[+] SHA256 do APK: ${SHA256}"

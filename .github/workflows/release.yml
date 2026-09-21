@@ -10,22 +10,29 @@ on:
         required: false
         default: ''
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
 
 jobs:
   build-android:
     name: Compilar APK Android
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@v2
@@ -37,6 +44,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, x86_64-linux-android
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> rust/target
 
       - name: Obter dependências Flutter
         run: flutter pub get
@@ -57,17 +70,23 @@ jobs:
   build-ios:
     name: Compilar IPA iOS (Unsigned)
     runs-on: macos-14
+    permissions:
+      contents: read
+    timeout-minutes: 30
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
-
-      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
-        run: brew install autoconf automake libtool
 
       - name: Configurar Rust e alvos iOS
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> rust/target
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@v2
@@ -98,7 +117,8 @@ jobs:
       - name: Empacotar Runner.app em IPA sem assinatura
         run: |
           chmod +x scripts/package_ios_unsigned.sh
-          ./scripts/package_ios_unsigned.sh build/ios/iphoneos/Runner.app . viska-ios-unsigned.ipa
+          ./scripts/package_ios_unsigned.sh build/ios/iphoneos/Runner.app build/ios/release_unsigned viska-ios-unsigned.ipa
+          cp build/ios/release_unsigned/viska-ios-unsigned.ipa viska-ios-unsigned.ipa
 
       - name: Upload temporário do IPA
         uses: actions/upload-artifact@v4
@@ -111,6 +131,9 @@ jobs:
     name: Publicar Release no GitHub
     needs: [build-android, build-ios]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 15
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
@@ -134,9 +157,11 @@ jobs:
 
       - name: Determinar identificador da Tag a partir do pubspec.yaml
         id: tag_info
+        env:
+          TAG_INPUT: ${{ inputs.tag_name }}
         run: |
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            TAG="${{ inputs.tag_name }}"
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
           else
             VERSION=$(grep '^version: ' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
             TAG="v${VERSION}"

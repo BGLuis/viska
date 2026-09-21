@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 3. Os dois lados então pedem a rede (`ConnectivityManager.requestNetwork`
  *    com `WifiAwareNetworkSpecifier` para o `PeerHandle` um do outro).
  * 4. Quando a rede fica disponível, o ativo disca um `Socket` para o
- *    endereço IPv6 do par (`WifiAwareNetworkInfo.peerIpv6Address`) na porta
+ *    endereço IPv6 do par (`WifiAwareNetworkInfo.peerIpv6Addr`) na porta
  *    aprendida no passo 2; o passivo aceita no `ServerSocket` já ligado.
  * 5. Bytes crus trafegam pelo `EventChannel` como `dataReceived` — quem
  *    aplica `wire::framing`/o preâmbulo de canal (control/file) é o lado
@@ -290,7 +290,7 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
                     }
                     val capabilities = connectivityManager.getNetworkCapabilities(network)
                     val info = capabilities?.transportInfo as? WifiAwareNetworkInfo
-                    val address = info?.peerIpv6Address
+                    val address = info?.peerIpv6Addr
                     val port = pendingPort
                     if (address == null || port == null) {
                         eventSink?.success(

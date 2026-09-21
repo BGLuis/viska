@@ -13,6 +13,12 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
+# Validação defensiva do diretório de saída para prevenir deleção acidental de caminhos críticos
+if [ -z "${OUTPUT_DIR// }" ] || [ "$OUTPUT_DIR" = "." ] || [ "$OUTPUT_DIR" = ".." ] || [ "$OUTPUT_DIR" = "/" ] || [ "$OUTPUT_DIR" = "./" ] || { [ "$#" -ge 2 ] && [ -z "${2// }" ]; }; then
+    echo "Erro: OUTPUT_DIR inválido ('$OUTPUT_DIR'). O diretório de saída não pode ser vazio, '.', '..' ou '/'." >&2
+    exit 1
+fi
+
 echo "Criando estrutura Payload a partir de $APP_PATH..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR/Payload"

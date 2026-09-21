@@ -27,6 +27,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
@@ -36,18 +39,22 @@ jobs:
   ios-build-check:
     name: Compilação iOS e Linkage Rust (No-Codesign)
     runs-on: macos-14
+    timeout-minutes: 30
     if: "!startsWith(github.ref, 'refs/tags/v') && !inputs.deploy_testflight"
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
-        run: brew install autoconf automake libtool
-
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> rust/target
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@v2
@@ -83,18 +90,22 @@ jobs:
   ios-testflight-deploy:
     name: Publicação TestFlight (Fastlane)
     runs-on: macos-14
+    timeout-minutes: 30
     if: "startsWith(github.ref, 'refs/tags/v') || inputs.deploy_testflight"
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
-        run: brew install autoconf automake libtool
-
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
+
+      - name: Cache de dependências Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> rust/target
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@v2
