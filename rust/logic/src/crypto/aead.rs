@@ -112,7 +112,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ida_e_volta_chacha() {
+    fn chacha_round_trip() {
         let key = Key::from_bytes([7u8; 32]);
         let aad = b"cabecalho-do-envelope";
         let original = b"mensagem do ratchet".to_vec();
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_ciphertext_adulterado() {
+    fn rejects_tampered_ciphertext() {
         let key = Key::from_bytes([1u8; 32]);
         let mut buffer = b"dados do ratchet".to_vec();
         seal(&key, 0, b"", &mut buffer).unwrap();
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_tag_adulterada() {
+    fn rejects_tampered_tag() {
         let key = Key::from_bytes([2u8; 32]);
         let mut buffer = b"dados do ratchet".to_vec();
         seal(&key, 0, b"", &mut buffer).unwrap();
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_aad_adulterado() {
+    fn rejects_tampered_aad() {
         let key = Key::from_bytes([3u8; 32]);
         let mut buffer = b"dados do ratchet".to_vec();
         seal(&key, 0, b"aad-original", &mut buffer).unwrap();
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_contador_diferente() {
+    fn rejects_different_counter() {
         let key = Key::from_bytes([4u8; 32]);
         let mut buffer = b"dados do ratchet".to_vec();
         seal(&key, 5, b"", &mut buffer).unwrap();
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_chave_diferente() {
+    fn rejects_different_key() {
         let key_a = Key::from_bytes([5u8; 32]);
         let key_b = Key::from_bytes([6u8; 32]);
         let mut buffer = b"dados do ratchet".to_vec();
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn xchacha_ida_e_volta() {
+    fn xchacha_round_trip() {
         let key = Key::from_bytes([8u8; 32]);
         let original = b"symbol raptorq".to_vec();
 
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn xchacha_nonces_aleatorios_produzem_ciphertexts_distintos() {
+    fn xchacha_random_nonces_produce_distinct_ciphertexts() {
         let key = Key::from_bytes([9u8; 32]);
         let plaintext = b"mesmo plaintext, duas cifragens".to_vec();
 
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn xchacha_rejeita_buffer_curto_demais_para_ter_nonce() {
+    fn xchacha_rejects_buffer_too_short_to_have_nonce() {
         let key = Key::from_bytes([10u8; 32]);
         let mut buffer = vec![0u8; XNONCE_LEN - 1];
 
@@ -242,7 +242,7 @@ mod tests {
     /// tratamento do AAD, nonce completo de 12 B — está correto e não é só
     /// autoconsistente com o resto deste arquivo.
     #[test]
-    fn vetor_rfc8439_secao_2_8_2() {
+    fn rfc8439_vector_section_2_8_2() {
         let mut key_bytes = [0u8; 32];
         hex::decode_to_slice(
             "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",

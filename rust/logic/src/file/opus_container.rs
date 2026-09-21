@@ -494,42 +494,42 @@ mod tests {
     }
 
     #[test]
-    fn decode_to_pcm_produz_o_numero_certo_de_amostras_e_descarta_pre_skip() {
+    fn decode_to_pcm_produces_correct_number_of_samples_and_discards_pre_skip() {
         let stream = stream_opus_real(FRAME_SAMPLES as u16, 5);
         let pcm = decode_to_pcm(&stream).unwrap();
         assert_eq!(pcm.len(), 5 * FRAME_SAMPLES - FRAME_SAMPLES);
     }
 
     #[test]
-    fn decode_to_pcm_sem_pre_skip_mantem_todas_as_amostras() {
+    fn decode_to_pcm_without_pre_skip_retains_all_samples() {
         let stream = stream_opus_real(0, 3);
         let pcm = decode_to_pcm(&stream).unwrap();
         assert_eq!(pcm.len(), 3 * FRAME_SAMPLES);
     }
 
     #[test]
-    fn decode_to_pcm_rejeita_taxa_de_amostragem_nao_suportada() {
+    fn decode_to_pcm_rejects_unsupported_sample_rate() {
         let mut stream = stream_opus_real(0, 1);
         stream.sample_rate = 44100; // não é uma das cinco taxas que o Opus define.
         assert!(matches!(decode_to_pcm(&stream), Err(Error::Malformed(_))));
     }
 
     #[test]
-    fn decode_to_pcm_rejeita_contagem_de_canais_nao_suportada() {
+    fn decode_to_pcm_rejects_unsupported_channel_count() {
         let mut stream = stream_opus_real(0, 1);
         stream.channels = 3;
         assert!(matches!(decode_to_pcm(&stream), Err(Error::Malformed(_))));
     }
 
     #[test]
-    fn decode_to_pcm_rejeita_pacote_vazio_sem_panico() {
+    fn decode_to_pcm_rejects_empty_packet_without_panic() {
         let mut stream = stream_opus_real(0, 1);
         stream.packets[0] = Vec::new();
         assert!(decode_to_pcm(&stream).is_err());
     }
 
     #[test]
-    fn decode_to_wav_produz_cabecalho_riff_valido() {
+    fn decode_to_wav_produces_valid_riff_header() {
         let stream = stream_opus_real(0, 2);
         let wav = decode_to_wav(&stream).unwrap();
 
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn build_wav_preenche_taxa_e_canais_no_cabecalho() {
+    fn build_wav_fills_rate_and_channels_in_header() {
         let pcm: Vec<i16> = vec![1, -1, 2, -2, 3, -3];
         let wav = build_wav(&pcm, 48000, 1);
 
@@ -555,13 +555,13 @@ mod tests {
     }
 
     #[test]
-    fn build_wav_com_pcm_vazio_nao_panica() {
+    fn build_wav_with_empty_pcm_does_not_panic() {
         let wav = build_wav(&[], 48000, 1);
         assert_eq!(wav.len(), WAV_HEADER_LEN as usize);
     }
 
     #[test]
-    fn rebuild_e_strip_sao_inversos() {
+    fn rebuild_and_strip_are_inverses() {
         let original = stream_de_teste();
         let ogg = rebuild_container(&original);
         let recuperado = strip_container(&ogg).unwrap();
@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_opus_stream_encode_decode_ida_e_volta() {
+    fn raw_opus_stream_encode_decode_roundtrip() {
         let original = stream_de_teste();
         let encoded = original.encode();
         let decoded = RawOpusStream::decode(&encoded).unwrap();
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn opustags_forjado_com_metadados_de_dispositivo_nao_sobrevive_ao_strip() {
+    fn forged_opustags_with_device_metadata_does_not_survive_strip() {
         // Monta um Ogg-Opus válido à mão, com um OpusTags carregando
         // exatamente o tipo de metadado que a spec (§6.6, D16) proíbe.
         const SERIAL: u32 = 1;
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_container_rejeita_sem_assinatura_oggs() {
+    fn strip_container_rejects_without_oggs_signature() {
         assert!(matches!(
             strip_container(b"nao e um ogg"),
             Err(Error::Malformed(_))
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_container_rejeita_primeira_pagina_sem_bos() {
+    fn strip_container_rejects_first_page_without_bos() {
         let mut ogg = Vec::new();
         write_page(&mut ogg, 0, 0, 1, 0, b"pacote qualquer");
         assert!(matches!(
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_container_rejeita_fluxo_sem_opustags() {
+    fn strip_container_rejects_stream_without_opustags() {
         let mut ogg = Vec::new();
         let mut head = Vec::new();
         head.extend_from_slice(&OPUS_HEAD_MAGIC);
@@ -656,12 +656,12 @@ mod tests {
 
     proptest::proptest! {
         #[test]
-        fn strip_container_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
+        fn strip_container_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
             let _ = strip_container(&bytes);
         }
 
         #[test]
-        fn raw_opus_stream_decode_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
+        fn raw_opus_stream_decode_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
             let _ = RawOpusStream::decode(&bytes);
         }
     }

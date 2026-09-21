@@ -59,19 +59,19 @@ mod tests {
     }
 
     #[test]
-    fn beacon_id_e_identico_nos_dois_lados_na_mesma_epoca() {
+    fn beacon_id_is_identical_on_both_sides_in_same_epoch() {
         let (k_alice, k_bob) = shared_k_sig();
         assert_eq!(beacon_id(&k_alice, 123_456), beacon_id(&k_bob, 123_456));
     }
 
     #[test]
-    fn beacon_id_muda_entre_epocas_adjacentes() {
+    fn beacon_id_changes_between_adjacent_epochs() {
         let (k_sig, _) = shared_k_sig();
         assert_ne!(beacon_id(&k_sig, 1000), beacon_id(&k_sig, 1001));
     }
 
     #[test]
-    fn quem_nao_compartilha_k_sig_produz_beacon_diferente() {
+    fn party_without_shared_k_sig_produces_different_beacon() {
         let (k_sig, _) = shared_k_sig();
         let alice = LocalIdentity::generate().unwrap();
         let mallory = LocalIdentity::generate().unwrap();
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn beacon_ids_for_window_cobre_epoca_anterior_atual_e_seguinte() {
+    fn beacon_ids_for_window_covers_previous_current_and_next_epoch() {
         let (k_sig, _) = shared_k_sig();
         let now = crate::util::time::current_epoch();
 
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn instance_name_hex_e_hexadecimal_minusculo_de_16_bytes() {
+    fn instance_name_hex_is_lowercase_hex_of_16_bytes() {
         let (k_sig, _) = shared_k_sig();
         let beacon = beacon_id(&k_sig, 42);
 

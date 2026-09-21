@@ -105,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_topic_de_um_lado_esta_entre_os_tres_topicos_de_assinatura_do_outro() {
+    fn publish_topic_from_one_side_is_in_three_subscription_topics_of_the_other() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let topics_a = core_a.signaling_topics(device_id_b).unwrap();
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn topicos_de_contato_desconhecido_erram() {
+    fn topics_for_unknown_contact_fail() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         assert_eq!(
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_selado_por_um_lado_abre_do_outro() {
+    fn payload_sealed_by_one_side_opens_on_other() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let sealed = core_a
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_adulterado_e_descartado_como_none() {
+    fn tampered_payload_is_discarded_as_none() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let mut sealed = core_a

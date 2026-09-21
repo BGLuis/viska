@@ -4,7 +4,7 @@ import 'package:viska/src/features/pairing/widgets/safety_number_view.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 
 void main() {
-  testWidgets('renderiza 12 grupos de digitos e 6 palavras', (
+  testWidgets('renders 12 digit groups and 6 words', (
     WidgetTester tester,
   ) async {
     const safetyNumber = SafetyNumberDto(

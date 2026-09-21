@@ -130,7 +130,7 @@ void main() {
     tempDirBob.deleteSync(recursive: true);
   });
 
-  test('E2E: Pareamento real entre duas instâncias e validação de Safety Number', () async {
+  test('E2E: real pairing between two instances and safety number validation', () async {
     // 1. Geração de payloads de QR reais de 145 bytes a partir dos núcleos Rust
     final aliceQrPayload = await coreAlice.myQrPayload();
     final bobQrPayload = await coreBob.myQrPayload();
@@ -186,7 +186,7 @@ void main() {
     expect(snAlice.digits, equals(snBob.digits), reason: 'Safety numbers devem ser rigorosamente idênticos dos dois lados');
   }, skip: skipE2E);
 
-  test('E2E: Estabelecimento de sessão pós-quântica e troca de mensagens cifradas', () async {
+  test('E2E: post-quantum session establishment and encrypted message exchange', () async {
     // 1. Pareamento prévio dos dois nós
     final alicePayload = await coreAlice.myQrPayload();
     final bobPayload = await coreBob.myQrPayload();

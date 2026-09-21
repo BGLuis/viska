@@ -91,8 +91,8 @@ testar o `wire` exaustivamente com property tests sem precisar de nenhuma chave.
 
 - Comentários e doc-comments em **português brasileiro**. Comentário explica **por quê**, nunca o
   quê. Se a linha é óbvia, não comente.
-- Testes no próprio arquivo, em `#[cfg(test)] mod tests`, com nomes descritivos em português
-  (`rejeita_tag_adulterada`, `independe_da_ordem_dos_argumentos`).
+- Testes no próprio arquivo, em `#[cfg(test)] mod tests`, com nomes descritivos em inglês
+  (`rejects_tampered_tag`, `independent_of_argument_order`).
 - Codec binário segue o padrão de `crypto/pairing.rs`: constantes de deslocamento nomeadas,
   `const _: () = assert!(...)` travando os tamanhos, e teste exaustivo de adulteração bit a bit.
 - Toda função que processa bytes vindos da rede usa `checked_add` e `.get()` em offsets variáveis.

@@ -109,7 +109,7 @@ void main() {
 
   tearDown(() async => service.dispose());
 
-  test('emite_contato_quando_o_scanner_acha_um_beacon_conhecido', () async {
+  test('emits contact when scanner finds known beacon', () async {
     await service.start(contacts: [_alice, _bob]);
 
     final received = <ContactId>[];
@@ -121,7 +121,7 @@ void main() {
     expect(received, [_bob]);
   });
 
-  test('nao_emite_nada_para_beacon_desconhecido', () async {
+  test('emits nothing for unknown beacon', () async {
     await service.start(contacts: [_alice, _bob]);
 
     final received = <ContactId>[];
@@ -133,7 +133,7 @@ void main() {
     expect(received, isEmpty);
   });
 
-  test('varre_pelos_uuids_de_todos_os_contatos_informados', () async {
+  test('scans for UUIDs of all provided contacts', () async {
     await service.start(contacts: [_alice, _bob]);
 
     expect(scanner.scanCalls, hasLength(1));
@@ -141,13 +141,13 @@ void main() {
     expect(uuids, {toBleServiceUuid(_beaconAlice), toBleServiceUuid(_beaconBob)});
   });
 
-  test('anuncia_o_beacon_do_contato_informado_quando_suportado', () async {
+  test('advertises beacon of specified contact when supported', () async {
     await service.start(contacts: [_alice, _bob], advertiseFor: _alice);
 
     expect(advertiser.startAdvertisingCalls, [toBleServiceUuid(_beaconAlice)]);
   });
 
-  test('nao_anuncia_quando_advertiser_nao_e_suportado', () async {
+  test('does not advertise when advertiser is not supported', () async {
     advertiser.supported = false;
 
     await service.start(contacts: [_alice], advertiseFor: _alice);
@@ -155,13 +155,13 @@ void main() {
     expect(advertiser.startAdvertisingCalls, isEmpty);
   });
 
-  test('nao_anuncia_quando_nenhum_contato_e_informado', () async {
+  test('does not advertise when no contact is specified', () async {
     await service.start(contacts: [_alice, _bob]);
 
     expect(advertiser.startAdvertisingCalls, isEmpty);
   });
 
-  test('reanuncia_periodicamente_para_acompanhar_a_rotacao_de_epoca', () {
+  test('re-advertises periodically to track epoch rotation', () {
     fakeAsync((async) {
       unawaited(service.start(contacts: [_alice], advertiseFor: _alice));
       async.elapse(Duration.zero);
@@ -175,7 +175,7 @@ void main() {
     });
   });
 
-  test('stop_cancela_varredura_e_anuncio', () async {
+  test('stop cancels scanning and advertising', () async {
     await service.start(contacts: [_alice], advertiseFor: _alice);
 
     await service.stop();

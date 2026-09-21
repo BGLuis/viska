@@ -121,13 +121,13 @@ mod tests {
     }
 
     #[test]
-    fn payload_tem_145_bytes() {
+    fn payload_is_145_bytes() {
         let (alice, _) = pair();
         assert_eq!(encode_qr(&alice).len(), 145);
     }
 
     #[test]
-    fn scan_recupera_a_identidade_do_outro() {
+    fn scan_recovers_peer_identity() {
         let (alice, bob) = pair();
         let scanned = decode_qr(&encode_qr(&alice), &bob.public()).unwrap();
 
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_qualquer_bit_adulterado() {
+    fn rejects_any_tampered_bit() {
         let (alice, bob) = pair();
         let original = encode_qr(&alice);
 
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_auto_pareamento() {
+    fn rejects_self_pairing() {
         let (alice, _) = pair();
         assert!(matches!(
             decode_qr(&encode_qr(&alice), &alice.public()),
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_tamanho_errado() {
+    fn rejects_wrong_size() {
         let (alice, bob) = pair();
         let payload = encode_qr(&alice);
 
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_versao_desconhecida() {
+    fn rejects_unknown_version() {
         let (alice, bob) = pair();
         let mut payload = encode_qr(&alice);
         payload[VERSION_AT] = 0x02;
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_chave_x25519_de_ordem_baixa() {
+    fn rejects_low_order_x25519_key() {
         // Um QR forjado com chave DH de ordem baixa, reassinado para que a
         // assinatura confira: o único jeito de barrar é a checagem explícita.
         let (alice, bob) = pair();

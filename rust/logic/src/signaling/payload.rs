@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta() {
+    fn roundtrip() {
         let k_sig = chave_de_teste();
         let payload = b"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\n...".to_vec();
 
@@ -101,14 +101,14 @@ mod tests {
     }
 
     #[test]
-    fn payload_vazio_e_aceito_e_decifra_vazio() {
+    fn empty_payload_is_accepted_and_decrypts_empty() {
         let k_sig = chave_de_teste();
         let sealed = seal(&k_sig, b"").unwrap();
         assert_eq!(open(&k_sig, &sealed).unwrap(), Vec::<u8>::new());
     }
 
     #[test]
-    fn sempre_produz_exatamente_1024_bytes_qualquer_que_seja_o_tamanho_do_payload() {
+    fn always_produces_exactly_1024_bytes_regardless_of_payload_size() {
         let k_sig = chave_de_teste();
         for len in [0, 1, 50, MAX_PAYLOAD_LEN] {
             let payload = vec![0xABu8; len];
@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_maior_que_o_maximo_e_rejeitado() {
+    fn payload_larger_than_maximum_is_rejected() {
         let k_sig = chave_de_teste();
         let grande = vec![0u8; MAX_PAYLOAD_LEN + 1];
         assert!(matches!(
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn duas_cifragens_do_mesmo_payload_produzem_bytes_diferentes() {
+    fn two_encryptions_of_same_payload_produce_different_bytes() {
         let k_sig = chave_de_teste();
         let payload = b"mesmo payload, duas cifragens".to_vec();
 
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn open_rejeita_chave_errada() {
+    fn open_rejects_wrong_key() {
         let k_sig = chave_de_teste();
         let outra_chave = Key::from_bytes([0x99u8; 32]);
         let sealed = seal(&k_sig, b"segredo").unwrap();
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn open_rejeita_comprimento_errado_sem_panico() {
+    fn open_rejects_wrong_length_without_panic() {
         let k_sig = chave_de_teste();
         for len in [0, 1, SEALED_LEN - 1, SEALED_LEN + 1] {
             assert!(matches!(
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn open_nunca_panica_em_bytes_arbitrarios_do_tamanho_certo() {
+    fn open_never_panics_on_arbitrary_bytes_of_correct_size() {
         let k_sig = chave_de_teste();
         // Bytes aleatórios do tamanho exato quase certamente falham a
         // autenticação do AEAD — o que importa é que `open` sempre devolve

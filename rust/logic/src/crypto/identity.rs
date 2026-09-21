@@ -147,7 +147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assina_e_verifica() {
+    fn signs_and_verifies() {
         let identity = LocalIdentity::generate().unwrap();
         let message = b"payload do qr";
         let signature = identity.sign(message);
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_assinatura_de_outra_identidade() {
+    fn rejects_signature_from_different_identity() {
         let mine = LocalIdentity::generate().unwrap();
         let theirs = LocalIdentity::generate().unwrap();
         let message = b"payload do qr";
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_mensagem_adulterada() {
+    fn rejects_tampered_message() {
         let identity = LocalIdentity::generate().unwrap();
         let signature = identity.sign(b"original");
 
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn ordem_canonica_e_total_e_concordante() {
+    fn canonical_ordering_is_total_and_agreed() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
 

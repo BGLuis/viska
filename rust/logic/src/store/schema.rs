@@ -80,7 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrar_duas_vezes_e_idempotente() {
+    fn migrating_twice_is_idempotent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn cria_as_tabelas_esperadas() {
+    fn creates_expected_tables() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
 
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn banco_so_com_a_primeira_migracao_ganha_messages_sem_perder_dado_existente() {
+    fn db_with_only_first_migration_adds_messages_without_losing_existing_data() {
         // Simula um banco criado antes desta migração: só a primeira
         // instrução do array, `user_version = 1`. A migração de `messages`
         // precisa rodar sem tocar `local_identity`/`contacts` já existentes.
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn banco_so_ate_file_transfers_ganha_coluna_kind_com_default_sem_perder_dado_existente() {
+    fn db_up_to_file_transfers_adds_kind_column_with_default_without_losing_existing_data() {
         // Simula um banco criado antes da Fase 5: as três primeiras
         // migrações, sem a coluna `kind` — uma transferência de arquivo já
         // persistida (Fase 4) precisa sobreviver com `kind = 0` (File).

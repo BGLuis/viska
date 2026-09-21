@@ -88,7 +88,7 @@ class _FakeWifiAwareChannel implements WifiAwareChannel {
 }
 
 void main() {
-  test('lado_ativo_assina_e_lado_passivo_publica_o_mesmo_nome_de_servico', () async {
+  test('active side subscribes and passive side publishes the same service name', () async {
     final activeChannel = _FakeWifiAwareChannel();
     final passiveChannel = _FakeWifiAwareChannel();
 
@@ -122,7 +122,7 @@ void main() {
     await Future.wait([activeConnect, passiveConnect]).timeout(const Duration(seconds: 5));
   });
 
-  test('dados_no_canal_control_e_file_sao_roteados_pelo_marcador', () async {
+  test('data on control and file channels are routed by tag', () async {
     final channel = _FakeWifiAwareChannel();
     final transport = WifiAwareTransport(
       core: _FakeCore(weAreActive: true),
@@ -160,7 +160,7 @@ void main() {
     expect(receivedFile, [Uint8List.fromList([9, 9])]);
   });
 
-  test('isLikelyReachable_reflete_isSupported_do_canal', () async {
+  test('isLikelyReachable reflects channel isSupported', () async {
     final channel = _FakeWifiAwareChannel()..supported = false;
     final transport = WifiAwareTransport(
       core: _FakeCore(weAreActive: true),
@@ -174,7 +174,7 @@ void main() {
     expect(transport.isLikelyReachable, isFalse);
   });
 
-  test('connect_falha_quando_nao_suportado', () async {
+  test('connect fails when not supported', () async {
     final channel = _FakeWifiAwareChannel()..supported = false;
     final transport = WifiAwareTransport(
       core: _FakeCore(weAreActive: true),
@@ -187,7 +187,7 @@ void main() {
     expect(channel.subscribedServiceName, isNull);
   });
 
-  test('conexao_e_derrubada_quando_extract_frame_rejeita_o_quadro', () async {
+  test('connection is dropped when extract_frame rejects frame', () async {
     final channel = _FakeWifiAwareChannel();
     final transport = WifiAwareTransport(
       core: _FakeCore(weAreActive: true),

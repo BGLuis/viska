@@ -38,7 +38,7 @@ void main() {
     await listener.close();
   });
 
-  test('conexao_e_roteada_para_quem_espera_o_mesmo_device_id_e_canal', () async {
+  test('connection is routed to waiter for same device_id and channel', () async {
     final port = await listener.ensureListening();
     final deviceId = _deviceId(0x42);
 
@@ -55,7 +55,7 @@ void main() {
     expect(received, [1, 2, 3]);
   });
 
-  test('control_e_file_do_mesmo_contato_sao_conexoes_independentes', () async {
+  test('control and file for same contact are independent connections', () async {
     final port = await listener.ensureListening();
     final deviceId = _deviceId(0x7);
 
@@ -79,7 +79,7 @@ void main() {
     expect(await file.incoming.first.timeout(const Duration(seconds: 5)), [0xF]);
   });
 
-  test('bytes_apos_o_preambulo_no_mesmo_pacote_nao_sao_perdidos', () async {
+  test('bytes after preamble in same packet are not lost', () async {
     final port = await listener.ensureListening();
     final deviceId = _deviceId(0x9);
 
@@ -100,7 +100,7 @@ void main() {
     expect(received, frameStart);
   });
 
-  test('conexao_sem_ninguem_esperando_e_descartada', () async {
+  test('connection with no waiter is dropped', () async {
     final port = await listener.ensureListening();
     final deviceId = _deviceId(0x1);
 
@@ -114,7 +114,7 @@ void main() {
     await _expectClosedByPeer(socket);
   });
 
-  test('cancelWait_faz_a_proxima_conexao_correspondente_ser_descartada', () async {
+  test('cancelWait causes next matching connection to be dropped', () async {
     final port = await listener.ensureListening();
     final deviceId = _deviceId(0x2);
 

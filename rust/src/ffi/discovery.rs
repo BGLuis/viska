@@ -92,13 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn my_device_id_e_o_que_o_outro_lado_ve_como_device_id_do_contato() {
+    fn my_device_id_is_what_other_side_sees_as_contact_device_id() {
         let (_dir_a, _core_a, _device_id_a, _dir_b, core_b, device_id_b) = paired();
         assert_eq!(core_b.my_device_id(), device_id_b);
     }
 
     #[test]
-    fn beacon_de_anuncio_de_um_lado_esta_entre_os_beacons_de_busca_do_outro() {
+    fn advertise_beacon_from_one_side_is_in_scan_beacons_of_the_other() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let beacons_a = core_a.discovery_beacons(device_id_b).unwrap();
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn beacons_de_contato_desconhecido_erram() {
+    fn beacons_for_unknown_contact_fail() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         assert_eq!(
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn match_discovered_beacon_encontra_o_contato_certo() {
+    fn match_discovered_beacon_finds_right_contact() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let beacon_de_a = core_a.discovery_beacons(device_id_b.clone()).unwrap().advertise_beacon;
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn match_discovered_beacon_devolve_none_para_beacon_desconhecido() {
+    fn match_discovered_beacon_returns_none_for_unknown_beacon() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
 

@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn merkle_root_bate_com_blake3_hash_para_varios_tamanhos() {
+    fn merkle_root_matches_blake3_hash_for_various_sizes() {
         for len in [0usize, 1, 1023, 1024, 1025, 2048, 100_000, 500_003] {
             let data = vec![0x5au8; len];
             let esperado = blake3::hash(&data);
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn merkle_root_independe_do_tamanho_do_pedaco_de_leitura() {
+    fn merkle_root_independent_of_read_chunk_size() {
         // Um `Read` que devolve no máximo 3 bytes por chamada, bem menor que
         // `READ_CHUNK_LEN` — prova que o resultado não depende de onde os
         // limites de `read()` caem, só do conteúdo.
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_root_aceita_raiz_correta_e_rejeita_qualquer_outra() {
+    fn verify_root_accepts_correct_root_and_rejects_any_other() {
         let data = b"conteudo do arquivo de teste".to_vec();
         let root = merkle_root(Cursor::new(&data)).unwrap();
 
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn block_chaining_value_mesclado_bate_com_blake3_hash() {
+    fn merged_block_chaining_value_matches_blake3_hash() {
         for len in [CHUNK_LEN as u64 + 1, 5_000, 1 << 20, (1 << 20) + 777] {
             let data = vec![0x7eu8; len as usize];
             let obtido = root_via_hazmat_two_way_split(&data);
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn block_chaining_value_com_offset_correto_encaixa_na_raiz() {
+    fn block_chaining_value_with_correct_offset_fits_root() {
         // Três blocos de tamanho fixo (potência de dois de chunks) mais um
         // resto — o layout real de um arquivo particionado em source blocks
         // (D6), exceto pelo último bloco, que pode ser mais curto.
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_com_split_errado_nao_bate_com_blake3_hash() {
+    fn merge_with_wrong_split_does_not_match_blake3_hash() {
         // `hazmat` não valida que o split seja *o* split correto — só que
         // cada pedaço, isoladamente, é uma posição/tamanho estruturalmente
         // possível na árvore (o que `block_chaining_value` já checa via
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn block_chaining_value_rejeita_offset_desalinhado() {
+    fn block_chaining_value_rejects_misaligned_offset() {
         let data = vec![0u8; 100];
         assert!(matches!(
             block_chaining_value(1, &data),
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn block_chaining_value_rejeita_bloco_maior_que_subarvore_maxima() {
+    fn block_chaining_value_rejects_block_larger_than_maximum_subtree() {
         // offset = CHUNK_LEN (um chunk já consumido) só admite subárvore de
         // no máximo 1 chunk nessa posição (contador ímpar -> maior potência
         // de dois que divide é 1).
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn block_chaining_value_rejeita_bloco_vazio() {
+    fn block_chaining_value_rejects_empty_block() {
         assert!(matches!(
             block_chaining_value(0, &[]),
             Err(Error::Malformed(_))
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_qualquer_bit_adulterado_no_conteudo() {
+    fn rejects_any_tampered_bit_in_content() {
         // Corromper 1 bit em qualquer posição do conteúdo muda a raiz — a
         // propriedade que faz a Merkle root servir de guarda de integridade.
         let original = vec![0x99u8; 300];

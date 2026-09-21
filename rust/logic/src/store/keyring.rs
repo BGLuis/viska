@@ -112,7 +112,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reaproveita_segredo_existente() {
+    fn reuses_existing_secret() {
         let dir = tempfile::tempdir().unwrap();
 
         let first = load_or_create_master_secret(dir.path()).unwrap();
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn gera_arquivo_com_32_bytes() {
+    fn generates_file_with_32_bytes() {
         let dir = tempfile::tempdir().unwrap();
         load_or_create_master_secret(dir.path()).unwrap();
 
@@ -132,7 +132,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn arquivo_tem_permissao_restrita_ao_dono() {
+    fn file_has_restricted_owner_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn segredo_injetado_tem_precedencia_e_limpeza_funciona() {
+    fn injected_secret_has_precedence_and_cleanup_works() {
         let dir = tempfile::tempdir().unwrap();
         let injetado = [42u8; KEY_LEN];
         set_injected_master_secret(injetado);
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_master_secret_apaga_arquivo_e_limpa_memoria() {
+    fn delete_master_secret_deletes_file_and_clears_memory() {
         let dir = tempfile::tempdir().unwrap();
         load_or_create_master_secret(dir.path()).unwrap();
         assert!(dir.path().join(FILE_NAME).exists());

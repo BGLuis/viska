@@ -143,7 +143,7 @@ void main() {
     await activeListener.close();
   });
 
-  test('lado_passivo_anuncia_e_lado_ativo_disca_quando_o_beacon_e_descoberto', () async {
+  test('passive side advertises and active side dials when beacon is discovered', () async {
     final passiveDiscovery = _FakeLanDiscovery();
     final activeDiscovery = _FakeLanDiscovery();
 
@@ -198,7 +198,7 @@ void main() {
     addTearDown(passive.close);
   });
 
-  test('dois_canais_control_e_file_sao_independentes_e_carregam_dados_desenquadrados', () async {
+  test('control and file channels are independent and carry unframed data', () async {
     final passiveDiscovery = _FakeLanDiscovery();
     final activeDiscovery = _FakeLanDiscovery();
 
@@ -259,7 +259,7 @@ void main() {
     expect(receivedFile, [Uint8List.fromList([9, 9])]);
   });
 
-  test('conexao_e_derrubada_quando_extract_frame_rejeita_o_quadro', () async {
+  test('connection is dropped when extract_frame rejects frame', () async {
     final passiveDiscovery = _FakeLanDiscovery();
     final activeDiscovery = _FakeLanDiscovery();
 
@@ -321,7 +321,7 @@ void main() {
     await failedEvent.timeout(const Duration(seconds: 5));
   });
 
-  test('isLikelyReachable_fica_false_quando_nao_ha_interface_de_rede_nenhuma', () async {
+  test('isLikelyReachable becomes false when no network interface exists', () async {
     final transport = LanTransport(
       core: _FakeCore(
         myDeviceId_: _deviceIdPassive,
@@ -347,7 +347,7 @@ void main() {
     expect(transport.isLikelyReachable, isFalse);
   });
 
-  test('lado_passivo_nao_anuncia_e_falha_rapido_quando_a_politica_recusa', () async {
+  test('passive side does not advertise and fails fast when policy refuses', () async {
     final discovery = _FakeLanDiscovery();
     final transport = LanTransport(
       core: _FakeCore(

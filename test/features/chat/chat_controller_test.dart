@@ -450,7 +450,7 @@ void main() {
     tempDir.deleteSync(recursive: true);
   });
 
-  test('initialize carrega o histórico existente', () async {
+  test('initialize loads existing history', () async {
     core.messagesToReturn = [
       const MessageDto(
         id: 1,
@@ -470,7 +470,7 @@ void main() {
     expect(controller.messages.single.body, 'oi');
   });
 
-  test('como iniciador: initialize publica a INIT pendente', () async {
+  test('as initiator: initialize publishes pending INIT', () async {
     core.outgoingHandshake = Uint8List.fromList([9, 9, 9]);
     core.sessionState = SessionStateKind.handshaking;
     controller = makeController();
@@ -482,7 +482,7 @@ void main() {
     expect(controller.isEstablished, isFalse);
   });
 
-  test('como respondedor: INIT recebida gera RESP publicada e estabelece a sessão', () async {
+  test('as responder: received INIT generates published RESP and establishes session', () async {
     core.outgoingHandshake = null; // respondedor
     core.feedHandshakeResponse = Uint8List.fromList([7, 7]);
     core.establishOnFeedHandshake = true;
@@ -497,7 +497,7 @@ void main() {
     expect(controller.isEstablished, isTrue);
   });
 
-  test('sessão estabelecida drena mensagens pendentes (flushPending)', () async {
+  test('established session flushes pending messages (flushPending)', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
     core.establishOnFeedHandshake = true;
@@ -514,7 +514,7 @@ void main() {
     expect(core.markSentCalls, [42]);
   });
 
-  test('sendText com sessão estabelecida envia na hora e marca como enviada', () async {
+  test('sendText with established session sends immediately and marks as sent', () async {
     core.sessionState = SessionStateKind.established;
     controller = makeController();
     await controller.initialize();
@@ -526,7 +526,7 @@ void main() {
     expect(core.markSentCalls, hasLength(1));
   });
 
-  test('sendText com sessão ainda não estabelecida só persiste (não envia)', () async {
+  test('sendText with session not yet established only persists (does not send)', () async {
     core.sessionState = SessionStateKind.handshaking;
     controller = makeController();
     await controller.initialize();
@@ -538,7 +538,7 @@ void main() {
     expect(core.markSentCalls, isEmpty);
   });
 
-  test('sendText ignora texto vazio', () async {
+  test('sendText ignores empty text', () async {
     core.sessionState = SessionStateKind.established;
     controller = makeController();
     await controller.initialize();
@@ -548,7 +548,7 @@ void main() {
     expect(core.sealOutgoingTextCalls, isEmpty);
   });
 
-  test('mensagem recebida com sessão estabelecida decifra e atualiza o histórico', () async {
+  test('received message with established session decrypts and updates history', () async {
     core.sessionState = SessionStateKind.established;
     core.decryptIncomingHandler = (bytes) => const IncomingMessageDto(
           messageId: 5,
@@ -578,7 +578,7 @@ void main() {
     expect(controller.messages.single.body, 'recebida');
   });
 
-  test('falha de AEAD (null) não derruba o controlador', () async {
+  test('AEAD failure (null) does not crash controller', () async {
     core.sessionState = SessionStateKind.established;
     core.decryptIncomingHandler = (_) => null;
     controller = makeController();
@@ -590,7 +590,7 @@ void main() {
     expect(controller.messages, isEmpty);
   });
 
-  test('indicador de digitação (isTyping) não é adicionado ao histórico', () async {
+  test('typing indicator (isTyping) is not added to history', () async {
     core.sessionState = SessionStateKind.established;
     core.decryptIncomingHandler = (_) => const IncomingMessageDto(
           messageId: null,
@@ -607,7 +607,7 @@ void main() {
     expect(controller.messages, isEmpty);
   });
 
-  test('evento de conexão failed define connectionError', () async {
+  test('failed connection event sets connectionError', () async {
     controller = makeController();
     await controller.initialize();
 
@@ -619,7 +619,7 @@ void main() {
     expect(controller.connectionError, 'sem rota');
   });
 
-  test('dispose cancela as assinaturas — eventos depois não afetam mais o estado', () async {
+  test('dispose cancels subscriptions - subsequent events no longer affect state', () async {
     controller = makeController();
     await controller.initialize();
     controller.dispose();
@@ -632,8 +632,8 @@ void main() {
     expect(controller.connectionError, isNull);
   });
 
-  group('nota de voz (Fase 5)', () {
-    test('startRecording pede permissão e falha com mensagem clara se negada', () async {
+  group('voice note (Phase 5)', () {
+    test('startRecording requests permission and fails with clear message if denied', () async {
       permissionPlatform.denyMicrophone = true;
       controller = makeController();
       await controller.initialize();
@@ -645,7 +645,7 @@ void main() {
       expect(recorder.startCalls, 0);
     });
 
-    test('startRecording falha alto se o gravador não suportar Opus, sem cair em outro codec', () async {
+    test('startRecording fails loudly if recorder does not support Opus, without falling back to another codec', () async {
       recorder.throwOnStart = true;
       controller = makeController();
       await controller.initialize();
@@ -656,7 +656,7 @@ void main() {
       expect(controller.voiceError, contains('Opus'));
     });
 
-    test('startRecording concedido começa a gravar', () async {
+    test('startRecording when granted starts recording', () async {
       controller = makeController();
       await controller.initialize();
 
@@ -667,7 +667,7 @@ void main() {
       expect(controller.voiceError, isNull);
     });
 
-    test('stopRecordingAndSend sem gravação em andamento é no-op', () async {
+    test('stopRecordingAndSend with no recording in progress is a no-op', () async {
       controller = makeController();
       await controller.initialize();
 
@@ -677,8 +677,7 @@ void main() {
     });
 
     test(
-      'stopRecordingAndSend sanitiza, cacheia o WAV, publica o FILE_METADATA, '
-      'bombeia os pedaços pelo canal file e marca a mensagem como enviada',
+      'stopRecordingAndSend sanitizes, caches WAV, publishes FILE_METADATA, pumps chunks through file channel and marks message as sent',
       () async {
         recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
 
@@ -731,7 +730,7 @@ void main() {
       },
     );
 
-    test('erro ao iniciar o envio (ex.: sem sessão) vira voiceError, não exceção', () async {
+    test('error starting send (e.g. no session) becomes voiceError, not exception', () async {
       recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
       core.startSendAudioHandler = (_) => throw StateError('sem sessão ativa');
 
@@ -745,7 +744,7 @@ void main() {
     });
 
     test(
-      'pacote completo no canal file confirma FILE_COMPLETE e decodifica a nota para WAV',
+      'complete packet on file channel confirms FILE_COMPLETE and decodes note to WAV',
       () async {
         final fileId = Uint8List.fromList(List.filled(16, 3));
         core.messagesToReturn = [
@@ -791,7 +790,7 @@ void main() {
       },
     );
 
-    test('pacote incompleto no canal file não confirma nem decodifica nada ainda', () async {
+    test('incomplete packet on file channel neither confirms nor decodes anything yet', () async {
       final fileId = Uint8List.fromList(List.filled(16, 2));
       core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
             fileId: fileId,
@@ -811,7 +810,7 @@ void main() {
       expect(transport.sendCalls, isEmpty);
     });
 
-    test('pacote de file_id desconhecido (ingestIncomingWireBytes devolve null) é ignorado', () async {
+    test('packet with unknown file_id (ingestIncomingWireBytes returns null) is ignored', () async {
       core.ingestIncomingWireBytesHandler = (_) => null;
       controller = makeController();
       await controller.initialize();
@@ -822,7 +821,7 @@ void main() {
       expect(transport.sendCalls, isEmpty);
     });
 
-    test('play toca o WAV já cacheado e stopVoicePlayback para', () async {
+    test('play plays cached WAV and stopVoicePlayback stops', () async {
       final fileId = Uint8List.fromList(List.filled(16, 4));
       core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
             fileId: fileId,

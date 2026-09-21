@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn grava_e_rele_contato_devolve_bytes_identicos() {
+    fn write_and_read_contact_returns_identical_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let k = key(1);
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn abrir_com_chave_errada_falha() {
+    fn open_with_wrong_key_fails() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
 
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn identidade_sobrevive_a_reabertura() {
+    fn identity_survives_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let k = key(3);
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn contato_inexistente_devolve_none() {
+    fn nonexistent_contact_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let store = Store::open(&path, &key(4)).unwrap();
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn lista_contatos_traz_todos_os_pareados() {
+    fn list_contacts_returns_all_paired_contacts() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let store = Store::open(&path, &key(5)).unwrap();
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn trancamento_fecha_banco_e_reabertura_restaura_acesso() {
+    fn locking_closes_db_and_reopening_restores_access() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let k = key(6);
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn configuracao_de_ttl_efemero_persiste_e_recupera() {
+    fn ephemeral_ttl_configuration_persists_and_retrieves() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let k = key(7);
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn atualizacao_de_apelido_de_contato_e_config_geral() {
+    fn contact_nickname_update_and_general_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = temp_db_path(&dir);
         let k = key(8);

@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn insere_e_encontra_transferencia() {
+    fn inserts_and_finds_transfer() {
         let contact = [1u8; 16];
         let conn = conn_with_contact(contact);
         let file_id = [9u8; 16];
@@ -220,13 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn transferencia_inexistente_devolve_none() {
+    fn nonexistent_transfer_returns_none() {
         let conn = conn_with_contact([2u8; 16]);
         assert!(find(&conn, &[0u8; 16]).unwrap().is_none());
     }
 
     #[test]
-    fn delete_remove_e_e_idempotente() {
+    fn delete_removes_and_is_idempotent() {
         let contact = [3u8; 16];
         let conn = conn_with_contact(contact);
         let file_id = [8u8; 16];
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn list_for_contact_filtra_por_direcao_e_contato() {
+    fn list_for_contact_filters_by_direction_and_contact() {
         let contact_a = [5u8; 16];
         let contact_b = [6u8; 16];
         let conn = conn_with_contact(contact_a);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn list_active_file_ids_traz_todos() {
+    fn list_active_file_ids_returns_all() {
         let contact = [4u8; 16];
         let conn = conn_with_contact(contact);
         let a = [1u8; 16];

@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_pendente_e_persistida_e_listada() {
+    fn pending_message_is_persisted_and_listed() {
         let contact = [7u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_recebida_e_persistida_como_delivered() {
+    fn incoming_message_is_persisted_as_delivered() {
         let contact = [8u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn msg_typing_e_rejeitada_em_ambas_as_insercoes() {
+    fn msg_typing_is_rejected_in_both_insertions() {
         let contact = [9u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_sent_muda_o_estado_e_e_idempotente() {
+    fn mark_sent_changes_state_and_is_idempotent() {
         let contact = [10u8; 16];
         let conn = conn_with_contact(contact);
         let id = insert_pending(&conn, &contact, PacketType::MsgText, "x", 0).unwrap();
@@ -508,14 +508,14 @@ mod tests {
     }
 
     #[test]
-    fn mark_sent_de_id_inexistente_nao_erra() {
+    fn mark_sent_on_nonexistent_id_does_not_error() {
         let contact = [11u8; 16];
         let conn = conn_with_contact(contact);
         mark_sent(&conn, 99999).unwrap();
     }
 
     #[test]
-    fn list_pending_so_traz_saida_ainda_nao_enviada() {
+    fn list_pending_only_returns_unsent_outgoing_messages() {
         let contact = [12u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn ordem_e_sempre_do_mais_antigo_para_o_mais_novo() {
+    fn order_is_always_oldest_to_newest() {
         let contact = [13u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_efemera_cifrada_com_k_msg_e_destruida_ao_vencer() {
+    fn ephemeral_message_encrypted_with_k_msg_and_destroyed_upon_expiry() {
         let contact = [14u8; 16];
         let conn = conn_with_contact(contact);
 
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_efemera_nao_lida_respeita_teto_de_expiracao() {
+    fn unread_ephemeral_message_respects_expiration_ceiling() {
         let contact = [15u8; 16];
         let conn = conn_with_contact(contact);
         crate::store::contacts::set_ephemeral_ttl(&conn, &contact, 60).unwrap();

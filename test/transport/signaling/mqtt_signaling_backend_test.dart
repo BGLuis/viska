@@ -83,7 +83,7 @@ class _RecordingMqttClient extends MqttClient {
 
 void main() {
   group('MqttSignalingBackend', () {
-    test('publish usa retain:false e QoS atMostOnce, sempre', () async {
+    test('publish uses retain:false and QoS atMostOnce, always', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);
       await backend.connect();
@@ -99,7 +99,7 @@ void main() {
       expect(call.data, payload);
     });
 
-    test('connect desliga autoReconnect antes de conectar', () async {
+    test('connect turns off autoReconnect before connecting', () async {
       final client = _RecordingMqttClient()..autoReconnect = true;
       final backend = MqttSignalingBackend(client: client);
 
@@ -109,7 +109,7 @@ void main() {
       expect(client.connectCalls, 1);
     });
 
-    test('connect é idempotente — chamar duas vezes não reconecta', () async {
+    test('connect is idempotent - calling twice does not reconnect', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);
 
@@ -119,7 +119,7 @@ void main() {
       expect(client.connectCalls, 1);
     });
 
-    test('subscribeTopics assina só os tópicos novos e desassina os que saíram', () async {
+    test('subscribeTopics subscribes only to new topics and unsubscribes removed ones', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);
       await backend.connect();
@@ -137,7 +137,7 @@ void main() {
       expect(client.unsubscribedTopics, ['epoca-1']);
     });
 
-    test('mensagens recebidas em tópicos assinados chegam em incoming', () async {
+    test('messages received on subscribed topics arrive in incoming', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);
       await backend.connect();
@@ -157,7 +157,7 @@ void main() {
       await subscription.cancel();
     });
 
-    test('disconnect cancela a assinatura de updates e desconecta o client', () async {
+    test('disconnect cancels updates subscription and disconnects client', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);
       await backend.connect();

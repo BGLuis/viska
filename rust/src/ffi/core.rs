@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn abrir_core_gera_identidade_na_primeira_execucao() {
+    fn open_core_generates_identity_on_first_run() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         let id = core.identity.public();
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn pareamento_completo_entre_duas_cores() {
+    fn full_pairing_between_two_cores() {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn self_pairing_mapeia_para_variante_propria() {
+    fn self_pairing_maps_to_dedicated_variant() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
 
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn qr_de_tamanho_errado_mapeia_para_qr_malformed() {
+    fn wrong_sized_qr_maps_to_qr_malformed() {
         // A construção de um QR forjado com assinatura válida (chave DH de
         // ordem baixa, resignada) exige `LocalIdentity::sign`, que é
         // `pub(crate)` dentro de `viska_proto` — de propósito, para que nada
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn contato_pareado_produz_o_mesmo_safety_number_dos_dois_lados() {
+    fn paired_contact_produces_same_safety_number_on_both_sides() {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn bloqueio_e_desbloqueio_do_core_rejeita_chamadas_enquanto_bloqueado() {
+    fn locking_and_unlocking_core_rejects_calls_while_locked() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
 
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn configuracao_e_consulta_de_ttl_efemero_por_contato() {
+    fn configuration_and_query_of_ephemeral_ttl_per_contact() {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn apagamento_de_emergencia_destroi_banco_e_trava_core() {
+    fn emergency_erase_destroys_database_and_locks_core() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
 

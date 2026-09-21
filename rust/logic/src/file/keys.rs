@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn as_cinco_chaves_sao_todas_diferentes_entre_si() {
+    fn all_five_keys_are_mutually_distinct() {
         let secret = b"segredo-de-transferencia";
         let file_id = [5u8; FILE_ID_LEN];
 
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn k_audio_chunk_e_diferente_de_k_symbol_mesmo_par_secret_file_id() {
+    fn k_audio_chunk_is_distinct_from_k_symbol_for_same_secret_file_id_pair() {
         let secret = b"mesmo-segredo-para-os-dois-usos";
         let file_id = [12u8; FILE_ID_LEN];
         assert_ne!(
@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn sao_deterministicas_no_mesmo_par_secret_file_id() {
+    fn are_deterministic_for_same_secret_file_id_pair() {
         let secret = b"outro-segredo";
         let file_id = [6u8; FILE_ID_LEN];
         assert_eq!(
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn mudam_com_o_file_id() {
+    fn change_with_file_id() {
         let secret = b"mesmo-segredo";
         let a = derive_symbol_key(secret, &[1u8; FILE_ID_LEN]);
         let b = derive_symbol_key(secret, &[2u8; FILE_ID_LEN]);

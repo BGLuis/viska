@@ -84,7 +84,7 @@ mod tests {
     use viska_proto::Error;
 
     #[test]
-    fn ponto_de_ordem_baixa_mapeia_para_forged_key() {
+    fn low_order_point_maps_to_forged_key() {
         // A distinção que mais importa nesta superfície: um QR forjado não
         // pode virar a mesma mensagem genérica que um QR mal lido pela
         // câmera (ver armadilha 4 do relatório da Fase 2).
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn variantes_de_leitura_de_qr_mapeiam_para_qr_malformed() {
+    fn qr_reading_variants_map_to_qr_malformed() {
         for err in [
             Error::BadLength {
                 expected: 145,
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn demais_variantes_mapeiam_para_as_categorias_esperadas() {
+    fn remaining_variants_map_to_expected_categories() {
         assert_eq!(FfiError::from(Error::BadSignature), FfiError::QrBadSignature);
         assert_eq!(FfiError::from(Error::SelfPairing), FfiError::SelfPairing);
         assert_eq!(FfiError::from(Error::Store), FfiError::StoreFailure);

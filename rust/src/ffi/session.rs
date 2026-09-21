@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_session_e_idempotente_e_nunca_reabre_o_handshake() {
+    fn ensure_session_is_idempotent_and_never_reopens_handshake() {
         let p = paired_pair();
 
         let first = p.core_a.ensure_session(p.device_id_b.clone()).unwrap();
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn outgoing_handshake_some_enquanto_pendente_e_none_apos_estabelecer() {
+    fn outgoing_handshake_clears_while_pending_and_is_none_after_establishing() {
         let p = paired_pair();
 
         let before = p.core_a.ensure_session(p.device_id_b.clone()).unwrap();
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_session_de_contato_desconhecido_erra() {
+    fn ensure_session_for_unknown_contact_fails() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         assert_eq!(
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn feed_handshake_sem_sessao_aberta_erra() {
+    fn feed_handshake_without_open_session_fails() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         assert_eq!(
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_completo_estabelece_sessao_nos_dois_lados() {
+    fn full_handshake_establishes_session_on_both_sides() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn texto_cifrado_de_um_lado_decifra_do_outro_e_persiste() {
+    fn ciphertext_from_one_side_decrypts_on_other_and_persists() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -526,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn list_messages_traz_o_historico_dos_dois_sentidos_em_ordem() {
+    fn list_messages_brings_history_from_both_directions_in_order() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -556,14 +556,14 @@ mod tests {
     }
 
     #[test]
-    fn list_messages_de_contato_sem_mensagens_devolve_vazio() {
+    fn list_messages_for_contact_without_messages_returns_empty() {
         let p = paired_pair();
         let history = p.core_a.list_messages(p.device_id_b).unwrap();
         assert!(history.is_empty());
     }
 
     #[test]
-    fn mensagem_enviada_antes_da_sessao_pronta_fica_pending_e_flush_pending_a_entrega() {
+    fn message_sent_before_session_ready_stays_pending_and_flush_pending_delivers_it() {
         let p = paired_pair();
 
         // `seal_outgoing_text` antes mesmo de `ensure_session`: nenhuma
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_message_sent_nao_erra_para_id_existente() {
+    fn mark_message_sent_does_not_error_for_existing_id() {
         let p = paired_pair();
 
         let sealed = p
@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_adulterado_e_descartado_como_none_sem_persistir() {
+    fn tampered_envelope_is_discarded_as_none_without_persisting() {
         let p = paired_pair();
         establish(
             &p.core_a,

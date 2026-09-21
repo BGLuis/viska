@@ -79,14 +79,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ida_e_volta_para_todas_as_variantes() {
+    fn roundtrip_for_all_variants() {
         for &tipo in &PacketType::ALL {
             assert_eq!(PacketType::from_u8(tipo.to_u8()).unwrap(), tipo);
         }
     }
 
     #[test]
-    fn rejeita_bytes_do_handshake() {
+    fn rejects_handshake_bytes() {
         assert!(matches!(
             PacketType::from_u8(0x01),
             Err(Error::Malformed(_))
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_valores_desconhecidos() {
+    fn rejects_unknown_values() {
         for valor in [0x00, 0x03, 0x13, 0x1f, 0x24, 0x31, 0x42, 0xff] {
             assert!(
                 matches!(PacketType::from_u8(valor), Err(Error::Malformed(_))),

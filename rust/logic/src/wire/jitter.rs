@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn jitter_fica_sempre_dentro_do_intervalo_documentado() {
+    fn jitter_always_stays_within_documented_interval() {
         for _ in 0..10_000 {
             let delay = sample_delay().unwrap();
             assert!(
@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn jitter_nao_e_sempre_o_mesmo_valor() {
+    fn jitter_is_not_always_same_value() {
         // Prova que a amostragem de fato varia, não uma constante disfarçada.
         let amostras: std::collections::HashSet<_> =
             (0..64).map(|_| sample_delay().unwrap()).collect();

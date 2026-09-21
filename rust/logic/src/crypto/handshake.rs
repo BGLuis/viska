@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_completo_produz_a_mesma_raiz_dos_dois_lados() {
+    fn full_handshake_produces_same_root_on_both_sides() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (resp_outcome, resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn duas_execucoes_produzem_raizes_diferentes() {
+    fn two_executions_produce_different_roots() {
         let (alice, bob) = pair();
 
         let (initiator1, init1) = Initiator::start(&alice, &bob.public()).unwrap();
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn terceiro_sem_a_chave_privada_correta_nao_deriva_a_mesma_raiz() {
+    fn third_party_without_correct_private_key_does_not_derive_same_root() {
         let (alice, bob) = pair();
         let eve = LocalIdentity::generate().unwrap();
 
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn adulterar_um_byte_da_init_diverge_a_raiz_ou_falha() {
+    fn tampering_one_byte_of_init_diverges_root_or_fails() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn adulterar_um_byte_da_resp_diverge_a_raiz_ou_falha() {
+    fn tampering_one_byte_of_resp_diverges_root_or_fails() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_tamanho_errado_na_init() {
+    fn rejects_wrong_size_in_init() {
         let (alice, bob) = pair();
         let (_, init) = Initiator::start(&alice, &bob.public()).unwrap();
 
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_tamanho_errado_na_resp() {
+    fn rejects_wrong_size_in_resp() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_versao_desconhecida_na_init() {
+    fn rejects_unknown_version_in_init() {
         let (alice, bob) = pair();
         let (_, mut init) = Initiator::start(&alice, &bob.public()).unwrap();
         init[VERSION_AT] = 0x02;
@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_versao_desconhecida_na_resp() {
+    fn rejects_unknown_version_in_resp() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, mut resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_msg_type_errado_na_init() {
+    fn rejects_wrong_msg_type_in_init() {
         let (alice, bob) = pair();
         let (_, mut init) = Initiator::start(&alice, &bob.public()).unwrap();
         init[MSG_TYPE_AT] = MSG_TYPE_RESP;
@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_msg_type_errado_na_resp() {
+    fn rejects_wrong_msg_type_in_resp() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, mut resp) = respond(&bob, &alice.public(), &init).unwrap();
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_ek_de_ordem_baixa_na_init() {
+    fn rejects_low_order_ek_in_init() {
         let (alice, bob) = pair();
         let (_, mut init) = Initiator::start(&alice, &bob.public()).unwrap();
         init[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(&[0u8; dh::KEY_LEN]);
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_ek_de_ordem_baixa_na_resp() {
+    fn rejects_low_order_ek_in_resp() {
         let (alice, bob) = pair();
         let (initiator, init) = Initiator::start(&alice, &bob.public()).unwrap();
         let (_, mut resp) = respond(&bob, &alice.public(), &init).unwrap();
