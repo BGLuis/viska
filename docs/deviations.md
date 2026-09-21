@@ -332,17 +332,16 @@ contato — o gargalo que motivou D17 em primeiro lugar.
 **Spec:** não define formato de reprodução — é inteiramente uma decisão de implementação do lado
 Flutter/Rust, sem texto normativo correspondente.
 **Aqui:** `file::opus_container::decode_to_wav` decodifica os pacotes Opus para PCM 16 bits (via
-`libopus`, crate `audiopus`) e embrulha num WAV de 44 bytes de cabeçalho — exposto como
-`Core::decode_audio_to_wav`. O plano original desta fase remontava um Ogg-Opus mínimo em memória
+decodificador puro em Rust `#![forbid(unsafe_code)]`, crate `opus-decoder`, com `audiopus` restrito a
+`dev-dependencies` para sintetizar áudio nos testes) e embrulha num WAV de 44 bytes de cabeçalho — exposto
+como `Core::decode_audio_to_wav`. O plano original desta fase remontava um Ogg-Opus mínimo em memória
 para entregar ao `just_audio`.
 
 Descoberto ao integrar com `just_audio`: `AVPlayer`, o player nativo por trás do `just_audio` no
 iOS, não sabe demuxar contêiner Ogg de jeito nenhum — não é uma questão de suporte a Opus, é o
 próprio contêiner que o iOS não abre. Suporte a Opus dentro de MP4 existe só a partir do iOS 17, de
 forma inconsistente. Decodificar para PCM/WAV elimina a ambiguidade de contêiner e codec nas duas
-plataformas ao custo de uma dependência nativa nova (`audiopus`/`libopus`, licença BSD,
-compatível com AGPL) e de código de decodificação que não seria necessário se o player de destino
-suportasse Ogg-Opus nativamente.
+plataformas de forma portátil e sem compilação nativa C via autotools.
 
 **Custo de reverter:** reintroduzir a ambiguidade de reprodução no iOS — provavelmente notas de voz
 mudas nesse aparelho, dependendo da versão. `rebuild_container`/`strip_container` continuam

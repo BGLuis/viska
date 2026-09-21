@@ -375,44 +375,23 @@ pub fn rebuild_container(stream: &RawOpusStream) -> Vec<u8> {
 /// saída do decodificador dimensionado para o pior caso, por quadro.
 const MAX_FRAME_SAMPLES_PER_CHANNEL: usize = 5760;
 
-fn to_audiopus_channels(channels: u8) -> Result<audiopus::Channels> {
-    match channels {
-        1 => Ok(audiopus::Channels::Mono),
-        2 => Ok(audiopus::Channels::Stereo),
-        _ => Err(Error::Malformed(
-            "RawOpusStream.channels não suportado pelo decodificador (só mono ou estéreo)",
-        )),
-    }
-}
-
-fn to_audiopus_sample_rate(sample_rate: u32) -> Result<audiopus::SampleRate> {
-    match sample_rate {
-        8000 => Ok(audiopus::SampleRate::Hz8000),
-        12000 => Ok(audiopus::SampleRate::Hz12000),
-        16000 => Ok(audiopus::SampleRate::Hz16000),
-        24000 => Ok(audiopus::SampleRate::Hz24000),
-        48000 => Ok(audiopus::SampleRate::Hz48000),
-        _ => Err(Error::Malformed(
-            "RawOpusStream.sample_rate não suportado pelo decodificador Opus",
-        )),
-    }
-}
-
 /// Decodifica todos os pacotes de `stream` para PCM 16 bits intercalado,
 /// descartando as `pre_skip` primeiras amostras por canal (RFC 7845 §4.2) —
 /// amostras de "aquecimento" do codificador, nunca áudio de verdade.
 pub fn decode_to_pcm(stream: &RawOpusStream) -> Result<Vec<i16>> {
-    let channels = to_audiopus_channels(stream.channels)?;
-    let sample_rate = to_audiopus_sample_rate(stream.sample_rate)?;
-    let mut decoder = audiopus::coder::Decoder::new(sample_rate, channels)
-        .map_err(|_| Error::Malformed("falha iniciando o decodificador Opus"))?;
+    let mut decoder =
+        opus_decoder::OpusDecoder::new(stream.sample_rate, stream.channels as usize)
+            .map_err(|_| Error::Malformed("falha iniciando o decodificador Opus"))?;
 
     let channel_count = stream.channels as usize;
     let mut pcm = Vec::new();
     let mut buffer = vec![0i16; MAX_FRAME_SAMPLES_PER_CHANNEL * channel_count];
     for packet in &stream.packets {
+        if packet.is_empty() {
+            return Err(Error::Malformed("pacote Opus vazio"));
+        }
         let samples_per_channel = decoder
-            .decode(Some(packet.as_slice()), buffer.as_mut_slice(), false)
+            .decode(packet.as_slice(), buffer.as_mut_slice(), false)
             .map_err(|_| Error::Malformed("pacote Opus não decodificou"))?;
         pcm.extend_from_slice(&buffer[..samples_per_channel * channel_count]);
     }

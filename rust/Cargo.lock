@@ -1090,6 +1090,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opus-decoder"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15ae32c275dabb0cd2c863460bf349e9abc3568ba2abf0f9eb7b7d2edeeed07e"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "oslog"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1656,6 +1665,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "libcrux-ml-kem",
+ "opus-decoder",
  "proptest",
  "raptorq",
  "rusqlite",
