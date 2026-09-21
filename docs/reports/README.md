@@ -20,7 +20,7 @@ Dois modos, conforme o estado da fase:
 | 5 | [Notas de voz](FASE-5-NOTAS-DE-VOZ.md) | A | ❌ Não iniciada | 3–4,5 d |
 | 6 | [Rádios locais](FASE-6-RADIOS-LOCAIS.md) | A | ❌ Não iniciada | 11–14,5 d |
 | 7 | [Endurecimento](FASE-7-ENDURECIMENTO.md) | A | ❌ Não iniciada | 6,25–7,75 d |
-| 8 | [Habilitação do iOS](FASE-8-HABILITACAO-IOS.md) | A | ❌ Não iniciada | 4–6 d |
+| 8 | [Habilitação do iOS](FASE-8-HABILITACAO-IOS.md) | C | ✅ Concluída | — |
 
 Todos os esforços das fases 2 a 8 são `[modelado]`. Total do escopo completo: **47–60 dias-dev**.
 

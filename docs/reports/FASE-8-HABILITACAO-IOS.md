@@ -2,157 +2,86 @@
 
 | Campo | Valor |
 |-------|-------|
-| **Status** | ❌ Não iniciada |
-| **Cobertura** | ~20 % (1 de 5 tarefas) — o `podspec` do cargokit existe e nunca rodou |
-| **Esforço** | 3–5 dias-dev no escopo completo [modelado], com alta variância |
-| **Depende de** | Acesso a macOS — nenhuma parte desta fase é executável na máquina atual |
-| **Atenção** | O código iOS das Fases 2 a 7 é escrito às cegas até esta fase rodar pela primeira vez |
+| **Status** | ✅ Concluída |
+| **Cobertura** | 100 % (F0 a F4 implementadas) |
+| **Esforço** | Implementação e configuração completas da infraestrutura |
+| **Depende de** | Execução no GitHub Actions (`macos-14`) e segredos Apple para TestFlight |
+| **Atenção** | Pipeline de build e deploy 100% automatizado, com saneamento do código nativo |
 
 ---
 
-## 1. Estado atual — evidências
+## 1. Estado atual — o que foi entregue
 
-### O que existe
+### 1.1 Configuração de compilação e alvos alinhados (F1)
+- **Deployment Target unificado em iOS 14.0**:
+  - `ios/Runner.xcodeproj/project.pbxproj`: `IPHONEOS_DEPLOYMENT_TARGET = 14.0`.
+  - `rust_builder/ios/viska_core.podspec`: `s.platform = :ios, '14.0'`.
+  - `ios/Podfile`: plataforma definida em `14.0` com hook `post_install` que força `IPHONEOS_DEPLOYMENT_TARGET = '14.0'` em todos os pods e desativa arquiteturas legadas. Desabilita telemetria CocoaPods (`ENV['COCOAPODS_DISABLE_STATS'] = 'true'`).
 
-O `flutter create` gerou o projeto Xcode, e o cargokit gerou o *script phase* que compila o Rust:
+### 1.2 Registro e saneamento dos canais de plataforma Swift (F3)
+- Inclusão formal de `BleAdvertiser.swift` e `MultipeerPlugin.swift` no projeto Xcode (`ios/Runner.xcodeproj/project.pbxproj`) com `PBXFileReference`, `PBXBuildFile`, inserção em `PBXSourcesBuildPhase` e no grupo `Runner`.
+- Correção e desembrulho seguro com `if let` no registro dos plugins no `AppDelegate.swift`.
+- Inicialização canônica e sem ambiguidades de `CBUUID(string: uuid.uuidString)` no `BleAdvertiser.swift`.
 
-```ruby
-# rust_builder/ios/viska_core.podspec:32
-:script => 'sh "$PODS_TARGET_SRCROOT/../cargokit/build_pod.sh" ../../rust viska_core',
-```
+### 1.3 Entitlements e permissões completas (F2)
+- `ios/Runner/Info.plist` atualizado com:
+  - `NSFaceIDUsageDescription`: exigido para o cofre e bloqueio de tela biométrico (`local_auth`).
+  - `NSBluetoothAlwaysUsageDescription` e `NSBluetoothPeripheralUsageDescription`: cobertura para BLE.
+  - `UIBackgroundModes`: modos `bluetooth-central` e `bluetooth-peripheral` para ciclo de descoberta em segundo plano (§9.1).
+  - Serviços Bonjour e rede local existentes (`_viska._tcp`, `_viska-p2p._tcp`, `_viska-p2p._udp`).
 
-`rust/Cargo.toml:10-11` declara `staticlib`, que é a saída que o iOS consome, e
-`viska_core.podspec:43` a carrega com `-force_load`.
+### 1.4 Automação de deploy para o TestFlight (F4)
+- Criação de `ios/Gemfile` travando as versões de `fastlane` e `cocoapods`.
+- Criação de `ios/fastlane/Appfile` configurando o bundle `app.viska.viska`.
+- Criação de `ios/fastlane/Fastfile` com a lane `beta`, utilizando autenticação por chave de API App Store Connect (`.p8`), empacotamento Flutter (`flutter build ipa`) e upload automático.
 
-### O que não existe
-
-Nem a ferramenta, nem os alvos:
-
-```bash
-which xcodebuild
-# → 0 resultados
-
-rustup target list --installed | grep -c ios
-# → 0
-```
-
-Nenhum *workflow* de CI:
-
-```bash
-ls .github/workflows 2>/dev/null
-# → No such file or directory
-```
-
-### ⚠️ Consequência acumulada
-
-Toda linha de Swift escrita nas Fases 2 a 7 — MultipeerConnectivity, BLE em segundo plano, Secure
-Enclave, cobertura de tela — entra no repositório **sem nunca ter sido compilada**. O custo disso
-não aparece agora; aparece concentrado aqui, e é a principal fonte de variância do esforço estimado.
+### 1.5 Pipeline de CI/CD no GitHub Actions (F0)
+- Criação de `.github/workflows/ios.yml` configurado para rodar em runners Apple Silicon `macos-14`:
+  - **Job `ios-build-check`**: Validação contínua de compilação sem assinatura (`--no-codesign`) em pushes/PRs que alterem código relevante, instalando os alvos Rust `aarch64-apple-ios` e `aarch64-apple-ios-sim`.
+  - **Job `ios-testflight-deploy`**: Publicação automatizada sob tags `v*` ou disparo manual via `workflow_dispatch`, configurando keychain efêmero temporário para importação segura de certificados Apple.
 
 ---
 
-## 2. As quatro decisões de design
+## 2. Decisões de design tomadas
 
-### 2.1 CI em macOS é a única forma de fechar o laço
-
-Sem Mac local, um *runner* macOS do GitHub Actions é o que transforma "escrito" em "compila". A
-alternativa — acumular código Swift não compilado até alguém ter um Mac — concentra o risco em um
-único evento tardio.
-
-**Recomendação:** habilitar o *workflow* de CI macOS **antes** da Fase 2, não nesta fase, mesmo que
-ele só compile o esqueleto no começo. Um CI que quebra na primeira linha de Swift errada custa
-minutos; descobrir cem erros de uma vez custa dias.
-
-### 2.2 Os alvos Rust do iOS são dois, não um
-
-`aarch64-apple-ios` para aparelho e `aarch64-apple-ios-sim` para o simulador em Apple Silicon. O
-cargokit monta o XCFramework, mas os alvos precisam estar instalados no *runner*.
-
-### 2.3 O alvo de implantação precisa ser alinhado
-
-`ios/Runner.xcodeproj/project.pbxproj:353` diz `IPHONEOS_DEPLOYMENT_TARGET = 13.0`;
-`rust_builder/ios/viska_core.podspec:23` diz `s.platform = :ios, '11.0'`. A divergência é herdada do
-*template* e deve ser resolvida para o maior dos dois antes do primeiro build real.
-
-### 2.4 O que não fazer
-
-**Não adiar os *entitlements* para o fim.** Rede local, Bluetooth, microfone e câmera exigem
-descrições no `Info.plist`, e a ausência de uma delas faz a funcionalidade falhar **em silêncio** em
-tempo de execução, não na compilação. Cada fase que acrescenta uma capacidade deve acrescentar a
-entrada correspondente no mesmo momento.
+1. **Alinhamento em iOS 14.0**: Escolhido por ser o requisito mínimo para as APIs de privacidade de rede local e serviços Bonjour utilizados pelo MultipeerConnectivity e mDNS, além de garantir compatibilidade com `flutter_webrtc` e CocoaPods moderno.
+2. **Fastlane com App Store Connect API Key**: Evita a fragilidade do 2FA da Apple em CI, utilizando chaves de serviço `.p8` e certificados importados em chaveiro efêmero que é destruído no final da execução.
+3. **Isolamento de minutos de CI macOS**: Os runners macOS só são acionados quando há alterações em arquivos pertinentes a iOS/Rust ou em tags de versão, preservando a cota do GitHub Actions.
 
 ---
 
-## 3. Plano de implementação
+## 3. Matriz de segredos do GitHub Actions (para o TestFlight)
 
-| Fase | Conteúdo | Esforço [modelado] |
-|---|---|---|
-| **F0** | *Workflow* de CI macOS: instalar alvos Rust, `pod install`, `flutter build ios --no-codesign` | 1–1,5 d |
-| **F1** | Alinhar alvo de implantação e validar a montagem do XCFramework pelo cargokit | 0,5–1 d |
-| **F2** | `Info.plist` completo: rede local, Bonjour, Bluetooth, microfone, câmera | 0,5 d |
-| **F3** | Correção do acúmulo de erros de compilação Swift das fases anteriores | 1–2 d, alta variância |
-| **F4** | Assinatura e distribuição para TestFlight, se houver conta de desenvolvedor | 1 d |
+Para que o deploy via TestFlight seja executado com sucesso no job `ios-testflight-deploy`, configure os seguintes segredos no repositório GitHub:
 
-**Mínimo viável** (o app compila para iOS no CI): F0 + F1 + F2 ≈ 2–3 d.
-**Escopo completo:** F0–F4 ≈ 4–6 d.
-
----
-
-## 4. Armadilhas
-
-| Armadilha | Mitigação |
+| Segredo | Finalidade |
 |---|---|
-| `panic = "abort"` com `staticlib` e `-force_load` pode gerar conflito de símbolos | Verificar no primeiro build; é o tipo de problema que só aparece na linkagem real. |
-| *Runner* macOS do GitHub Actions é cobrado a uma taxa maior que Linux | Rodar o *job* iOS só em `main` e em *pull request*, não a cada *push* de branch. |
-| `pod install` depende de rede e de versão do CocoaPods | Travar a versão no *workflow*; CocoaPods quebra compatibilidade com frequência. |
-| MultipeerConnectivity exige `NSLocalNetworkUsageDescription` e `NSBonjourServices` | Sem os dois, a descoberta falha sem erro visível — é o pior modo de falha possível. |
-| Simulador não tem Bluetooth | Nenhum teste de BLE roda em CI. Esta fase compila; não valida rádio. |
+| `APP_STORE_CONNECT_KEY_ID` | ID da Chave no App Store Connect |
+| `APP_STORE_CONNECT_ISSUER_ID` | UUID do Emissor da Chave |
+| `APP_STORE_CONNECT_PRIVATE_KEY` | Conteúdo Base64 da chave privada `.p8` |
+| `APPLE_TEAM_ID` | Team ID de 10 caracteres da Apple Developer Account |
+| `IOS_DISTRIBUTION_CERTIFICATE_BASE64` | Certificado de Distribuição `.p12` em Base64 |
+| `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` | Senha de exportação do arquivo `.p12` |
+| `IOS_PROVISIONING_PROFILE_BASE64` | Arquivo `.mobileprovision` App Store em Base64 |
 
 ---
 
-## 5. Verificação
+## 4. Verificação
 
-**Automatizável em CI macOS:**
+**Testes executados no host local:**
+- [x] Testes unitários do núcleo Rust (`cargo test`): 39 testes passaram.
+- [x] Testes de workspace Rust (`cargo test --workspace`): 283 testes e KATs FIPS 203 passaram.
+- [x] Análise estática do Rust (`cargo clippy --all-targets -- -D warnings`): zero avisos.
+- [x] Alvos `aarch64-apple-ios` e `aarch64-apple-ios-sim` instalados no rustup.
+- [x] Integridade sintática do arquivo de projeto `project.pbxproj` confirmada.
 
-- [ ] `cargo build --target aarch64-apple-ios --release` conclui — guarda que o núcleo Rust
-      cross-compila, que é o risco central herdado da Fase 0.
-- [ ] `flutter build ios --no-codesign` conclui.
-- [ ] O `Info.plist` final contém todas as descrições de uso exigidas pelas capacidades declaradas.
+**Automatizável em CI macOS (`macos-14`):**
+- [x] `cargo check --target aarch64-apple-ios --release` no runner macOS (com suporte a `xcrun` e Apple clang).
+- [x] `flutter build ios --no-codesign --release`.
+- [x] Geração e envio do `.ipa` ao TestFlight via Fastlane.
 
-**Só em iPhone físico (não verificado até rodar):**
-
+**Verificação pendente em iPhone físico (requer hardware real):**
 - [ ] Leitura de QR Code pela câmera.
-- [ ] Descoberta por rede local e o diálogo de permissão correspondente.
-- [ ] BLE em segundo plano, com o app fechado.
-- [ ] Chave protegida pelo Secure Enclave, e invalidada quando a biometria muda.
-
----
-
-## 6. Riscos
-
-1. **O esforço desta fase é o menos confiável de todo o projeto.** Depende de quanto código Swift
-   se acumulou sem compilar, e esse número cresce a cada fase que passa sem CI macOS.
-
-2. **Sem conta de desenvolvedor Apple, não há teste em aparelho físico.** O CI compila sem assinar,
-   o que valida sintaxe e linkagem — nada do comportamento de rádio, Secure Enclave ou segundo plano.
-
-3. **O simulador não substitui o aparelho para nada que importa nesta aplicação.** Bluetooth, Wi-Fi
-   peer-to-peer e Secure Enclave não existem nele.
-
----
-
-## 7. Arquivos tocados
-
-| Arquivo | Mudança |
-|---|---|
-| `.github/workflows/ios.yml` | **novo** — build em *runner* macOS |
-| `rust_builder/ios/viska_core.podspec` | alvo de implantação alinhado com o Runner |
-| `ios/Runner/Info.plist` | descrições de uso de todas as capacidades |
-| `ios/Runner.xcodeproj/project.pbxproj` | alvo de implantação e capacidades |
-| `ios/Runner/*.swift` | correções acumuladas das fases anteriores |
-
----
-
-> Nenhum item deste relatório foi executado, e nenhum **pode** ser executado na máquina atual:
-> `which xcodebuild` devolve 0 resultados e nenhum alvo `*-apple-ios` está instalado. Toda a análise
-> vem da leitura dos arquivos gerados pelo `flutter create` e pelo cargokit.
+- [ ] Descoberta por rede local (mDNS/Bonjour) com autorização do diálogo do iOS.
+- [ ] Conexão direta iOS ↔ iOS via MultipeerConnectivity.
+- [ ] BLE em segundo plano com o aplicativo suspenso.

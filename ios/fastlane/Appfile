@@ -1,0 +1,7 @@
+# Identificador e metadados do aplicativo para o Fastlane
+app_identifier("app.viska.viska")
+
+# Configura identificadores de equipe a partir de variaveis de ambiente
+team_id(ENV["APPLE_TEAM_ID"]) if ENV["APPLE_TEAM_ID"]
+itc_team_id(ENV["APP_STORE_CONNECT_TEAM_ID"]) if ENV["APP_STORE_CONNECT_TEAM_ID"]
+apple_id(ENV["APPLE_ID"]) if ENV["APPLE_ID"]

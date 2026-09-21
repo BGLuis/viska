@@ -1,0 +1,32 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Publica versao de teste no TestFlight via App Store Connect API Key (Fase 8, F4)"
+  lane :beta do
+    # Autenticacao moderna por chave de API p8, sem necessidade de 2FA efemero
+    api_key = app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
+      key_content: ENV["APP_STORE_CONNECT_PRIVATE_KEY"],
+      is_key_content_base64: true,
+      in_house: false
+    )
+
+    # Executa o empacotamento completo do Flutter (Rust staticlib via cargokit + compilacao Xcode)
+    sh("cd ../.. && flutter build ipa --release")
+
+    # Localiza o arquivo .ipa gerado
+    ipa_path = Dir["../../build/ios/ipa/*.ipa"].first
+    UI.user_error!("Nenhum arquivo .ipa encontrado em build/ios/ipa/") unless ipa_path
+
+    UI.message("Enviando #{ipa_path} para o TestFlight...")
+
+    # Upload para o TestFlight da Apple
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ipa_path,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+end

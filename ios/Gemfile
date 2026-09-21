@@ -1,0 +1,5 @@
+source 'https://rubygems.org'
+
+# Versoes travadas para CocoaPods e Fastlane no runner macOS do CI
+gem 'cocoapods', '~> 1.16.2'
+gem 'fastlane', '~> 2.225.0'
