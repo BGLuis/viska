@@ -20,14 +20,14 @@ class _FakeCore implements Core {
       qrPayload ?? Uint8List.fromList(List.generate(145, (i) => i % 256));
 
   @override
-  Future<ContactDto> pairFromQr({required List<int> payload}) async {
+  Future<ContactDto> pairFromQr({required List<int> payload, String? nickname}) async {
     pairedPayload = payload;
     return ContactDto(
       deviceId: Uint8List.fromList(List.generate(16, (i) => i)),
       signingPubkey: Uint8List(32),
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234567890,
-      nickname: 'Amigo Teste',
+      nickname: nickname ?? 'Amigo Teste',
     );
   }
 

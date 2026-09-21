@@ -7,12 +7,10 @@ import '../frb_generated.dart';
 import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-
-            
-
-            /// Prefixa `envelope` com seu comprimento em big-endian, para envio pelo
+/// Prefixa `envelope` com seu comprimento em big-endian, para envio pelo
 /// socket TCP local.
-Future<Uint8List>  frameForLocalSocket({required List<int> envelope }) => RustLib.instance.api.crateFfiFramingFrameForLocalSocket(envelope: envelope);
+Future<Uint8List> frameForLocalSocket({required List<int> envelope}) =>
+    RustLib.instance.api.crateFfiFramingFrameForLocalSocket(envelope: envelope);
 
 /// Extrai o próximo quadro completo de `buffer`, se já tiver chegado por
 /// inteiro, devolvendo o quadro extraído e o restante do buffer.
@@ -23,7 +21,8 @@ Future<Uint8List>  frameForLocalSocket({required List<int> envelope }) => RustLi
 /// tratado como `FfiError::Internal`: um peer que anuncia isso está sendo
 /// hostil ou está corrompido, e a única resposta correta (armadilha da Fase
 /// 6, §4) é derrubar a conexão — não tentar de novo sobre o mesmo buffer.
-Future<(Uint8List?,Uint8List)>  extractFrameFromLocalSocketBuffer({required List<int> buffer }) => RustLib.instance.api.crateFfiFramingExtractFrameFromLocalSocketBuffer(buffer: buffer);
-
-            
-            
+Future<(Uint8List?, Uint8List)> extractFrameFromLocalSocketBuffer({
+  required List<int> buffer,
+}) => RustLib.instance.api.crateFfiFramingExtractFrameFromLocalSocketBuffer(
+  buffer: buffer,
+);

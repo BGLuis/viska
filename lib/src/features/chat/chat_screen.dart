@@ -4,6 +4,7 @@ import 'package:viska/src/rust/ffi/types.dart';
 
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
+import '../pairing/widgets/safety_number_view.dart';
 import 'chat_controller.dart';
 
 /// Tela de chat com um contato — Fase 3, F6; nota de voz (Fase 5) na mesma
@@ -39,6 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scrollController = ScrollController();
 
   int _ephemeralTtlSecs = 0;
+  late String? _currentContactLabel = widget.contactLabel;
 
   @override
   void initState() {
@@ -102,6 +104,153 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _showContactDetails() async {
+    final safetyNumber = await widget.core.safetyNumber(
+      contactDeviceId: widget.contactId.deviceId,
+    );
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Center(
+                    child: CircleAvatar(
+                      radius: 32,
+                      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                      child: Text(
+                        (_currentContactLabel?.isNotEmpty == true)
+                            ? _currentContactLabel!.substring(0, 1).toUpperCase()
+                            : '?',
+                        style: TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          _currentContactLabel ?? 'Contato sem apelido',
+                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.edit_outlined, size: 20),
+                        tooltip: 'Editar apelido',
+                        onPressed: () async {
+                          final controller = TextEditingController(text: _currentContactLabel ?? '');
+                          final newName = await showDialog<String>(
+                            context: context,
+                            builder: (dCtx) => AlertDialog(
+                              title: const Text('Editar apelido'),
+                              content: TextField(
+                                controller: controller,
+                                autofocus: true,
+                                decoration: const InputDecoration(
+                                  labelText: 'Apelido do contato',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(dCtx),
+                                  child: const Text('Cancelar'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(dCtx, controller.text.trim()),
+                                  child: const Text('Salvar'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (newName != null && newName.isNotEmpty) {
+                            await widget.core.setContactNickname(
+                              contactDeviceId: widget.contactId.deviceId,
+                              nickname: newName,
+                            );
+                            if (!mounted) return;
+                            setState(() => _currentContactLabel = newName);
+                            setModalState(() {});
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.shield_outlined, color: Colors.teal),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Criptografia Híbrida Pós-Quântica',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              Text(
+                                'ML-KEM-768 + X25519 • Double Ratchet ativo',
+                                style: TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Número de Segurança (Safety Number)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(height: 8),
+                  SafetyNumberView(safetyNumber: safetyNumber),
+                  const SizedBox(height: 20),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _showEphemeralDialog();
+                    },
+                    icon: Icon(
+                      _ephemeralTtlSecs > 0 ? Icons.timer : Icons.timer_outlined,
+                    ),
+                    label: Text(
+                      _ephemeralTtlSecs > 0
+                          ? 'Mensagens temporárias ativas'
+                          : 'Configurar mensagens temporárias',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   void _onControllerChanged() {
     if (!mounted) return;
     setState(() {});
@@ -147,7 +296,26 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.contactLabel ?? 'Conversa'),
+        title: InkWell(
+          onTap: _showContactDetails,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _currentContactLabel ?? 'Conversa',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, size: 18),
+              ],
+            ),
+          ),
+        ),
         actions: [
           IconButton(
             icon: Icon(

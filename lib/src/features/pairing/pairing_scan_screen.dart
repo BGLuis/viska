@@ -57,6 +57,8 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
     }
   }
 
+  bool _hasScanned = false;
+
   /// `rawValue` é `String` e não sobrevive a um payload binário de 145 bytes
   /// — nunca usar aqui. `rawDecodedBytes.bytes` preserva os bytes crus como o
   /// scanner os leu. Ver armadilha 1 do relatório da Fase 2.
@@ -67,17 +69,19 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
         DecodedVisionBarcodeBytes(:final bytes) => bytes,
         null => null,
       };
-      if (bytes != null) return bytes;
+      if (bytes != null && bytes.length == 145) return bytes;
     }
     return null;
   }
 
   Future<void> _handleDetection(BarcodeCapture capture) async {
-    if (_processing) return;
+    if (_hasScanned || _processing) return;
 
     final bytes = _payloadBytesFrom(capture);
     if (bytes == null) return;
 
+    // Trava imediatamente antes de qualquer await para descartar frames seguintes
+    _hasScanned = true;
     setState(() {
       _processing = true;
       _errorMessage = null;
@@ -85,13 +89,14 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
 
     try {
       final contact = await widget.core.pairFromQr(payload: bytes);
-      await _scannerController.stop();
       if (!mounted) return;
       Navigator.of(context).pop(contact);
     } on FfiError catch (error) {
+      _hasScanned = false;
       if (!mounted) return;
       setState(() => _errorMessage = pairingErrorMessage(error));
     } catch (_) {
+      _hasScanned = false;
       if (!mounted) return;
       setState(() => _errorMessage = 'Erro ao processar o código lido.');
     } finally {
@@ -111,7 +116,6 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
     try {
       final bytes = base64Decode(trimmed);
       final contact = await widget.core.pairFromQr(payload: bytes);
-      await _scannerController.stop();
       if (!mounted) return;
       Navigator.of(context).pop(contact);
     } on FfiError catch (error) {

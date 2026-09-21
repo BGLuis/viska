@@ -46,7 +46,7 @@ impl Core {
             return Ok(status_dto(session));
         }
 
-        let (peer, _) = self
+        let (peer, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
@@ -346,8 +346,8 @@ mod tests {
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
         let core_b = open_core(&dir_b);
-        let contact_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload()).unwrap();
-        let contact_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+        let contact_a_seen_by_b = core_b.pair_from_qr(core_a.my_qr_payload(), None).unwrap();
+        let contact_b_seen_by_a = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
 
         let mut result = PairedCores {
             _dir_a: dir_a,

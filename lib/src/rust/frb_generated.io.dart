@@ -14,380 +14,718 @@ import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 
+abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
+  RustLibApiImplPlatform({
+    required super.handler,
+    required super.wire,
+    required super.generalizedFrbRustBinding,
+    required super.portManager,
+  });
 
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr;
 
+  @protected
+  Core
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    dynamic raw,
+  );
 
-                abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
-                  RustLibApiImplPlatform({
-                    required super.handler,
-                    required super.wire,
-                    required super.generalizedFrbRustBinding,
-                    required super.portManager,
-                  });
+  @protected
+  Core
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    dynamic raw,
+  );
 
-                  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr => wire._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr;
+  @protected
+  Core
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    dynamic raw,
+  );
 
+  @protected
+  String dco_decode_String(dynamic raw);
 
+  @protected
+  bool dco_decode_bool(dynamic raw);
 
-                  @protected Core dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw);
+  @protected
+  ContactDto dco_decode_box_autoadd_contact_dto(dynamic raw);
 
-@protected Core dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw);
+  @protected
+  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
-@protected Core dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw);
+  @protected
+  IncomingMessageDto dco_decode_box_autoadd_incoming_message_dto(dynamic raw);
 
-@protected String dco_decode_String(dynamic raw);
+  @protected
+  IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw);
 
-@protected bool dco_decode_bool(dynamic raw);
+  @protected
+  SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw);
 
-@protected ContactDto dco_decode_box_autoadd_contact_dto(dynamic raw);
+  @protected
+  TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(dynamic raw);
 
-@protected PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+  @protected
+  ContactDto dco_decode_contact_dto(dynamic raw);
 
-@protected IncomingMessageDto dco_decode_box_autoadd_incoming_message_dto(dynamic raw);
+  @protected
+  DeliveryStateDto dco_decode_delivery_state_dto(dynamic raw);
 
-@protected IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw);
+  @protected
+  DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw);
 
-@protected SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw);
+  @protected
+  FfiError dco_decode_ffi_error(dynamic raw);
 
-@protected TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(dynamic raw);
+  @protected
+  FileOfferDto dco_decode_file_offer_dto(dynamic raw);
 
-@protected ContactDto dco_decode_contact_dto(dynamic raw);
+  @protected
+  int dco_decode_i_32(dynamic raw);
 
-@protected DeliveryStateDto dco_decode_delivery_state_dto(dynamic raw);
+  @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw);
 
-@protected DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw);
+  @protected
+  IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw);
 
-@protected FfiError dco_decode_ffi_error(dynamic raw);
+  @protected
+  IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw);
 
-@protected FileOfferDto dco_decode_file_offer_dto(dynamic raw);
+  @protected
+  List<String> dco_decode_list_String(dynamic raw);
 
-@protected int dco_decode_i_32(dynamic raw);
+  @protected
+  List<ContactDto> dco_decode_list_contact_dto(dynamic raw);
 
-@protected PlatformInt64 dco_decode_i_64(dynamic raw);
+  @protected
+  List<FileOfferDto> dco_decode_list_file_offer_dto(dynamic raw);
 
-@protected IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw);
+  @protected
+  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw);
 
-@protected IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw);
+  @protected
+  List<MessageDto> dco_decode_list_message_dto(dynamic raw);
 
-@protected List<String> dco_decode_list_String(dynamic raw);
+  @protected
+  List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
 
-@protected List<ContactDto> dco_decode_list_contact_dto(dynamic raw);
+  @protected
+  Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
-@protected List<FileOfferDto> dco_decode_list_file_offer_dto(dynamic raw);
+  @protected
+  List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
 
-@protected List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw);
+  @protected
+  MessageDirectionDto dco_decode_message_direction_dto(dynamic raw);
 
-@protected List<MessageDto> dco_decode_list_message_dto(dynamic raw);
+  @protected
+  MessageDto dco_decode_message_dto(dynamic raw);
 
-@protected List<int> dco_decode_list_prim_u_8_loose(dynamic raw);
+  @protected
+  MessageKindDto dco_decode_message_kind_dto(dynamic raw);
 
-@protected Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+  @protected
+  String? dco_decode_opt_String(dynamic raw);
 
-@protected List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
+  @protected
+  ContactDto? dco_decode_opt_box_autoadd_contact_dto(dynamic raw);
 
-@protected MessageDirectionDto dco_decode_message_direction_dto(dynamic raw);
+  @protected
+  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
-@protected MessageDto dco_decode_message_dto(dynamic raw);
+  @protected
+  IncomingMessageDto? dco_decode_opt_box_autoadd_incoming_message_dto(
+    dynamic raw,
+  );
 
-@protected MessageKindDto dco_decode_message_kind_dto(dynamic raw);
+  @protected
+  IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw);
 
-@protected String? dco_decode_opt_String(dynamic raw);
+  @protected
+  SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw);
 
-@protected ContactDto? dco_decode_opt_box_autoadd_contact_dto(dynamic raw);
+  @protected
+  TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(
+    dynamic raw,
+  );
 
-@protected PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+  @protected
+  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
 
-@protected IncomingMessageDto? dco_decode_opt_box_autoadd_incoming_message_dto(dynamic raw);
+  @protected
+  (Uint8List?, Uint8List)
+  dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw);
 
-@protected IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw);
+  @protected
+  SafetyNumberDto dco_decode_safety_number_dto(dynamic raw);
 
-@protected SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw);
+  @protected
+  SealedMessageDto dco_decode_sealed_message_dto(dynamic raw);
 
-@protected TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(dynamic raw);
+  @protected
+  SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw);
 
-@protected Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+  @protected
+  SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw);
 
-@protected (Uint8List?,Uint8List) dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw);
+  @protected
+  SessionStateKind dco_decode_session_state_kind(dynamic raw);
 
-@protected SafetyNumberDto dco_decode_safety_number_dto(dynamic raw);
+  @protected
+  SessionStatusDto dco_decode_session_status_dto(dynamic raw);
 
-@protected SealedMessageDto dco_decode_sealed_message_dto(dynamic raw);
+  @protected
+  SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw);
 
-@protected SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw);
+  @protected
+  TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw);
 
-@protected SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw);
+  @protected
+  int dco_decode_u_32(dynamic raw);
 
-@protected SessionStateKind dco_decode_session_state_kind(dynamic raw);
+  @protected
+  BigInt dco_decode_u_64(dynamic raw);
 
-@protected SessionStatusDto dco_decode_session_status_dto(dynamic raw);
+  @protected
+  int dco_decode_u_8(dynamic raw);
 
-@protected SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw);
+  @protected
+  void dco_decode_unit(dynamic raw);
 
-@protected TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw);
+  @protected
+  BigInt dco_decode_usize(dynamic raw);
 
-@protected int dco_decode_u_32(dynamic raw);
+  @protected
+  Core
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    SseDeserializer deserializer,
+  );
 
-@protected BigInt dco_decode_u_64(dynamic raw);
+  @protected
+  Core
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    SseDeserializer deserializer,
+  );
 
-@protected int dco_decode_u_8(dynamic raw);
+  @protected
+  Core
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    SseDeserializer deserializer,
+  );
 
-@protected void dco_decode_unit(dynamic raw);
+  @protected
+  String sse_decode_String(SseDeserializer deserializer);
 
-@protected BigInt dco_decode_usize(dynamic raw);
+  @protected
+  bool sse_decode_bool(SseDeserializer deserializer);
 
-@protected Core sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer);
+  @protected
+  ContactDto sse_decode_box_autoadd_contact_dto(SseDeserializer deserializer);
 
-@protected Core sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer);
+  @protected
+  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
-@protected Core sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer);
+  @protected
+  IncomingMessageDto sse_decode_box_autoadd_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected String sse_decode_String(SseDeserializer deserializer);
+  @protected
+  IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected bool sse_decode_bool(SseDeserializer deserializer);
+  @protected
+  SessionStatusDto sse_decode_box_autoadd_session_status_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected ContactDto sse_decode_box_autoadd_contact_dto(SseDeserializer deserializer);
+  @protected
+  TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+  @protected
+  ContactDto sse_decode_contact_dto(SseDeserializer deserializer);
 
-@protected IncomingMessageDto sse_decode_box_autoadd_incoming_message_dto(SseDeserializer deserializer);
+  @protected
+  DeliveryStateDto sse_decode_delivery_state_dto(SseDeserializer deserializer);
 
-@protected IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(SseDeserializer deserializer);
+  @protected
+  DiscoveryBeaconsDto sse_decode_discovery_beacons_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected SessionStatusDto sse_decode_box_autoadd_session_status_dto(SseDeserializer deserializer);
+  @protected
+  FfiError sse_decode_ffi_error(SseDeserializer deserializer);
 
-@protected TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(SseDeserializer deserializer);
+  @protected
+  FileOfferDto sse_decode_file_offer_dto(SseDeserializer deserializer);
 
-@protected ContactDto sse_decode_contact_dto(SseDeserializer deserializer);
+  @protected
+  int sse_decode_i_32(SseDeserializer deserializer);
 
-@protected DeliveryStateDto sse_decode_delivery_state_dto(SseDeserializer deserializer);
+  @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
 
-@protected DiscoveryBeaconsDto sse_decode_discovery_beacons_dto(SseDeserializer deserializer);
+  @protected
+  IncomingMessageDto sse_decode_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected FfiError sse_decode_ffi_error(SseDeserializer deserializer);
+  @protected
+  IngestedChunkDto sse_decode_ingested_chunk_dto(SseDeserializer deserializer);
 
-@protected FileOfferDto sse_decode_file_offer_dto(SseDeserializer deserializer);
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
 
-@protected int sse_decode_i_32(SseDeserializer deserializer);
+  @protected
+  List<ContactDto> sse_decode_list_contact_dto(SseDeserializer deserializer);
 
-@protected PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+  @protected
+  List<FileOfferDto> sse_decode_list_file_offer_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected IncomingMessageDto sse_decode_incoming_message_dto(SseDeserializer deserializer);
+  @protected
+  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
 
-@protected IngestedChunkDto sse_decode_ingested_chunk_dto(SseDeserializer deserializer);
+  @protected
+  List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer);
 
-@protected List<String> sse_decode_list_String(SseDeserializer deserializer);
+  @protected
+  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
 
-@protected List<ContactDto> sse_decode_list_contact_dto(SseDeserializer deserializer);
+  @protected
+  Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
-@protected List<FileOfferDto> sse_decode_list_file_offer_dto(SseDeserializer deserializer);
+  @protected
+  List<SealedMessageDto> sse_decode_list_sealed_message_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected List<Uint8List> sse_decode_list_list_prim_u_8_strict(SseDeserializer deserializer);
+  @protected
+  MessageDirectionDto sse_decode_message_direction_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer);
+  @protected
+  MessageDto sse_decode_message_dto(SseDeserializer deserializer);
 
-@protected List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer);
+  @protected
+  MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer);
 
-@protected Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer);
 
-@protected List<SealedMessageDto> sse_decode_list_sealed_message_dto(SseDeserializer deserializer);
+  @protected
+  ContactDto? sse_decode_opt_box_autoadd_contact_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected MessageDirectionDto sse_decode_message_direction_dto(SseDeserializer deserializer);
+  @protected
+  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
-@protected MessageDto sse_decode_message_dto(SseDeserializer deserializer);
+  @protected
+  IncomingMessageDto? sse_decode_opt_box_autoadd_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer);
+  @protected
+  IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected String? sse_decode_opt_String(SseDeserializer deserializer);
+  @protected
+  SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected ContactDto? sse_decode_opt_box_autoadd_contact_dto(SseDeserializer deserializer);
+  @protected
+  TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+  @protected
+  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
 
-@protected IncomingMessageDto? sse_decode_opt_box_autoadd_incoming_message_dto(SseDeserializer deserializer);
+  @protected
+  (Uint8List?, Uint8List)
+  sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
 
-@protected IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(SseDeserializer deserializer);
+  @protected
+  SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer);
 
-@protected SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(SseDeserializer deserializer);
+  @protected
+  SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer);
 
-@protected TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(SseDeserializer deserializer);
+  @protected
+  SendAudioStartedDto sse_decode_send_audio_started_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+  @protected
+  SendFileStartedDto sse_decode_send_file_started_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected (Uint8List?,Uint8List) sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(SseDeserializer deserializer);
+  @protected
+  SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer);
 
-@protected SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer);
+  @protected
+  SessionStatusDto sse_decode_session_status_dto(SseDeserializer deserializer);
 
-@protected SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer);
+  @protected
+  SignalingTopicsDto sse_decode_signaling_topics_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected SendAudioStartedDto sse_decode_send_audio_started_dto(SseDeserializer deserializer);
+  @protected
+  TransferProgressDto sse_decode_transfer_progress_dto(
+    SseDeserializer deserializer,
+  );
 
-@protected SendFileStartedDto sse_decode_send_file_started_dto(SseDeserializer deserializer);
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer);
 
-@protected SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer);
+  @protected
+  BigInt sse_decode_u_64(SseDeserializer deserializer);
 
-@protected SessionStatusDto sse_decode_session_status_dto(SseDeserializer deserializer);
+  @protected
+  int sse_decode_u_8(SseDeserializer deserializer);
 
-@protected SignalingTopicsDto sse_decode_signaling_topics_dto(SseDeserializer deserializer);
+  @protected
+  void sse_decode_unit(SseDeserializer deserializer);
 
-@protected TransferProgressDto sse_decode_transfer_progress_dto(SseDeserializer deserializer);
+  @protected
+  BigInt sse_decode_usize(SseDeserializer deserializer);
 
-@protected int sse_decode_u_32(SseDeserializer deserializer);
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    Core self,
+    SseSerializer serializer,
+  );
 
-@protected BigInt sse_decode_u_64(SseDeserializer deserializer);
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    Core self,
+    SseSerializer serializer,
+  );
 
-@protected int sse_decode_u_8(SseDeserializer deserializer);
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    Core self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_String(String self, SseSerializer serializer);
 
-@protected void sse_decode_unit(SseDeserializer deserializer);
-
-@protected BigInt sse_decode_usize(SseDeserializer deserializer);
-
-@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer);
-
-@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer);
-
-@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer);
-
-@protected void sse_encode_String(String self, SseSerializer serializer);
-
-@protected void sse_encode_bool(bool self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_contact_dto(ContactDto self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_i_64(PlatformInt64 self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_incoming_message_dto(IncomingMessageDto self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_ingested_chunk_dto(IngestedChunkDto self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_session_status_dto(SessionStatusDto self, SseSerializer serializer);
-
-@protected void sse_encode_box_autoadd_transfer_progress_dto(TransferProgressDto self, SseSerializer serializer);
-
-@protected void sse_encode_contact_dto(ContactDto self, SseSerializer serializer);
-
-@protected void sse_encode_delivery_state_dto(DeliveryStateDto self, SseSerializer serializer);
-
-@protected void sse_encode_discovery_beacons_dto(DiscoveryBeaconsDto self, SseSerializer serializer);
-
-@protected void sse_encode_ffi_error(FfiError self, SseSerializer serializer);
-
-@protected void sse_encode_file_offer_dto(FileOfferDto self, SseSerializer serializer);
-
-@protected void sse_encode_i_32(int self, SseSerializer serializer);
-
-@protected void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
-
-@protected void sse_encode_incoming_message_dto(IncomingMessageDto self, SseSerializer serializer);
-
-@protected void sse_encode_ingested_chunk_dto(IngestedChunkDto self, SseSerializer serializer);
-
-@protected void sse_encode_list_String(List<String> self, SseSerializer serializer);
-
-@protected void sse_encode_list_contact_dto(List<ContactDto> self, SseSerializer serializer);
-
-@protected void sse_encode_list_file_offer_dto(List<FileOfferDto> self, SseSerializer serializer);
-
-@protected void sse_encode_list_list_prim_u_8_strict(List<Uint8List> self, SseSerializer serializer);
-
-@protected void sse_encode_list_message_dto(List<MessageDto> self, SseSerializer serializer);
-
-@protected void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
-
-@protected void sse_encode_list_prim_u_8_strict(Uint8List self, SseSerializer serializer);
-
-@protected void sse_encode_list_sealed_message_dto(List<SealedMessageDto> self, SseSerializer serializer);
-
-@protected void sse_encode_message_direction_dto(MessageDirectionDto self, SseSerializer serializer);
-
-@protected void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
-
-@protected void sse_encode_message_kind_dto(MessageKindDto self, SseSerializer serializer);
-
-@protected void sse_encode_opt_String(String? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_contact_dto(ContactDto? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_i_64(PlatformInt64? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_incoming_message_dto(IncomingMessageDto? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_ingested_chunk_dto(IngestedChunkDto? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_session_status_dto(SessionStatusDto? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_box_autoadd_transfer_progress_dto(TransferProgressDto? self, SseSerializer serializer);
-
-@protected void sse_encode_opt_list_prim_u_8_strict(Uint8List? self, SseSerializer serializer);
-
-@protected void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict((Uint8List?,Uint8List) self, SseSerializer serializer);
-
-@protected void sse_encode_safety_number_dto(SafetyNumberDto self, SseSerializer serializer);
-
-@protected void sse_encode_sealed_message_dto(SealedMessageDto self, SseSerializer serializer);
-
-@protected void sse_encode_send_audio_started_dto(SendAudioStartedDto self, SseSerializer serializer);
-
-@protected void sse_encode_send_file_started_dto(SendFileStartedDto self, SseSerializer serializer);
-
-@protected void sse_encode_session_state_kind(SessionStateKind self, SseSerializer serializer);
-
-@protected void sse_encode_session_status_dto(SessionStatusDto self, SseSerializer serializer);
-
-@protected void sse_encode_signaling_topics_dto(SignalingTopicsDto self, SseSerializer serializer);
-
-@protected void sse_encode_transfer_progress_dto(TransferProgressDto self, SseSerializer serializer);
-
-@protected void sse_encode_u_32(int self, SseSerializer serializer);
-
-@protected void sse_encode_u_64(BigInt self, SseSerializer serializer);
-
-@protected void sse_encode_u_8(int self, SseSerializer serializer);
-
-@protected void sse_encode_unit(void self, SseSerializer serializer);
-
-@protected void sse_encode_usize(BigInt self, SseSerializer serializer);
-                }
-                
-
+  @protected
+  void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_contact_dto(
+    ContactDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_i_64(
+    PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_incoming_message_dto(
+    IncomingMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_ingested_chunk_dto(
+    IngestedChunkDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_session_status_dto(
+    SessionStatusDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transfer_progress_dto(
+    TransferProgressDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_contact_dto(ContactDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_delivery_state_dto(
+    DeliveryStateDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_discovery_beacons_dto(
+    DiscoveryBeaconsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ffi_error(FfiError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_file_offer_dto(FileOfferDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_i_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_incoming_message_dto(
+    IncomingMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_ingested_chunk_dto(
+    IngestedChunkDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_contact_dto(
+    List<ContactDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_file_offer_dto(
+    List<FileOfferDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_list_prim_u_8_strict(
+    List<Uint8List> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_message_dto(
+    List<MessageDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_prim_u_8_strict(
+    Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_sealed_message_dto(
+    List<SealedMessageDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_message_direction_dto(
+    MessageDirectionDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_message_kind_dto(
+    MessageKindDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_contact_dto(
+    ContactDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_i_64(
+    PlatformInt64? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_incoming_message_dto(
+    IncomingMessageDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_ingested_chunk_dto(
+    IngestedChunkDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_session_status_dto(
+    SessionStatusDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_transfer_progress_dto(
+    TransferProgressDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_list_prim_u_8_strict(
+    Uint8List? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
+    (Uint8List?, Uint8List) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_safety_number_dto(
+    SafetyNumberDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_sealed_message_dto(
+    SealedMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_send_audio_started_dto(
+    SendAudioStartedDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_send_file_started_dto(
+    SendFileStartedDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_state_kind(
+    SessionStateKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_status_dto(
+    SessionStatusDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_signaling_topics_dto(
+    SignalingTopicsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transfer_progress_dto(
+    TransferProgressDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_8(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_usize(BigInt self, SseSerializer serializer);
+}
 
 // Section: wire_class
 
+class RustLibWire implements BaseWire {
+  factory RustLibWire.fromExternalLibrary(ExternalLibrary lib) =>
+      RustLibWire(lib.ffiDynamicLibrary);
 
-        class RustLibWire implements BaseWire {
+  /// Holds the symbol lookup function.
+  final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName)
+  _lookup;
 
-            factory RustLibWire.fromExternalLibrary(ExternalLibrary lib) =>
-              RustLibWire(lib.ffiDynamicLibrary);
-        
-            /// Holds the symbol lookup function.
-            final ffi.Pointer<T> Function<T extends ffi.NativeType>(String symbolName)
-                _lookup;
-  
-            /// The symbols are looked up in [dynamicLibrary].
-            RustLibWire(ffi.DynamicLibrary dynamicLibrary)
-                : _lookup = dynamicLibrary.lookup;
+  /// The symbols are looked up in [dynamicLibrary].
+  RustLibWire(ffi.DynamicLibrary dynamicLibrary)
+    : _lookup = dynamicLibrary.lookup;
 
-            
-            void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-              ffi.Pointer<ffi.Void> ptr,
-            ) {
-              return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-                ptr,
-              );
-            }
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+      ptr,
+    );
+  }
 
-            late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr = _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>('frbgen_viska_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore');
-            late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore = _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr.asFunction<void Function(ffi.Pointer<ffi.Void>)>();
-            
-            void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-              ffi.Pointer<ffi.Void> ptr,
-            ) {
-              return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-                ptr,
-              );
-            }
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_viska_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 
-            late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr = _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>('frbgen_viska_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore');
-            late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore = _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr.asFunction<void Function(ffi.Pointer<ffi.Void>)>();
-            
-        }
-        
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_viska_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+}

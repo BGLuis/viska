@@ -8,302 +8,317 @@ import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
-
-            // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`
+// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
 
-
-            
-
-            
-                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
-                abstract class Core implements RustOpaqueInterface {
-                    /// Cancela uma transferência (de qualquer lado): remove o handle em
-/// memória e o registro em `store`. Do lado receptor, também apaga o
-/// `.staging` — mesma garantia de "abortar destrói a chave" de
-/// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
-/// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
-/// foi fechado a cada bloco completado). Ver §7.5/D15.
- Future<void>  cancelTransfer({required List<int> fileId });
-
-
-/// Decodifica o formato interno devolvido por
-/// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
-/// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
-/// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
-/// nenhum, com ou sem suporte a Opus (D18).
- Future<Uint8List>  decodeAudioToWav({required List<int> internalBytes });
-
-
-/// Decifra um envelope recebido no `DataChannel`.
-///
-/// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
-/// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
-/// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-/// DTO efêmero, sem `message_id`.
-///
-/// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
-/// processados aqui como efeito colateral — inicia/atualiza/encerra o
-/// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
-/// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
-/// deste método para acomodar isso quebraria `chat_controller.dart`
-/// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
-/// `Core::pending_file_offers` depois. Falha ao processar um desses três
-/// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
-/// política de silêncio de qualquer corpo malformado nesta fronteira, e
-/// nunca deveria acontecer vindo de um par honesto.
-///
-/// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
-/// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
-/// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
- Future<IncomingMessageDto?>  decryptIncoming({required List<int> peerDeviceId , required List<int> envelope });
-
-
-/// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-/// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-/// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
- Future<DiscoveryBeaconsDto>  discoveryBeacons({required List<int> peerDeviceId });
-
-
-/// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-/// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
- Future<void>  emergencyErase();
-
-
-/// Abre (ou devolve, se já existir) a sessão com um contato pareado.
-///
-/// Idempotente: chamadas repetidas para o mesmo contato nunca reabrem o
-/// handshake. `outgoing_handshake` vem preenchido em toda chamada feita
-/// enquanto formos iniciador e ainda não tivermos recebido a RESP — não
-/// só na primeira — porque mais de uma parte do app pode precisar desses
-/// bytes em momentos diferentes (o transporte WebRTC, para decidir quem
-/// oferta o SDP; o controlador de chat, para de fato publicar a mensagem
-/// de handshake assim que o canal abrir). Ver
-/// `viska_proto::session::Session::pending_outgoing_handshake`.
- Future<SessionStatusDto>  ensureSession({required List<int> peerDeviceId });
-
-
-/// Alimenta a sessão com uma mensagem de handshake recebida via
-/// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
-/// de resposta a publicar, se houver.
-///
-/// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
-/// sido chamado antes para este contato — este método nunca cria uma
-/// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
-/// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
-/// errado dependendo só de qual mensagem chegou primeiro.
- Future<Uint8List?>  feedHandshake({required List<int> peerDeviceId , required List<int> bytes });
-
-
-/// Como [`Core::finish_receive_file`] — `destination_path` recebe o
-/// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
-/// chama remonta o contêiner para reprodução (ver
-/// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
- Future<Uint8List>  finishReceiveAudio({required List<int> peerDeviceId , required List<int> fileId , required String destinationPath });
-
-
-/// Fecha um recebimento completo: verifica a raiz Merkle inteira,
-/// decifra para `destination_path`, remove o `.staging` e o registro em
-/// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-/// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-/// emissor pelo canal `control`.
- Future<Uint8List>  finishReceiveFile({required List<int> peerDeviceId , required List<int> fileId , required String destinationPath });
-
-
-/// Cifra todas as mensagens `pending` de um contato — chamar quando o
-/// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-/// estabelecer. Para na primeira falha de cifragem (ex.:
-/// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
-/// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
-/// ordem de entrega.
- Future<List<SealedMessageDto>>  flushPending({required List<int> peerDeviceId });
-
-
-/// Consulta o TTL efêmero configurado para o contato.
- Future<PlatformInt64>  getEphemeralTtl({required List<int> contactDeviceId });
-
-
-/// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
-/// sozinho a qual transferência ele pertence (D17: `file_id` vai em
-/// claro na frente, ver `peek_wire_file_id`) e roteia para a
-/// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
-/// pode ser um pacote de uma transferência já concluída/cancelada, ou
-/// que chegou antes do `FILE_METADATA` correspondente terminar de
-/// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
-/// de quem chama. Serve arquivo e áudio por igual.
- Future<IngestedChunkDto?>  ingestIncomingWireBytes({required List<int> wireBytes });
-
-
-/// Informa se a Core está trancada.
- Future<bool>  isLocked();
-
-
-/// Todos os contatos já pareados.
- Future<List<ContactDto>>  listContacts();
-
-
-/// Todas as mensagens já trocadas com um contato, mais antigas primeiro
-/// — histórico completo para a tela de chat abrir com.
- Future<List<MessageDto>>  listMessages({required List<int> peerDeviceId });
-
-
-/// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-/// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
-/// limpa a chave mestra nativa injetada.
- Future<void>  lock();
-
-
-/// Marca uma mensagem como lida, disparando o temporizador de expiração.
- Future<void>  markMessageRead({required PlatformInt64 messageId });
-
-
-/// Marca uma mensagem de saída como entregue ao transporte — chamar só
-/// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
-/// lançar erro.
- Future<void>  markMessageSent({required PlatformInt64 messageId });
-
-
-/// Identifica a qual contato pareado um `BeaconID` recebido do rádio
-/// pertence — varre todos os contatos e compara a janela de três épocas
-/// de cada um. Fica em Rust porque só aqui há a identidade privada
-/// necessária para recalcular `K_sig` de qualquer contato arbitrário; o
-/// Dart nunca vê `K_sig`, só o resultado do casamento.
- Future<ContactDto?>  matchDiscoveredBeacon({required List<int> beacon });
-
-
-/// `device_id` desta identidade local — dado já público (trocado no QR,
-/// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-/// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
-/// dele até a descoberta local.
- Future<Uint8List>  myDeviceId();
-
-
-/// Os 145 bytes do QR Code desta identidade.
- Future<Uint8List>  myQrPayload();
-
-
-/// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
-/// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
-/// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
-/// `file_id` não é uma transferência de envio conhecida (já terminou,
-/// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
-/// para o estado atual. Serve arquivo e áudio por igual — nada aqui
-/// depende de `kind`.
- Future<Uint8List?>  nextOutgoingWireChunk({required List<int> fileId });
-
-
-/// Abre (criando na primeira execução) a identidade e o banco cifrado em
-/// `app_dir` — o diretório de dados privados do app, não um segredo.
-static Future<Core>  open({required String appDir })=>RustLib.instance.api.crateFfiCoreCoreOpen(appDir: appDir);
-
-
-/// Decifra um payload de sinalização recebido do broker.
-///
-/// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-/// inválida — sem distinguir a causa, mesma política de
-/// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-/// confiável.
- Future<Uint8List?>  openSignalingPayload({required List<int> peerDeviceId , required List<int> sealed });
-
-
-/// Valida o payload lido pela câmera e persiste o contato.
- Future<ContactDto>  pairFromQr({required List<int> payload });
-
-
-/// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
- Future<List<FileOfferDto>>  pendingAudioOffers({required List<int> peerDeviceId });
-
-
-/// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
-/// para a UI listar e (por ora, automaticamente — ver doc do módulo)
-/// já em recebimento. Só `kind = File`; ver
-/// [`Core::pending_audio_offers`] para notas de voz.
- Future<List<FileOfferDto>>  pendingFileOffers({required List<int> peerDeviceId });
-
-
-/// Safety number entre esta identidade e um contato já pareado.
- Future<SafetyNumberDto>  safetyNumber({required List<int> contactDeviceId });
-
-
-/// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
-/// metadados) e grava, em `destination_path`, só o formato interno de
-/// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
-/// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
-/// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
-/// silêncio — mesma política do resto do crate para bytes externos.
- Future<void>  sanitizeAndStageAudio({required String sourcePath , required String destinationPath });
-
-
-/// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
-/// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
-/// mesmo que o transporte esteja indisponível no momento da chamada.
-///
-/// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-/// `Established`: a mensagem já está persistida, e `flush_pending` a
-/// entrega assim que a sessão ficar pronta.
- Future<SealedMessageDto>  sealOutgoingText({required List<int> peerDeviceId , required String body });
-
-
-/// Cifra um payload de sinalização (SDP ou candidato ICE já
-/// serializado) para publicar — sempre exatamente 1024 B.
- Future<Uint8List>  sealSignalingPayload({required List<int> peerDeviceId , required List<int> payloadBytes });
-
-
-/// Status atual da sessão com um contato, sem alterar nada — `None` se
-/// `ensure_session` nunca foi chamado para ele.
- Future<SessionStatusDto?>  sessionStatus({required List<int> peerDeviceId });
-
-
-/// Define o tempo de expiração (TTL em segundos) para mensagens efêmeras com o contato.
- Future<void>  setEphemeralTtl({required List<int> contactDeviceId , required PlatformInt64 ttlSecs });
-
-
-/// Tópico para publicar agora (época corrente, nossa direção) e os três
-/// tópicos para assinar (épocas anterior/atual/seguinte, direção do
-/// par) — `docs/protocol.md` §8.1.
- Future<SignalingTopicsDto>  signalingTopics({required List<int> peerDeviceId });
-
-
-/// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
-/// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
-/// `audio_path` deve apontar para um arquivo já no formato interno de
-/// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
-/// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
-/// produziu, que ainda carregaria `OpusTags` com metadados de
-/// aparelho. Também insere a linha `Pending` na timeline única
-/// (`store::messages`) — `message_id` no DTO devolvido é para quem
-/// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
-/// de `seal_outgoing_text`.
- Future<SendAudioStartedDto>  startSendAudio({required List<int> peerDeviceId , required String audioPath , required bool useLan });
-
-
-/// Inicia o envio de um arquivo para um contato pareado com sessão já
-/// estabelecida. Lê o arquivo inteiro uma vez para calcular a raiz de
-/// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
-/// precisa da raiz completa antes do primeiro símbolo sair.
-///
-/// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
-/// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
-/// `block_symbols` é sempre o teto de D6 (1024).
- Future<SendFileStartedDto>  startSendFile({required List<int> peerDeviceId , required String filePath , required bool useLan });
-
-
-/// Varre e destrói chaves de mensagens efêmeras expiradas.
- Future<int>  sweepExpiredMessages();
-
-
-/// Progresso de uma transferência conhecida, de qualquer lado (arquivo
-/// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
- Future<TransferProgressDto?>  transferProgress({required List<int> fileId });
-
-
-/// Destranca a Core após autenticação bem-sucedida: recarrega a chave
-/// mestre e reabre a conexão do SQLCipher.
- Future<void>  unlock();
-
-
-
-                    
-                }
-                
-            
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
+abstract class Core implements RustOpaqueInterface {
+  /// Cancela uma transferência (de qualquer lado): remove o handle em
+  /// memória e o registro em `store`. Do lado receptor, também apaga o
+  /// `.staging` — mesma garantia de "abortar destrói a chave" de
+  /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
+  /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
+  /// foi fechado a cada bloco completado). Ver §7.5/D15.
+  Future<void> cancelTransfer({required List<int> fileId});
+
+  /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
+  /// entre aparelhos próximos em pareamento.
+  Future<String> computeSasCode({required List<int> peerPayload});
+
+  /// Decodifica o formato interno devolvido por
+  /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
+  /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
+  /// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
+  /// nenhum, com ou sem suporte a Opus (D18).
+  Future<Uint8List> decodeAudioToWav({required List<int> internalBytes});
+
+  /// Decifra um envelope recebido no `DataChannel`.
+  ///
+  /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
+  /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
+  /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
+  /// DTO efêmero, sem `message_id`.
+  ///
+  /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
+  /// processados aqui como efeito colateral — inicia/atualiza/encerra o
+  /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
+  /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
+  /// deste método para acomodar isso quebraria `chat_controller.dart`
+  /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
+  /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+  /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
+  /// política de silêncio de qualquer corpo malformado nesta fronteira, e
+  /// nunca deveria acontecer vindo de um par honesto.
+  ///
+  /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
+  /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
+  /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
+  Future<IncomingMessageDto?> decryptIncoming({
+    required List<int> peerDeviceId,
+    required List<int> envelope,
+  });
+
+  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
+  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  Future<DiscoveryBeaconsDto> discoveryBeacons({
+    required List<int> peerDeviceId,
+  });
+
+  /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
+  /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+  Future<void> emergencyErase();
+
+  /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
+  ///
+  /// Idempotente: chamadas repetidas para o mesmo contato nunca reabrem o
+  /// handshake. `outgoing_handshake` vem preenchido em toda chamada feita
+  /// enquanto formos iniciador e ainda não tivermos recebido a RESP — não
+  /// só na primeira — porque mais de uma parte do app pode precisar desses
+  /// bytes em momentos diferentes (o transporte WebRTC, para decidir quem
+  /// oferta o SDP; o controlador de chat, para de fato publicar a mensagem
+  /// de handshake assim que o canal abrir). Ver
+  /// `viska_proto::session::Session::pending_outgoing_handshake`.
+  Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId});
+
+  /// Alimenta a sessão com uma mensagem de handshake recebida via
+  /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
+  /// de resposta a publicar, se houver.
+  ///
+  /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
+  /// sido chamado antes para este contato — este método nunca cria uma
+  /// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
+  /// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
+  /// errado dependendo só de qual mensagem chegou primeiro.
+  Future<Uint8List?> feedHandshake({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  });
+
+  /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
+  /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
+  /// chama remonta o contêiner para reprodução (ver
+  /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
+  Future<Uint8List> finishReceiveAudio({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  });
+
+  /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
+  /// decifra para `destination_path`, remove o `.staging` e o registro em
+  /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
+  /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
+  /// emissor pelo canal `control`.
+  Future<Uint8List> finishReceiveFile({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+    required String destinationPath,
+  });
+
+  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
+  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
+  /// estabelecer. Para na primeira falha de cifragem (ex.:
+  /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
+  /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
+  /// ordem de entrega.
+  Future<List<SealedMessageDto>> flushPending({
+    required List<int> peerDeviceId,
+  });
+
+  /// Consulta o TTL efêmero configurado para o contato.
+  Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId});
+
+  /// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
+  /// sozinho a qual transferência ele pertence (D17: `file_id` vai em
+  /// claro na frente, ver `peek_wire_file_id`) e roteia para a
+  /// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
+  /// pode ser um pacote de uma transferência já concluída/cancelada, ou
+  /// que chegou antes do `FILE_METADATA` correspondente terminar de
+  /// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
+  /// de quem chama. Serve arquivo e áudio por igual.
+  Future<IngestedChunkDto?> ingestIncomingWireBytes({
+    required List<int> wireBytes,
+  });
+
+  /// Informa se a Core está trancada.
+  Future<bool> isLocked();
+
+  /// Todos os contatos já pareados.
+  Future<List<ContactDto>> listContacts();
+
+  /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
+  /// — histórico completo para a tela de chat abrir com.
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId});
+
+  /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
+  /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+  /// limpa a chave mestra nativa injetada.
+  Future<void> lock();
+
+  /// Marca uma mensagem como lida, disparando o temporizador de expiração.
+  Future<void> markMessageRead({required PlatformInt64 messageId});
+
+  /// Marca uma mensagem de saída como entregue ao transporte — chamar só
+  /// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
+  /// lançar erro.
+  Future<void> markMessageSent({required PlatformInt64 messageId});
+
+  /// Identifica a qual contato pareado um `BeaconID` recebido do rádio
+  /// pertence — varre todos os contatos e compara a janela de três épocas
+  /// de cada um. Fica em Rust porque só aqui há a identidade privada
+  /// necessária para recalcular `K_sig` de qualquer contato arbitrário; o
+  /// Dart nunca vê `K_sig`, só o resultado do casamento.
+  Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon});
+
+  /// `device_id` desta identidade local — dado já público (trocado no QR,
+  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
+  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// dele até a descoberta local.
+  Future<Uint8List> myDeviceId();
+
+  /// Apelido desta identidade local, se configurado.
+  Future<String?> myNickname();
+
+  /// Os 145 bytes do QR Code desta identidade.
+  Future<Uint8List> myQrPayload();
+
+  /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
+  /// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
+  /// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
+  /// `file_id` não é uma transferência de envio conhecida (já terminou,
+  /// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
+  /// para o estado atual. Serve arquivo e áudio por igual — nada aqui
+  /// depende de `kind`.
+  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId});
+
+  /// Abre (criando na primeira execução) a identidade e o banco cifrado em
+  /// `app_dir` — o diretório de dados privados do app, não um segredo.
+  static Future<Core> open({required String appDir}) =>
+      RustLib.instance.api.crateFfiCoreCoreOpen(appDir: appDir);
+
+  /// Decifra um payload de sinalização recebido do broker.
+  ///
+  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
+  /// inválida — sem distinguir a causa, mesma política de
+  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
+  /// confiável.
+  Future<Uint8List?> openSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> sealed,
+  });
+
+  /// Valida o payload lido pela câmera ou recebido por proximidade e persiste o contato.
+  Future<ContactDto> pairFromQr({required List<int> payload, String? nickname});
+
+  /// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
+  Future<List<FileOfferDto>> pendingAudioOffers({
+    required List<int> peerDeviceId,
+  });
+
+  /// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
+  /// para a UI listar e (por ora, automaticamente — ver doc do módulo)
+  /// já em recebimento. Só `kind = File`; ver
+  /// [`Core::pending_audio_offers`] para notas de voz.
+  Future<List<FileOfferDto>> pendingFileOffers({
+    required List<int> peerDeviceId,
+  });
+
+  /// Safety number entre esta identidade e um contato já pareado.
+  Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId});
+
+  /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
+  /// metadados) e grava, em `destination_path`, só o formato interno de
+  /// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
+  /// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
+  /// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
+  /// silêncio — mesma política do resto do crate para bytes externos.
+  Future<void> sanitizeAndStageAudio({
+    required String sourcePath,
+    required String destinationPath,
+  });
+
+  /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
+  /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
+  /// mesmo que o transporte esteja indisponível no momento da chamada.
+  ///
+  /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
+  /// `Established`: a mensagem já está persistida, e `flush_pending` a
+  /// entrega assim que a sessão ficar pronta.
+  Future<SealedMessageDto> sealOutgoingText({
+    required List<int> peerDeviceId,
+    required String body,
+  });
+
+  /// Cifra um payload de sinalização (SDP ou candidato ICE já
+  /// serializado) para publicar — sempre exatamente 1024 B.
+  Future<Uint8List> sealSignalingPayload({
+    required List<int> peerDeviceId,
+    required List<int> payloadBytes,
+  });
+
+  /// Status atual da sessão com um contato, sem alterar nada — `None` se
+  /// `ensure_session` nunca foi chamado para ele.
+  Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId});
+
+  /// Altera o apelido local de um contato já pareado.
+  Future<void> setContactNickname({
+    required List<int> contactDeviceId,
+    required String nickname,
+  });
+
+  /// Define o tempo de expiração (TTL em segundos) para mensagens efêmeras com o contato.
+  Future<void> setEphemeralTtl({
+    required List<int> contactDeviceId,
+    required PlatformInt64 ttlSecs,
+  });
+
+  /// Define ou altera o apelido desta identidade local.
+  Future<void> setMyNickname({required String nickname});
+
+  /// Tópico para publicar agora (época corrente, nossa direção) e os três
+  /// tópicos para assinar (épocas anterior/atual/seguinte, direção do
+  /// par) — `docs/protocol.md` §8.1.
+  Future<SignalingTopicsDto> signalingTopics({required List<int> peerDeviceId});
+
+  /// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
+  /// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
+  /// `audio_path` deve apontar para um arquivo já no formato interno de
+  /// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
+  /// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
+  /// produziu, que ainda carregaria `OpusTags` com metadados de
+  /// aparelho. Também insere a linha `Pending` na timeline única
+  /// (`store::messages`) — `message_id` no DTO devolvido é para quem
+  /// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
+  /// de `seal_outgoing_text`.
+  Future<SendAudioStartedDto> startSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  });
+
+  /// Inicia o envio de um arquivo para um contato pareado com sessão já
+  /// estabelecida. Lê o arquivo inteiro uma vez para calcular a raiz de
+  /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
+  /// precisa da raiz completa antes do primeiro símbolo sair.
+  ///
+  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+  /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
+  /// `block_symbols` é sempre o teto de D6 (1024).
+  Future<SendFileStartedDto> startSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  });
+
+  /// Varre e destrói chaves de mensagens efêmeras expiradas.
+  Future<int> sweepExpiredMessages();
+
+  /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
+  /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
+  Future<TransferProgressDto?> transferProgress({required List<int> fileId});
+
+  /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
+  /// mestre e reabre a conexão do SQLCipher.
+  Future<void> unlock();
+}

@@ -92,9 +92,16 @@ void main() {
   late Core coreBob;
 
   setUpAll(() async {
-    soPath = File('build/linux/x64/release/bundle/lib/libviska_core.so').absolute.path;
+    final candidates = [
+      'rust/target/debug/libviska_core.so',
+      'build/linux/x64/release/bundle/lib/libviska_core.so',
+    ];
+    soPath = candidates.firstWhere(
+      (p) => File(p).existsSync(),
+      orElse: () => 'build/linux/x64/release/bundle/lib/libviska_core.so',
+    );
     try {
-      await RustLib.init(externalLibrary: ExternalLibrary.open(soPath));
+      await RustLib.init(externalLibrary: ExternalLibrary.open(File(soPath).absolute.path));
     } catch (_) {
       // Já inicializado
     }
@@ -128,25 +135,42 @@ void main() {
     final aliceBase64 = base64Encode(aliceQrPayload);
     final bobBase64 = base64Encode(bobQrPayload);
 
-    // 3. Bob pareia com o código importado de Alice
+    // 3. Bob pareia com o código importado de Alice, sugerindo apelido
     final aliceBytesFromBob = base64Decode(aliceBase64);
-    final contactAliceAtBob = await coreBob.pairFromQr(payload: aliceBytesFromBob);
+    final contactAliceAtBob = await coreBob.pairFromQr(payload: aliceBytesFromBob, nickname: 'Alice');
     final aliceDeviceId = await coreAlice.myDeviceId();
     expect(contactAliceAtBob.deviceId, equals(aliceDeviceId));
+    expect(contactAliceAtBob.nickname, equals('Alice'));
 
-    // 4. Alice pareia com o código importado de Bob
+    // 4. Alice pareia com o código importado de Bob, sugerindo apelido
     final bobBytesFromAlice = base64Decode(bobBase64);
-    final contactBobAtAlice = await coreAlice.pairFromQr(payload: bobBytesFromAlice);
+    final contactBobAtAlice = await coreAlice.pairFromQr(payload: bobBytesFromAlice, nickname: 'Bob');
     final bobDeviceId = await coreBob.myDeviceId();
     expect(contactBobAtAlice.deviceId, equals(bobDeviceId));
+    expect(contactBobAtAlice.nickname, equals('Bob'));
 
     // 5. Verificação de persistência nos bancos SQLite isolados
     final aliceContacts = await coreAlice.listContacts();
     final bobContacts = await coreBob.listContacts();
-    expect(aliceContacts.any((c) => _bytesEqual(c.deviceId, bobDeviceId)), isTrue);
-    expect(bobContacts.any((c) => _bytesEqual(c.deviceId, aliceDeviceId)), isTrue);
+    expect(aliceContacts.any((c) => _bytesEqual(c.deviceId, bobDeviceId) && c.nickname == 'Bob'), isTrue);
+    expect(bobContacts.any((c) => _bytesEqual(c.deviceId, aliceDeviceId) && c.nickname == 'Alice'), isTrue);
 
-    // 6. Validação criptográfica do Safety Number (cálculo pós-quântico de 60 dígitos formatados em 12 blocos de 5)
+    // 6. Atualização de apelido de contato e perfil próprio
+    await coreAlice.setContactNickname(contactDeviceId: bobDeviceId, nickname: 'Bob Colega');
+    final updatedAliceContacts = await coreAlice.listContacts();
+    expect(updatedAliceContacts.firstWhere((c) => _bytesEqual(c.deviceId, bobDeviceId)).nickname, equals('Bob Colega'));
+
+    expect(await coreAlice.myNickname(), isNull);
+    await coreAlice.setMyNickname(nickname: 'Alice Santos');
+    expect(await coreAlice.myNickname(), equals('Alice Santos'));
+
+    // 7. Validação do código SAS de 6 dígitos idêntico entre os pares
+    final sasAlice = await coreAlice.computeSasCode(peerPayload: bobQrPayload);
+    final sasBob = await coreBob.computeSasCode(peerPayload: aliceQrPayload);
+    expect(sasAlice.length, 6);
+    expect(sasAlice, equals(sasBob));
+
+    // 8. Validação criptográfica do Safety Number (cálculo pós-quântico de 60 dígitos formatados em 12 blocos de 5)
     final snAlice = await coreAlice.safetyNumber(contactDeviceId: bobDeviceId);
     final snBob = await coreBob.safetyNumber(contactDeviceId: aliceDeviceId);
 

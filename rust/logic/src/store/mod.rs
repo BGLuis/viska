@@ -15,6 +15,8 @@ pub mod transfers;
 use std::path::Path;
 use std::sync::Mutex;
 
+use rusqlite::OptionalExtension;
+
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::kdf;
 use crate::wire::packet_type::PacketType;
@@ -90,19 +92,55 @@ impl Store {
         self.with_conn(identity::load_or_create)
     }
 
-    /// Persiste um contato recém-pareado.
-    pub fn insert_contact(&self, contact: &PublicIdentity, paired_at_unix_secs: i64) -> Result<()> {
-        self.with_conn(|conn| contacts::insert(conn, contact, paired_at_unix_secs))
+    /// Persiste um contato recém-pareado, opcionalmente com apelido.
+    pub fn insert_contact(
+        &self,
+        contact: &PublicIdentity,
+        paired_at_unix_secs: i64,
+        nickname: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn(|conn| contacts::insert(conn, contact, paired_at_unix_secs, nickname))
+    }
+
+    /// Atualiza o apelido de um contato existente.
+    pub fn update_contact_nickname(&self, device_id: &[u8; 16], nickname: &str) -> Result<()> {
+        self.with_conn(|conn| contacts::update_nickname(conn, device_id, nickname))
     }
 
     /// Lista todos os contatos pareados.
-    pub fn list_contacts(&self) -> Result<Vec<(PublicIdentity, i64)>> {
+    pub fn list_contacts(&self) -> Result<Vec<(PublicIdentity, i64, Option<String>)>> {
         self.with_conn(contacts::list)
     }
 
     /// Busca um contato pelo `device_id`.
-    pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<(PublicIdentity, i64)>> {
+    pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<(PublicIdentity, i64, Option<String>)>> {
         self.with_conn(|conn| contacts::find_by_device_id(conn, device_id))
+    }
+
+    /// Define uma configuração chave-valor do aplicativo (ex: apelido próprio).
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO app_config (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map_err(|_| Error::Store)?;
+            Ok(())
+        })
+    }
+
+    /// Obtém o valor de uma configuração do aplicativo.
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT value FROM app_config WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| Error::Store)
+        })
     }
 
     /// Define o TTL (em segundos) de mensagens efêmeras para o contato.
@@ -261,13 +299,14 @@ mod tests {
         let contact = LocalIdentity::generate().unwrap().public();
         {
             let store = Store::open(&path, &k).unwrap();
-            store.insert_contact(&contact, 1_700_000_000).unwrap();
+            store.insert_contact(&contact, 1_700_000_000, Some("Alice")).unwrap();
         }
 
         let store = Store::open(&path, &k).unwrap();
-        let (found, paired_at) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        let (found, paired_at, nickname) = store.find_contact(&contact.device_id).unwrap().unwrap();
         assert_eq!(found, contact);
         assert_eq!(paired_at, 1_700_000_000);
+        assert_eq!(nickname.as_deref(), Some("Alice"));
     }
 
     #[test]
@@ -319,13 +358,13 @@ mod tests {
 
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
-        store.insert_contact(&a, 1).unwrap();
-        store.insert_contact(&b, 2).unwrap();
+        store.insert_contact(&a, 1, None).unwrap();
+        store.insert_contact(&b, 2, Some("Bob")).unwrap();
 
         let listed = store.list_contacts().unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|(c, _)| c == &a));
-        assert!(listed.iter().any(|(c, _)| c == &b));
+        assert!(listed.iter().any(|(c, _, _)| c == &a));
+        assert!(listed.iter().any(|(c, _, nick)| c == &b && nick.as_deref() == Some("Bob")));
     }
 
     #[test]
@@ -360,11 +399,43 @@ mod tests {
 
         let store = Store::open(&path, &k).unwrap();
         let contact = LocalIdentity::generate().unwrap().public();
-        store.insert_contact(&contact, 100).unwrap();
+        store.insert_contact(&contact, 100, None).unwrap();
 
         assert_eq!(store.get_ephemeral_ttl(&contact.device_id).unwrap(), 0);
 
         store.set_ephemeral_ttl(&contact.device_id, 3600).unwrap();
         assert_eq!(store.get_ephemeral_ttl(&contact.device_id).unwrap(), 3600);
+    }
+
+    #[test]
+    fn atualizacao_de_apelido_de_contato_e_config_geral() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(8);
+
+        let store = Store::open(&path, &k).unwrap();
+        let contact = LocalIdentity::generate().unwrap().public();
+        store.insert_contact(&contact, 100, None).unwrap();
+
+        // Inicialmente sem apelido
+        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert!(nick.is_none());
+
+        // Atualiza apelido do contato
+        store.update_contact_nickname(&contact.device_id, "Meu Amigo").unwrap();
+        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(nick.as_deref(), Some("Meu Amigo"));
+
+        // Re-inserção com None preserva o apelido existente
+        store.insert_contact(&contact, 200, None).unwrap();
+        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(nick.as_deref(), Some("Meu Amigo"));
+
+        // Configurações do app (ex: apelido próprio)
+        assert_eq!(store.get_config("my_nickname").unwrap(), None);
+        store.set_config("my_nickname", "Luis").unwrap();
+        assert_eq!(store.get_config("my_nickname").unwrap().as_deref(), Some("Luis"));
+        store.set_config("my_nickname", "Luis H.").unwrap();
+        assert_eq!(store.get_config("my_nickname").unwrap().as_deref(), Some("Luis H."));
     }
 }

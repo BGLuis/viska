@@ -102,7 +102,23 @@ class _FakeCore implements Core {
   Future<Uint8List> myQrPayload() => throw UnimplementedError();
 
   @override
-  Future<ContactDto> pairFromQr({required List<int> payload}) => throw UnimplementedError();
+  Future<ContactDto> pairFromQr({required List<int> payload, String? nickname}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String?> myNickname() async => null;
+
+  @override
+  Future<void> setMyNickname({required String nickname}) async {}
+
+  @override
+  Future<void> setContactNickname({
+    required List<int> contactDeviceId,
+    required String nickname,
+  }) async {}
+
+  @override
+  Future<String> computeSasCode({required List<int> peerPayload}) async => '123456';
 
   @override
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) =>
