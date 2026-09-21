@@ -3,8 +3,6 @@ name: CI/CD iOS — Viska
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v*'
     paths:
       - 'ios/**'
       - 'rust/**'

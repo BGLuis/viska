@@ -1,0 +1,158 @@
+name: Releases Automatizadas (Android & iOS)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Nome da tag da release (ex: v0.1.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Compilar APK Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Configurar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Obter dependências Flutter
+        run: flutter pub get
+
+      - name: Compilar APK (Release)
+        run: flutter build apk --release
+
+      - name: Preparar artefato Android
+        run: cp build/app/outputs/flutter-apk/app-release.apk viska-android.apk
+
+      - name: Upload temporário do APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: viska-android.apk
+          retention-days: 1
+
+  build-ios:
+    name: Compilar IPA iOS (Unsigned)
+    runs-on: macos-14
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Rust e alvos iOS
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Configurar Ruby e CocoaPods
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Obter dependências Flutter
+        run: flutter pub get
+
+      - name: Instalar CocoaPods
+        working-directory: ios
+        run: bundle exec pod install --repo-update
+
+      - name: Compilar App iOS (Release sem assinatura)
+        run: flutter build ios --no-codesign --release
+
+      - name: Empacotar Runner.app em IPA sem assinatura
+        run: |
+          chmod +x scripts/package_ios_unsigned.sh
+          ./scripts/package_ios_unsigned.sh build/ios/iphoneos/Runner.app . viska-ios-unsigned.ipa
+
+      - name: Upload temporário do IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-ipa
+          path: viska-ios-unsigned.ipa
+          retention-days: 1
+
+  publish-release:
+    name: Publicar Release no GitHub
+    needs: [build-android, build-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar artefato Android
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release-apk
+
+      - name: Baixar artefato iOS
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-release-ipa
+
+      - name: Calcular somas de verificação SHA-256
+        run: |
+          sha256sum viska-android.apk viska-ios-unsigned.ipa > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determinar identificador da Tag
+        id: tag_info
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          else
+            TAG="v$(date +'%Y.%m.%d-%H%M')"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Criar Release e Anexar Binários
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_info.outputs.tag }}
+          files: |
+            viska-android.apk
+            viska-ios-unsigned.ipa
+            SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            ## Binários de Instalação / Installation Binaries
+
+            ### 🤖 Android (`viska-android.apk`)
+            - Arquivo APK compilado em modo Release e pronto para instalação direta.
+            - Habilite a opção **"Instalar apps desconhecidos"** nas configurações de segurança do seu aparelho.
+
+            ### 🍎 iOS (`viska-ios-unsigned.ipa`)
+            - Arquivo `.ipa` sem assinatura para instalação via *sideloading*.
+            - Utilize utilitários como **AltStore**, **Sideloadly**, **SideStore**, **Scarlet** ou **TrollStore** para assinar e instalar no iPhone.
+
+            ### 🔒 Integridade (SHA-256)
+            As somas criptográficas de verificação de cada binário estão no arquivo `SHA256SUMS.txt`.
