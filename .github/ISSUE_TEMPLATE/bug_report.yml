@@ -1,0 +1,73 @@
+name: Relato de Bug
+description: Reporte um comportamento inesperado ou falha no Viska
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por relatar este problema! Por favor, forneça o máximo de informações possível para nos ajudar a reproduzir e solucionar o bug.
+        
+        **Atenção de Segurança:** NUNCA compartilhe chaves privadas, segredos criptográficos ou dados de pareamento confidenciais.
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrição do Problema
+      description: Uma explicação clara e concisa do que aconteceu.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Passos para Reproduzir
+      description: Passos detalhados para reproduzir o comportamento.
+      placeholder: |
+        1. Inicie o app no dispositivo A...
+        2. Tente parear com o dispositivo B via QR Code...
+        3. Observe a mensagem de erro...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento Esperado
+      description: O que você esperava que acontecesse de acordo com o protocolo ou design.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Plataforma Afetada
+      multiple: true
+      options:
+        - Android
+        - iOS
+        - Linux (Desktop Dev)
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Informações do Ambiente
+      description: Versões de SO, hardware, Flutter e Rust utilizados.
+      placeholder: |
+        - SO: Android 14 / iOS 17 / Ubuntu 24.04
+        - Flutter: 3.x
+        - Rust: 1.85+
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs e Saída de Terminal
+      description: Cole logs pertinentes (assegure-se de que nenhum segredo esteja visível).
+      render: shell
+  - type: checkboxes
+    id: checkboxes
+    attributes:
+      label: Confirmações
+      options:
+        - label: Busquei por issues existentes e este problema ainda não foi reportado.
+          required: true
+        - label: Confirmo que não incluí nenhum material criptográfico sensível ou chave privada neste relato.
+          required: true

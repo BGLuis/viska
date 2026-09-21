@@ -1,0 +1,48 @@
+name: Sugestão de Funcionalidade
+description: Proponha uma nova ideia, melhoria ou funcionalidade para o Viska
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por contribuir com ideias para a evolução do Viska!
+        
+        O projeto é guiado por princípios rigorosos: **confiança zero na infraestrutura**, **resistência a Harvest Now, Decrypt Later (X25519 + ML-KEM-768)**, **deniabilidade criptográfica** e **zero telemetria**. Propostas devem manter essas garantias intactas.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Contexto ou Problema
+      description: A qual problema, limitação ou necessidade a sua proposta responde?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solução Proposta
+      description: Descreva em detalhes como a funcionalidade deve se comportar do ponto de vista do usuário e da arquitetura.
+    validations:
+      required: true
+  - type: textarea
+    id: security_impact
+    attributes:
+      label: Impacto em Segurança, Privacidade e Protocolo
+      description: Como essa funcionalidade impacta o modelo de ameaças (`docs/threat-model.md`) ou a especificação do protocolo (`docs/protocol.md`)?
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas Consideradas
+      description: Outras abordagens, designs ou bibliotecas avaliadas.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checkboxes
+    attributes:
+      label: Confirmações
+      options:
+        - label: Verifiquei se já existe uma proposta idêntica ou discussão aberta.
+          required: true
+        - label: A proposta respeita o modelo de zero telemetria e não introduz bibliotecas com conexões de rede não autorizadas.
+          required: true
