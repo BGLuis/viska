@@ -254,12 +254,14 @@ impl Core {
     /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
     /// — histórico completo para a tela de chat abrir com.
     pub fn list_messages(&self, peer_device_id: Vec<u8>) -> Result<Vec<MessageDto>, FfiError> {
+        self.ensure_not_locked()?;
         let device_id = to_device_id(peer_device_id)?;
         let stored = self.store.list_messages(&device_id)?;
         Ok(stored.into_iter().map(message_dto).collect())
     }
 
     pub(super) fn lock_sessions(&self) -> Result<MutexGuard<'_, HashMap<[u8; 16], Session>>, FfiError> {
+        self.ensure_not_locked()?;
         self.sessions.lock().map_err(|_| FfiError::Internal)
     }
 }
@@ -297,6 +299,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         audio_file_id,
         delivery_state,
         created_at_unix_secs: message.created_at_unix_secs,
+        is_ephemeral: message.is_ephemeral,
     }
 }
 

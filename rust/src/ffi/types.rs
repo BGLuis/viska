@@ -146,6 +146,7 @@ pub struct MessageDto {
     pub audio_file_id: Option<Vec<u8>>,
     pub delivery_state: DeliveryStateDto,
     pub created_at_unix_secs: i64,
+    pub is_ephemeral: bool,
 }
 
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.

@@ -37,6 +37,9 @@ pub enum FfiError {
     /// `Internal` porque a UI precisa oferecer "tentar de novo", não só
     /// relatar uma falha genérica.
     FileCorrupted,
+    /// O núcleo ou banco está trancado (auto-lock ou segundo plano) e requer
+    /// autenticação prévia para executar operações.
+    Locked,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -56,6 +59,7 @@ impl From<viska_proto::Error> for FfiError {
             Error::ContactNotFound => FfiError::ContactNotFound,
             Error::NeedsRehandshake => FfiError::SessionExpired,
             Error::MerkleMismatch => FfiError::FileCorrupted,
+            Error::Locked => FfiError::Locked,
             Error::AeadFailure
             | Error::InvalidState(_)
             | Error::UndecryptableMessage
@@ -119,6 +123,7 @@ mod tests {
             FfiError::from(Error::MerkleMismatch),
             FfiError::FileCorrupted
         );
+        assert_eq!(FfiError::from(Error::Locked), FfiError::Locked);
 
         for err in [
             Error::AeadFailure,

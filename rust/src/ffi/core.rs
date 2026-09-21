@@ -47,6 +47,8 @@ pub struct Core {
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
+    /// Diretório de dados do app para reabertura de banco e apagamento.
+    pub(super) app_dir: PathBuf,
 }
 
 impl Core {
@@ -73,7 +75,94 @@ impl Core {
             sessions: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
             staging_dir,
+            app_dir: dir.to_path_buf(),
         })
+    }
+
+    /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
+    /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+    /// limpa a chave mestra nativa injetada.
+    pub fn lock(&self) -> Result<(), FfiError> {
+        self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.store.close()?;
+        keyring::clear_injected_master_secret();
+        Ok(())
+    }
+
+    /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
+    /// mestre e reabre a conexão do SQLCipher.
+    pub fn unlock(&self) -> Result<(), FfiError> {
+        let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
+        self.store
+            .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
+        Ok(())
+    }
+
+    /// Informa se a Core está trancada.
+    pub fn is_locked(&self) -> bool {
+        self.store.is_closed().unwrap_or(true)
+    }
+
+    /// Valida que a Core não está trancada antes de operações de negócio.
+    pub(super) fn ensure_not_locked(&self) -> Result<(), FfiError> {
+        if self.is_locked() {
+            return Err(FfiError::Locked);
+        }
+        Ok(())
+    }
+
+    /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
+    /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+    pub fn emergency_erase(&self) -> Result<(), FfiError> {
+        let _ = self.lock();
+        keyring::delete_master_secret(&self.app_dir)?;
+        let db_path = self.app_dir.join(DB_FILE_NAME);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-wal"));
+        let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
+        let _ = std::fs::remove_dir_all(&self.staging_dir);
+        let _ = std::fs::create_dir_all(&self.staging_dir);
+        Ok(())
+    }
+
+    /// Define o tempo de expiração (TTL em segundos) para mensagens efêmeras com o contato.
+    pub fn set_ephemeral_ttl(
+        &self,
+        contact_device_id: Vec<u8>,
+        ttl_secs: i64,
+    ) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+        self.store.set_ephemeral_ttl(&device_id, ttl_secs)?;
+        Ok(())
+    }
+
+    /// Consulta o TTL efêmero configurado para o contato.
+    pub fn get_ephemeral_ttl(&self, contact_device_id: Vec<u8>) -> Result<i64, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+        Ok(self.store.get_ephemeral_ttl(&device_id)?)
+    }
+
+    /// Marca uma mensagem como lida, disparando o temporizador de expiração.
+    pub fn mark_message_read(&self, message_id: i64) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let now = viska_proto::util::time::unix_seconds() as i64;
+        self.store.mark_message_read(message_id, now)?;
+        Ok(())
+    }
+
+    /// Varre e destrói chaves de mensagens efêmeras expiradas.
+    pub fn sweep_expired_messages(&self) -> Result<u32, FfiError> {
+        self.ensure_not_locked()?;
+        let now = viska_proto::util::time::unix_seconds() as i64;
+        let count = self.store.sweep_expired_ephemeral_messages(now)?;
+        Ok(count as u32)
     }
 
     /// Os 145 bytes do QR Code desta identidade.
@@ -83,6 +172,7 @@ impl Core {
 
     /// Valida o payload lido pela câmera e persiste o contato.
     pub fn pair_from_qr(&self, payload: Vec<u8>) -> Result<ContactDto, FfiError> {
+        self.ensure_not_locked()?;
         let candidate = pairing::decode_qr(&payload, &self.identity.public())?;
         let paired_at = viska_proto::util::time::unix_seconds() as i64;
         self.store.insert_contact(&candidate, paired_at)?;
@@ -92,6 +182,7 @@ impl Core {
 
     /// Todos os contatos já pareados.
     pub fn list_contacts(&self) -> Result<Vec<ContactDto>, FfiError> {
+        self.ensure_not_locked()?;
         let contacts = self.store.list_contacts()?;
         Ok(contacts
             .into_iter()
@@ -101,6 +192,7 @@ impl Core {
 
     /// Safety number entre esta identidade e um contato já pareado.
     pub fn safety_number(&self, contact_device_id: Vec<u8>) -> Result<SafetyNumberDto, FfiError> {
+        self.ensure_not_locked()?;
         let device_id: [u8; 16] = contact_device_id
             .try_into()
             .map_err(|_| FfiError::Internal)?;
@@ -211,5 +303,73 @@ mod tests {
             .unwrap();
 
         assert_eq!(sn_a, sn_b);
+    }
+
+    #[test]
+    fn bloqueio_e_desbloqueio_do_core_rejeita_chamadas_enquanto_bloqueado() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_core(&dir);
+
+        assert!(!core.is_locked());
+        core.lock().unwrap();
+        assert!(core.is_locked());
+
+        // Operações no cofre devem falhar imediatamente com FfiError::Locked
+        assert_eq!(core.list_contacts(), Err(FfiError::Locked));
+        assert_eq!(core.pair_from_qr(vec![0; 145]), Err(FfiError::Locked));
+
+        // Desbloqueio reabre a conexão do cofre
+        core.unlock().unwrap();
+        assert!(!core.is_locked());
+        assert_eq!(core.list_contacts().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn configuracao_e_consulta_de_ttl_efemero_por_contato() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload()).unwrap();
+
+        // Inicialmente nenhum TTL configurado (0 = desativado)
+        assert_eq!(
+            core_a.get_ephemeral_ttl(contact.device_id.clone()).unwrap(),
+            0
+        );
+
+        // Define 1 hora (3600 segundos)
+        core_a
+            .set_ephemeral_ttl(contact.device_id.clone(), 3600)
+            .unwrap();
+        assert_eq!(
+            core_a.get_ephemeral_ttl(contact.device_id.clone()).unwrap(),
+            3600
+        );
+
+        // Desativa TTL (0)
+        core_a
+            .set_ephemeral_ttl(contact.device_id.clone(), 0)
+            .unwrap();
+        assert_eq!(
+            core_a.get_ephemeral_ttl(contact.device_id).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn apagamento_de_emergencia_destroi_banco_e_trava_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_core(&dir);
+
+        let db_path = dir.path().join("viska.sqlite3");
+        assert!(db_path.exists());
+
+        core.emergency_erase().unwrap();
+
+        assert!(core.is_locked());
+        assert!(!db_path.exists());
+        assert_eq!(core.list_contacts(), Err(FfiError::Locked));
     }
 }

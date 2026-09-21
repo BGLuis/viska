@@ -11,3431 +11,2334 @@ import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
-import 'frb_generated.io.dart'
-    if (dart.library.js_interop) 'frb_generated.web.dart';
+import 'frb_generated.io.dart' if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Main entrypoint of the Rust API
-class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
-  @internal
-  static final instance = RustLib._();
 
-  RustLib._();
+                /// Main entrypoint of the Rust API
+                class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
+                  @internal
+                  static final instance = RustLib._();
 
-  /// Initialize flutter_rust_bridge
-  static Future<void> init({
-    RustLibApi? api,
-    BaseHandler? handler,
-    ExternalLibrary? externalLibrary,
-    bool forceSameCodegenVersion = true,
-  }) async {
-    await instance.initImpl(
-      api: api,
-      handler: handler,
-      externalLibrary: externalLibrary,
-      forceSameCodegenVersion: forceSameCodegenVersion,
-    );
-  }
+                  RustLib._();
 
-  /// Initialize flutter_rust_bridge in mock mode.
-  /// No libraries for FFI are loaded.
-  static void initMock({required RustLibApi api}) {
-    instance.initMockImpl(api: api);
-  }
+                  /// Initialize flutter_rust_bridge
+                  static Future<void> init({
+                    RustLibApi? api,
+                    BaseHandler? handler,
+                    ExternalLibrary? externalLibrary,
+                    bool forceSameCodegenVersion = true,
+                  }) async {
+                    await instance.initImpl(
+                      api: api,
+                      handler: handler,
+                      externalLibrary: externalLibrary,
+                      forceSameCodegenVersion: forceSameCodegenVersion,
+                    );
+                  }
 
-  /// Dispose flutter_rust_bridge
-  ///
-  /// The call to this function is optional, since flutter_rust_bridge (and everything else)
-  /// is automatically disposed when the app stops.
-  static void dispose() => instance.disposeImpl();
+                  /// Initialize flutter_rust_bridge in mock mode.
+                  /// No libraries for FFI are loaded.
+                  static void initMock({
+                    required RustLibApi api,
+                  }) {
+                    instance.initMockImpl(
+                      api: api,
+                    );
+                  }
 
-  @override
-  ApiImplConstructor<RustLibApiImpl, RustLibWire> get apiImplConstructor =>
-      RustLibApiImpl.new;
+                  /// Dispose flutter_rust_bridge
+                  ///
+                  /// The call to this function is optional, since flutter_rust_bridge (and everything else)
+                  /// is automatically disposed when the app stops.
+                  static void dispose() => instance.disposeImpl();
 
-  @override
-  WireConstructor<RustLibWire> get wireConstructor =>
-      RustLibWire.fromExternalLibrary;
+                  @override
+                  ApiImplConstructor<RustLibApiImpl, RustLibWire> get apiImplConstructor => RustLibApiImpl.new;
 
-  @override
-  Future<void> executeRustInitializers() async {}
+                  @override
+                  WireConstructor<RustLibWire> get wireConstructor => RustLibWire.fromExternalLibrary;
 
-  @override
-  ExternalLibraryLoaderConfig get defaultExternalLibraryLoaderConfig =>
-      kDefaultExternalLibraryLoaderConfig;
+                  @override
+                  Future<void> executeRustInitializers() async {
+                    
+                    
+                  }
 
-  @override
-  String get codegenVersion => '2.13.0';
+                  @override
+                  ExternalLibraryLoaderConfig get defaultExternalLibraryLoaderConfig => kDefaultExternalLibraryLoaderConfig;
 
-  @override
-  int get rustContentHash => -999166079;
+                  @override
+                  String get codegenVersion => '2.13.0';
 
-  static const kDefaultExternalLibraryLoaderConfig =
-      ExternalLibraryLoaderConfig(
-        stem: 'viska_core',
-        ioDirectory: 'rust/target/release/',
-        webPrefix: 'pkg/',
-        wasmBindgenName: 'wasm_bindgen',
-      );
-}
+                  @override
+                  int get rustContentHash => 1390964858;
 
-abstract class RustLibApi extends BaseApi {
-  Future<void> crateFfiCoreCoreCancelTransfer({
-    required Core that,
-    required List<int> fileId,
-  });
+                  static const kDefaultExternalLibraryLoaderConfig = ExternalLibraryLoaderConfig(
+                    stem: 'viska_core',
+                    ioDirectory: 'rust/target/release/',
+                    webPrefix: 'pkg/',
+                    wasmBindgenName: 'wasm_bindgen',
+                  );
+                }
+                
 
-  Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
-    required Core that,
-    required List<int> internalBytes,
-  });
+                abstract class RustLibApi extends BaseApi {
+                  Future<void> crateFfiCoreCoreCancelTransfer({required Core that , required List<int> fileId });
 
-  Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> envelope,
-  });
+Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({required Core that , required List<int> internalBytes });
 
-  Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({required Core that , required List<int> peerDeviceId , required List<int> envelope });
 
-  Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({required Core that , required List<int> peerDeviceId });
 
-  Future<Uint8List?> crateFfiCoreCoreFeedHandshake({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  });
+Future<void> crateFfiCoreCoreEmergencyErase({required Core that });
 
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  });
+Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({required Core that , required List<int> peerDeviceId });
 
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  });
+Future<Uint8List?> crateFfiCoreCoreFeedHandshake({required Core that , required List<int> peerDeviceId , required List<int> bytes });
 
-  Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({required Core that , required List<int> peerDeviceId , required List<int> fileId , required String destinationPath });
 
-  Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({
-    required Core that,
-    required List<int> wireBytes,
-  });
+Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({required Core that , required List<int> peerDeviceId , required List<int> fileId , required String destinationPath });
 
-  Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that});
+Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({required Core that , required List<int> peerDeviceId });
 
-  Future<List<MessageDto>> crateFfiCoreCoreListMessages({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<PlatformInt64> crateFfiCoreCoreGetEphemeralTtl({required Core that , required List<int> contactDeviceId });
 
-  Future<void> crateFfiCoreCoreMarkMessageSent({
-    required Core that,
-    required PlatformInt64 messageId,
-  });
+Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({required Core that , required List<int> wireBytes });
 
-  Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({
-    required Core that,
-    required List<int> beacon,
-  });
+Future<bool> crateFfiCoreCoreIsLocked({required Core that });
 
-  Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that});
+Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that });
 
-  Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that});
+Future<List<MessageDto>> crateFfiCoreCoreListMessages({required Core that , required List<int> peerDeviceId });
 
-  Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({
-    required Core that,
-    required List<int> fileId,
-  });
+Future<void> crateFfiCoreCoreLock({required Core that });
 
-  Future<Core> crateFfiCoreCoreOpen({required String appDir});
+Future<void> crateFfiCoreCoreMarkMessageRead({required Core that , required PlatformInt64 messageId });
 
-  Future<Uint8List?> crateFfiCoreCoreOpenSignalingPayload({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> sealed,
-  });
+Future<void> crateFfiCoreCoreMarkMessageSent({required Core that , required PlatformInt64 messageId });
 
-  Future<ContactDto> crateFfiCoreCorePairFromQr({
-    required Core that,
-    required List<int> payload,
-  });
+Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({required Core that , required List<int> beacon });
 
-  Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that });
 
-  Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that });
 
-  Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({
-    required Core that,
-    required List<int> contactDeviceId,
-  });
+Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({required Core that , required List<int> fileId });
 
-  Future<void> crateFfiCoreCoreSanitizeAndStageAudio({
-    required Core that,
-    required String sourcePath,
-    required String destinationPath,
-  });
+Future<Core> crateFfiCoreCoreOpen({required String appDir });
 
-  Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String body,
-  });
+Future<Uint8List?> crateFfiCoreCoreOpenSignalingPayload({required Core that , required List<int> peerDeviceId , required List<int> sealed });
 
-  Future<Uint8List> crateFfiCoreCoreSealSignalingPayload({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> payloadBytes,
-  });
+Future<ContactDto> crateFfiCoreCorePairFromQr({required Core that , required List<int> payload });
 
-  Future<SessionStatusDto?> crateFfiCoreCoreSessionStatus({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({required Core that , required List<int> peerDeviceId });
 
-  Future<SignalingTopicsDto> crateFfiCoreCoreSignalingTopics({
-    required Core that,
-    required List<int> peerDeviceId,
-  });
+Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({required Core that , required List<int> peerDeviceId });
 
-  Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String audioPath,
-    required bool useLan,
-  });
+Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({required Core that , required List<int> contactDeviceId });
 
-  Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String filePath,
-    required bool useLan,
-  });
+Future<void> crateFfiCoreCoreSanitizeAndStageAudio({required Core that , required String sourcePath , required String destinationPath });
 
-  Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({
-    required Core that,
-    required List<int> fileId,
-  });
+Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({required Core that , required List<int> peerDeviceId , required String body });
 
-  Future<(Uint8List?, Uint8List)>
-  crateFfiFramingExtractFrameFromLocalSocketBuffer({required List<int> buffer});
+Future<Uint8List> crateFfiCoreCoreSealSignalingPayload({required Core that , required List<int> peerDeviceId , required List<int> payloadBytes });
 
-  Future<Uint8List> crateFfiFramingFrameForLocalSocket({
-    required List<int> envelope,
-  });
+Future<SessionStatusDto?> crateFfiCoreCoreSessionStatus({required Core that , required List<int> peerDeviceId });
 
-  Future<BigInt> crateFfiJitterSampleJitterDelayMs();
+Future<void> crateFfiCoreCoreSetEphemeralTtl({required Core that , required List<int> contactDeviceId , required PlatformInt64 ttlSecs });
 
-  RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Core;
+Future<SignalingTopicsDto> crateFfiCoreCoreSignalingTopics({required Core that , required List<int> peerDeviceId });
 
-  RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Core;
+Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({required Core that , required List<int> peerDeviceId , required String audioPath , required bool useLan });
 
-  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr;
-}
+Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({required Core that , required List<int> peerDeviceId , required String filePath , required bool useLan });
 
-class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
-  RustLibApiImpl({
-    required super.handler,
-    required super.wire,
-    required super.generalizedFrbRustBinding,
-    required super.portManager,
-  });
+Future<int> crateFfiCoreCoreSweepExpiredMessages({required Core that });
 
-  @override
-  Future<void> crateFfiCoreCoreCancelTransfer({
-    required Core that,
-    required List<int> fileId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(fileId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 1,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({required Core that , required List<int> fileId });
+
+Future<void> crateFfiCoreCoreUnlock({required Core that });
+
+Future<(Uint8List?,Uint8List)> crateFfiFramingExtractFrameFromLocalSocketBuffer({required List<int> buffer });
+
+Future<Uint8List> crateFfiFramingFrameForLocalSocket({required List<int> envelope });
+
+Future<BigInt> crateFfiJitterSampleJitterDelayMs();
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Core;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Core;
+
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr;
+
+
+                }
+                
+
+                class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
+                  RustLibApiImpl({
+                    required super.handler,
+                    required super.wire,
+                    required super.generalizedFrbRustBinding,
+                    required super.portManager,
+                  });
+
+                  @override Future<void> crateFfiCoreCoreCancelTransfer({required Core that , required List<int> fileId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(fileId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 1, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreCancelTransferConstMeta,
-        argValues: [that, fileId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreCancelTransferConstMeta,
+            argValues: [that, fileId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreCancelTransferConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_cancel_transfer",
-        argNames: ["that", "fileId"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
-    required Core that,
-    required List<int> internalBytes,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(internalBytes, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 2,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreCancelTransferConstMeta => const TaskConstMeta(
+            debugName: "Core_cancel_transfer",
+            argNames: ["that", "fileId"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({required Core that , required List<int> internalBytes })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(internalBytes, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreDecodeAudioToWavConstMeta,
-        argValues: [that, internalBytes],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreDecodeAudioToWavConstMeta,
+            argValues: [that, internalBytes],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreDecodeAudioToWavConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_decode_audio_to_wav",
-        argNames: ["that", "internalBytes"],
-      );
 
-  @override
-  Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> envelope,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(envelope, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 3,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreDecodeAudioToWavConstMeta => const TaskConstMeta(
+            debugName: "Core_decode_audio_to_wav",
+            argNames: ["that", "internalBytes"],
+        );
+        
+
+@override Future<IncomingMessageDto?> crateFfiCoreCoreDecryptIncoming({required Core that , required List<int> peerDeviceId , required List<int> envelope })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(envelope, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_incoming_message_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreDecryptIncomingConstMeta,
-        argValues: [that, peerDeviceId, envelope],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreDecryptIncomingConstMeta,
+            argValues: [that, peerDeviceId, envelope],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreDecryptIncomingConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_decrypt_incoming",
-        argNames: ["that", "peerDeviceId", "envelope"],
-      );
 
-  @override
-  Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreDecryptIncomingConstMeta => const TaskConstMeta(
+            debugName: "Core_decrypt_incoming",
+            argNames: ["that", "peerDeviceId", "envelope"],
+        );
+        
+
+@override Future<DiscoveryBeaconsDto> crateFfiCoreCoreDiscoveryBeacons({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_discovery_beacons_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreDiscoveryBeaconsConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreDiscoveryBeaconsConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreDiscoveryBeaconsConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_discovery_beacons",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 5,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreDiscoveryBeaconsConstMeta => const TaskConstMeta(
+            debugName: "Core_discovery_beacons",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreEmergencyErase({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreEmergencyEraseConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreEmergencyEraseConstMeta => const TaskConstMeta(
+            debugName: "Core_emergency_erase",
+            argNames: ["that"],
+        );
+        
+
+@override Future<SessionStatusDto> crateFfiCoreCoreEnsureSession({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_session_status_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreEnsureSessionConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreEnsureSessionConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreEnsureSessionConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_ensure_session",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<Uint8List?> crateFfiCoreCoreFeedHandshake({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(bytes, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 6,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreEnsureSessionConstMeta => const TaskConstMeta(
+            debugName: "Core_ensure_session",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<Uint8List?> crateFfiCoreCoreFeedHandshake({required Core that , required List<int> peerDeviceId , required List<int> bytes })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(bytes, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreFeedHandshakeConstMeta,
-        argValues: [that, peerDeviceId, bytes],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreFeedHandshakeConstMeta,
+            argValues: [that, peerDeviceId, bytes],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreFeedHandshakeConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_feed_handshake",
-        argNames: ["that", "peerDeviceId", "bytes"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(fileId, serializer);
-          sse_encode_String(destinationPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 7,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreFeedHandshakeConstMeta => const TaskConstMeta(
+            debugName: "Core_feed_handshake",
+            argNames: ["that", "peerDeviceId", "bytes"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({required Core that , required List<int> peerDeviceId , required List<int> fileId , required String destinationPath })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(fileId, serializer);
+sse_encode_String(destinationPath, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreFinishReceiveAudioConstMeta,
-        argValues: [that, peerDeviceId, fileId, destinationPath],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreFinishReceiveAudioConstMeta,
+            argValues: [that, peerDeviceId, fileId, destinationPath],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreFinishReceiveAudioConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_finish_receive_audio",
-        argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(fileId, serializer);
-          sse_encode_String(destinationPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 8,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreFinishReceiveAudioConstMeta => const TaskConstMeta(
+            debugName: "Core_finish_receive_audio",
+            argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({required Core that , required List<int> peerDeviceId , required List<int> fileId , required String destinationPath })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(fileId, serializer);
+sse_encode_String(destinationPath, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreFinishReceiveFileConstMeta,
-        argValues: [that, peerDeviceId, fileId, destinationPath],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreFinishReceiveFileConstMeta,
+            argValues: [that, peerDeviceId, fileId, destinationPath],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreFinishReceiveFileConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_finish_receive_file",
-        argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
-      );
 
-  @override
-  Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 9,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreFinishReceiveFileConstMeta => const TaskConstMeta(
+            debugName: "Core_finish_receive_file",
+            argNames: ["that", "peerDeviceId", "fileId", "destinationPath"],
+        );
+        
+
+@override Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_sealed_message_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreFlushPendingConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreFlushPendingConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreFlushPendingConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_flush_pending",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({
-    required Core that,
-    required List<int> wireBytes,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(wireBytes, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 10,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreFlushPendingConstMeta => const TaskConstMeta(
+            debugName: "Core_flush_pending",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<PlatformInt64> crateFfiCoreCoreGetEphemeralTtl({required Core that , required List<int> contactDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(contactDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_i_64,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreGetEphemeralTtlConstMeta,
+            argValues: [that, contactDeviceId],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreGetEphemeralTtlConstMeta => const TaskConstMeta(
+            debugName: "Core_get_ephemeral_ttl",
+            argNames: ["that", "contactDeviceId"],
+        );
+        
+
+@override Future<IngestedChunkDto?> crateFfiCoreCoreIngestIncomingWireBytes({required Core that , required List<int> wireBytes })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(wireBytes, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_ingested_chunk_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta,
-        argValues: [that, wireBytes],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta,
+            argValues: [that, wireBytes],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_ingest_incoming_wire_bytes",
-        argNames: ["that", "wireBytes"],
-      );
 
-  @override
-  Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 11,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreIngestIncomingWireBytesConstMeta => const TaskConstMeta(
+            debugName: "Core_ingest_incoming_wire_bytes",
+            argNames: ["that", "wireBytes"],
+        );
+        
+
+@override Future<bool> crateFfiCoreCoreIsLocked({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreIsLockedConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreIsLockedConstMeta => const TaskConstMeta(
+            debugName: "Core_is_locked",
+            argNames: ["that"],
+        );
+        
+
+@override Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_contact_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreListContactsConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreListContactsConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreListContactsConstMeta =>
-      const TaskConstMeta(debugName: "Core_list_contacts", argNames: ["that"]);
 
-  @override
-  Future<List<MessageDto>> crateFfiCoreCoreListMessages({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 12,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreListContactsConstMeta => const TaskConstMeta(
+            debugName: "Core_list_contacts",
+            argNames: ["that"],
+        );
+        
+
+@override Future<List<MessageDto>> crateFfiCoreCoreListMessages({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_message_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreListMessagesConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreListMessagesConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreListMessagesConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_list_messages",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<void> crateFfiCoreCoreMarkMessageSent({
-    required Core that,
-    required PlatformInt64 messageId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_i_64(messageId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 13,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreListMessagesConstMeta => const TaskConstMeta(
+            debugName: "Core_list_messages",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreLock({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreMarkMessageSentConstMeta,
-        argValues: [that, messageId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreLockConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreMarkMessageSentConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_mark_message_sent",
-        argNames: ["that", "messageId"],
-      );
 
-  @override
-  Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({
-    required Core that,
-    required List<int> beacon,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(beacon, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 14,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreLockConstMeta => const TaskConstMeta(
+            debugName: "Core_lock",
+            argNames: ["that"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreMarkMessageRead({required Core that , required PlatformInt64 messageId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_i_64(messageId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreMarkMessageReadConstMeta,
+            argValues: [that, messageId],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreMarkMessageReadConstMeta => const TaskConstMeta(
+            debugName: "Core_mark_message_read",
+            argNames: ["that", "messageId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreMarkMessageSent({required Core that , required PlatformInt64 messageId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_i_64(messageId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreMarkMessageSentConstMeta,
+            argValues: [that, messageId],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreMarkMessageSentConstMeta => const TaskConstMeta(
+            debugName: "Core_mark_message_sent",
+            argNames: ["that", "messageId"],
+        );
+        
+
+@override Future<ContactDto?> crateFfiCoreCoreMatchDiscoveredBeacon({required Core that , required List<int> beacon })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(beacon, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_contact_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta,
-        argValues: [that, beacon],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta,
+            argValues: [that, beacon],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_match_discovered_beacon",
-        argNames: ["that", "beacon"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 15,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreMatchDiscoveredBeaconConstMeta => const TaskConstMeta(
+            debugName: "Core_match_discovered_beacon",
+            argNames: ["that", "beacon"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreMyDeviceId({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: null,
-        ),
-        constMeta: kCrateFfiCoreCoreMyDeviceIdConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreMyDeviceIdConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreMyDeviceIdConstMeta =>
-      const TaskConstMeta(debugName: "Core_my_device_id", argNames: ["that"]);
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 16,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreMyDeviceIdConstMeta => const TaskConstMeta(
+            debugName: "Core_my_device_id",
+            argNames: ["that"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreMyQrPayload({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: null,
-        ),
-        constMeta: kCrateFfiCoreCoreMyQrPayloadConstMeta,
-        argValues: [that],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreMyQrPayloadConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreMyQrPayloadConstMeta =>
-      const TaskConstMeta(debugName: "Core_my_qr_payload", argNames: ["that"]);
 
-  @override
-  Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({
-    required Core that,
-    required List<int> fileId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(fileId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 17,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreMyQrPayloadConstMeta => const TaskConstMeta(
+            debugName: "Core_my_qr_payload",
+            argNames: ["that"],
+        );
+        
+
+@override Future<Uint8List?> crateFfiCoreCoreNextOutgoingWireChunk({required Core that , required List<int> fileId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(fileId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta,
-        argValues: [that, fileId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta,
+            argValues: [that, fileId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_next_outgoing_wire_chunk",
-        argNames: ["that", "fileId"],
-      );
 
-  @override
-  Future<Core> crateFfiCoreCoreOpen({required String appDir}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(appDir, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 18,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore,
+        TaskConstMeta get kCrateFfiCoreCoreNextOutgoingWireChunkConstMeta => const TaskConstMeta(
+            debugName: "Core_next_outgoing_wire_chunk",
+            argNames: ["that", "fileId"],
+        );
+        
+
+@override Future<Core> crateFfiCoreCoreOpen({required String appDir })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_String(appDir, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreOpenConstMeta,
-        argValues: [appDir],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreOpenConstMeta,
+            argValues: [appDir],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreOpenConstMeta =>
-      const TaskConstMeta(debugName: "Core_open", argNames: ["appDir"]);
 
-  @override
-  Future<Uint8List?> crateFfiCoreCoreOpenSignalingPayload({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> sealed,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(sealed, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 19,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreOpenConstMeta => const TaskConstMeta(
+            debugName: "Core_open",
+            argNames: ["appDir"],
+        );
+        
+
+@override Future<Uint8List?> crateFfiCoreCoreOpenSignalingPayload({required Core that , required List<int> peerDeviceId , required List<int> sealed })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(sealed, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreOpenSignalingPayloadConstMeta,
-        argValues: [that, peerDeviceId, sealed],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreOpenSignalingPayloadConstMeta,
+            argValues: [that, peerDeviceId, sealed],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreOpenSignalingPayloadConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_open_signaling_payload",
-        argNames: ["that", "peerDeviceId", "sealed"],
-      );
 
-  @override
-  Future<ContactDto> crateFfiCoreCorePairFromQr({
-    required Core that,
-    required List<int> payload,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(payload, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 20,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreOpenSignalingPayloadConstMeta => const TaskConstMeta(
+            debugName: "Core_open_signaling_payload",
+            argNames: ["that", "peerDeviceId", "sealed"],
+        );
+        
+
+@override Future<ContactDto> crateFfiCoreCorePairFromQr({required Core that , required List<int> payload })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(payload, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_contact_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCorePairFromQrConstMeta,
-        argValues: [that, payload],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCorePairFromQrConstMeta,
+            argValues: [that, payload],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCorePairFromQrConstMeta => const TaskConstMeta(
-    debugName: "Core_pair_from_qr",
-    argNames: ["that", "payload"],
-  );
 
-  @override
-  Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 21,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCorePairFromQrConstMeta => const TaskConstMeta(
+            debugName: "Core_pair_from_qr",
+            argNames: ["that", "payload"],
+        );
+        
+
+@override Future<List<FileOfferDto>> crateFfiCoreCorePendingAudioOffers({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_file_offer_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCorePendingAudioOffersConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCorePendingAudioOffersConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCorePendingAudioOffersConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_pending_audio_offers",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 22,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCorePendingAudioOffersConstMeta => const TaskConstMeta(
+            debugName: "Core_pending_audio_offers",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<List<FileOfferDto>> crateFfiCoreCorePendingFileOffers({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_file_offer_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCorePendingFileOffersConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCorePendingFileOffersConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCorePendingFileOffersConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_pending_file_offers",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({
-    required Core that,
-    required List<int> contactDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(contactDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 23,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCorePendingFileOffersConstMeta => const TaskConstMeta(
+            debugName: "Core_pending_file_offers",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<SafetyNumberDto> crateFfiCoreCoreSafetyNumber({required Core that , required List<int> contactDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(contactDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 28, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_safety_number_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSafetyNumberConstMeta,
-        argValues: [that, contactDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSafetyNumberConstMeta,
+            argValues: [that, contactDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSafetyNumberConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_safety_number",
-        argNames: ["that", "contactDeviceId"],
-      );
 
-  @override
-  Future<void> crateFfiCoreCoreSanitizeAndStageAudio({
-    required Core that,
-    required String sourcePath,
-    required String destinationPath,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_String(sourcePath, serializer);
-          sse_encode_String(destinationPath, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 24,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSafetyNumberConstMeta => const TaskConstMeta(
+            debugName: "Core_safety_number",
+            argNames: ["that", "contactDeviceId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreSanitizeAndStageAudio({required Core that , required String sourcePath , required String destinationPath })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_String(sourcePath, serializer);
+sse_encode_String(destinationPath, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta,
-        argValues: [that, sourcePath, destinationPath],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta,
+            argValues: [that, sourcePath, destinationPath],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_sanitize_and_stage_audio",
-        argNames: ["that", "sourcePath", "destinationPath"],
-      );
 
-  @override
-  Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String body,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_String(body, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 25,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSanitizeAndStageAudioConstMeta => const TaskConstMeta(
+            debugName: "Core_sanitize_and_stage_audio",
+            argNames: ["that", "sourcePath", "destinationPath"],
+        );
+        
+
+@override Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({required Core that , required List<int> peerDeviceId , required String body })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_String(body, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 30, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_sealed_message_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSealOutgoingTextConstMeta,
-        argValues: [that, peerDeviceId, body],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSealOutgoingTextConstMeta,
+            argValues: [that, peerDeviceId, body],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSealOutgoingTextConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_seal_outgoing_text",
-        argNames: ["that", "peerDeviceId", "body"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiCoreCoreSealSignalingPayload({
-    required Core that,
-    required List<int> peerDeviceId,
-    required List<int> payloadBytes,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_list_prim_u_8_loose(payloadBytes, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 26,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSealOutgoingTextConstMeta => const TaskConstMeta(
+            debugName: "Core_seal_outgoing_text",
+            argNames: ["that", "peerDeviceId", "body"],
+        );
+        
+
+@override Future<Uint8List> crateFfiCoreCoreSealSignalingPayload({required Core that , required List<int> peerDeviceId , required List<int> payloadBytes })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_list_prim_u_8_loose(payloadBytes, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSealSignalingPayloadConstMeta,
-        argValues: [that, peerDeviceId, payloadBytes],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSealSignalingPayloadConstMeta,
+            argValues: [that, peerDeviceId, payloadBytes],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSealSignalingPayloadConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_seal_signaling_payload",
-        argNames: ["that", "peerDeviceId", "payloadBytes"],
-      );
 
-  @override
-  Future<SessionStatusDto?> crateFfiCoreCoreSessionStatus({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 27,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSealSignalingPayloadConstMeta => const TaskConstMeta(
+            debugName: "Core_seal_signaling_payload",
+            argNames: ["that", "peerDeviceId", "payloadBytes"],
+        );
+        
+
+@override Future<SessionStatusDto?> crateFfiCoreCoreSessionStatus({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_session_status_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSessionStatusConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSessionStatusConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSessionStatusConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_session_status",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<SignalingTopicsDto> crateFfiCoreCoreSignalingTopics({
-    required Core that,
-    required List<int> peerDeviceId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 28,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSessionStatusConstMeta => const TaskConstMeta(
+            debugName: "Core_session_status",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreSetEphemeralTtl({required Core that , required List<int> contactDeviceId , required PlatformInt64 ttlSecs })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(contactDeviceId, serializer);
+sse_encode_i_64(ttlSecs, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSetEphemeralTtlConstMeta,
+            argValues: [that, contactDeviceId, ttlSecs],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreSetEphemeralTtlConstMeta => const TaskConstMeta(
+            debugName: "Core_set_ephemeral_ttl",
+            argNames: ["that", "contactDeviceId", "ttlSecs"],
+        );
+        
+
+@override Future<SignalingTopicsDto> crateFfiCoreCoreSignalingTopics({required Core that , required List<int> peerDeviceId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_signaling_topics_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreSignalingTopicsConstMeta,
-        argValues: [that, peerDeviceId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSignalingTopicsConstMeta,
+            argValues: [that, peerDeviceId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreSignalingTopicsConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_signaling_topics",
-        argNames: ["that", "peerDeviceId"],
-      );
 
-  @override
-  Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String audioPath,
-    required bool useLan,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_String(audioPath, serializer);
-          sse_encode_bool(useLan, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 29,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreSignalingTopicsConstMeta => const TaskConstMeta(
+            debugName: "Core_signaling_topics",
+            argNames: ["that", "peerDeviceId"],
+        );
+        
+
+@override Future<SendAudioStartedDto> crateFfiCoreCoreStartSendAudio({required Core that , required List<int> peerDeviceId , required String audioPath , required bool useLan })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_String(audioPath, serializer);
+sse_encode_bool(useLan, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_send_audio_started_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreStartSendAudioConstMeta,
-        argValues: [that, peerDeviceId, audioPath, useLan],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreStartSendAudioConstMeta,
+            argValues: [that, peerDeviceId, audioPath, useLan],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreStartSendAudioConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_start_send_audio",
-        argNames: ["that", "peerDeviceId", "audioPath", "useLan"],
-      );
 
-  @override
-  Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({
-    required Core that,
-    required List<int> peerDeviceId,
-    required String filePath,
-    required bool useLan,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
-          sse_encode_String(filePath, serializer);
-          sse_encode_bool(useLan, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 30,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreStartSendAudioConstMeta => const TaskConstMeta(
+            debugName: "Core_start_send_audio",
+            argNames: ["that", "peerDeviceId", "audioPath", "useLan"],
+        );
+        
+
+@override Future<SendFileStartedDto> crateFfiCoreCoreStartSendFile({required Core that , required List<int> peerDeviceId , required String filePath , required bool useLan })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+sse_encode_String(filePath, serializer);
+sse_encode_bool(useLan, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_send_file_started_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreStartSendFileConstMeta,
-        argValues: [that, peerDeviceId, filePath, useLan],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreStartSendFileConstMeta,
+            argValues: [that, peerDeviceId, filePath, useLan],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreStartSendFileConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_start_send_file",
-        argNames: ["that", "peerDeviceId", "filePath", "useLan"],
-      );
 
-  @override
-  Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({
-    required Core that,
-    required List<int> fileId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_list_prim_u_8_loose(fileId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 31,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreStartSendFileConstMeta => const TaskConstMeta(
+            debugName: "Core_start_send_file",
+            argNames: ["that", "peerDeviceId", "filePath", "useLan"],
+        );
+        
+
+@override Future<int> crateFfiCoreCoreSweepExpiredMessages({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_u_32,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreSweepExpiredMessagesConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiCoreCoreSweepExpiredMessagesConstMeta => const TaskConstMeta(
+            debugName: "Core_sweep_expired_messages",
+            argNames: ["that"],
+        );
+        
+
+@override Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({required Core that , required List<int> fileId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+sse_encode_list_prim_u_8_loose(fileId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_transfer_progress_dto,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreTransferProgressConstMeta,
-        argValues: [that, fileId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreTransferProgressConstMeta,
+            argValues: [that, fileId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiCoreCoreTransferProgressConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_transfer_progress",
-        argNames: ["that", "fileId"],
-      );
 
-  @override
-  Future<(Uint8List?, Uint8List)>
-  crateFfiFramingExtractFrameFromLocalSocketBuffer({
-    required List<int> buffer,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_list_prim_u_8_loose(buffer, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 32,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict,
+        TaskConstMeta get kCrateFfiCoreCoreTransferProgressConstMeta => const TaskConstMeta(
+            debugName: "Core_transfer_progress",
+            argNames: ["that", "fileId"],
+        );
+        
+
+@override Future<void> crateFfiCoreCoreUnlock({required Core that })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(that, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 39, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta,
-        argValues: [buffer],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiCoreCoreUnlockConstMeta,
+            argValues: [that],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta
-  get kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta =>
-      const TaskConstMeta(
-        debugName: "extract_frame_from_local_socket_buffer",
-        argNames: ["buffer"],
-      );
 
-  @override
-  Future<Uint8List> crateFfiFramingFrameForLocalSocket({
-    required List<int> envelope,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_list_prim_u_8_loose(envelope, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 33,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiCoreCoreUnlockConstMeta => const TaskConstMeta(
+            debugName: "Core_unlock",
+            argNames: ["that"],
+        );
+        
+
+@override Future<(Uint8List?,Uint8List)> crateFfiFramingExtractFrameFromLocalSocketBuffer({required List<int> buffer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_list_prim_u_8_loose(buffer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 40, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
+          decodeSuccessData: sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        )
+        ,
+            constMeta: kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta,
+            argValues: [buffer],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiFramingExtractFrameFromLocalSocketBufferConstMeta => const TaskConstMeta(
+            debugName: "extract_frame_from_local_socket_buffer",
+            argNames: ["buffer"],
+        );
+        
+
+@override Future<Uint8List> crateFfiFramingFrameForLocalSocket({required List<int> envelope })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_list_prim_u_8_loose(envelope, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiFramingFrameForLocalSocketConstMeta,
-        argValues: [envelope],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateFfiFramingFrameForLocalSocketConstMeta,
+            argValues: [envelope],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateFfiFramingFrameForLocalSocketConstMeta =>
-      const TaskConstMeta(
-        debugName: "frame_for_local_socket",
-        argNames: ["envelope"],
-      );
 
-  @override
-  Future<BigInt> crateFfiJitterSampleJitterDelayMs() {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 34,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateFfiFramingFrameForLocalSocketConstMeta => const TaskConstMeta(
+            debugName: "frame_for_local_socket",
+            argNames: ["envelope"],
+        );
+        
+
+@override Future<BigInt> crateFfiJitterSampleJitterDelayMs()  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+              
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 42, port: port_);
+            
+            },
+            codec: 
+        SseCodec(
           decodeSuccessData: sse_decode_u_64,
           decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiJitterSampleJitterDelayMsConstMeta,
-        argValues: [],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateFfiJitterSampleJitterDelayMsConstMeta =>
-      const TaskConstMeta(debugName: "sample_jitter_delay_ms", argNames: []);
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_Core => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_Core => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
-
-  @protected
-  Core
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  Core
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  Core
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  String dco_decode_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as String;
-  }
-
-  @protected
-  bool dco_decode_bool(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as bool;
-  }
-
-  @protected
-  ContactDto dco_decode_box_autoadd_contact_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_contact_dto(raw);
-  }
-
-  @protected
-  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_i_64(raw);
-  }
-
-  @protected
-  IncomingMessageDto dco_decode_box_autoadd_incoming_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_incoming_message_dto(raw);
-  }
-
-  @protected
-  IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_ingested_chunk_dto(raw);
-  }
-
-  @protected
-  SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_session_status_dto(raw);
-  }
-
-  @protected
-  TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_transfer_progress_dto(raw);
-  }
-
-  @protected
-  ContactDto dco_decode_contact_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return ContactDto(
-      deviceId: dco_decode_list_prim_u_8_strict(arr[0]),
-      signingPubkey: dco_decode_list_prim_u_8_strict(arr[1]),
-      dhPubkey: dco_decode_list_prim_u_8_strict(arr[2]),
-      pairedAtUnixSecs: dco_decode_i_64(arr[3]),
-      nickname: dco_decode_opt_String(arr[4]),
-    );
-  }
-
-  @protected
-  DeliveryStateDto dco_decode_delivery_state_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return DeliveryStateDto.values[raw as int];
-  }
-
-  @protected
-  DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return DiscoveryBeaconsDto(
-      advertiseBeacon: dco_decode_list_prim_u_8_strict(arr[0]),
-      scanBeacons: dco_decode_list_list_prim_u_8_strict(arr[1]),
-    );
-  }
-
-  @protected
-  FfiError dco_decode_ffi_error(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return FfiError.values[raw as int];
-  }
-
-  @protected
-  FileOfferDto dco_decode_file_offer_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return FileOfferDto(
-      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
-      name: dco_decode_String(arr[1]),
-      fileSize: dco_decode_u_64(arr[2]),
-    );
-  }
-
-  @protected
-  int dco_decode_i_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  PlatformInt64 dco_decode_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeI64(raw);
-  }
-
-  @protected
-  IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return IncomingMessageDto(
-      messageId: dco_decode_opt_box_autoadd_i_64(arr[0]),
-      body: dco_decode_String(arr[1]),
-      isTyping: dco_decode_bool(arr[2]),
-      receivedAtUnixSecs: dco_decode_i_64(arr[3]),
-    );
-  }
-
-  @protected
-  IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return IngestedChunkDto(
-      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
-      progress: dco_decode_transfer_progress_dto(arr[1]),
-    );
-  }
-
-  @protected
-  List<String> dco_decode_list_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_String).toList();
-  }
-
-  @protected
-  List<ContactDto> dco_decode_list_contact_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_contact_dto).toList();
-  }
-
-  @protected
-  List<FileOfferDto> dco_decode_list_file_offer_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_file_offer_dto).toList();
-  }
-
-  @protected
-  List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_list_prim_u_8_strict).toList();
-  }
-
-  @protected
-  List<MessageDto> dco_decode_list_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_message_dto).toList();
-  }
-
-  @protected
-  List<int> dco_decode_list_prim_u_8_loose(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as List<int>;
-  }
-
-  @protected
-  Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as Uint8List;
-  }
-
-  @protected
-  List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_sealed_message_dto).toList();
-  }
-
-  @protected
-  MessageDirectionDto dco_decode_message_direction_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return MessageDirectionDto.values[raw as int];
-  }
-
-  @protected
-  MessageDto dco_decode_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return MessageDto(
-      id: dco_decode_i_64(arr[0]),
-      direction: dco_decode_message_direction_dto(arr[1]),
-      kind: dco_decode_message_kind_dto(arr[2]),
-      body: dco_decode_String(arr[3]),
-      audioFileId: dco_decode_opt_list_prim_u_8_strict(arr[4]),
-      deliveryState: dco_decode_delivery_state_dto(arr[5]),
-      createdAtUnixSecs: dco_decode_i_64(arr[6]),
-    );
-  }
-
-  @protected
-  MessageKindDto dco_decode_message_kind_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return MessageKindDto.values[raw as int];
-  }
-
-  @protected
-  String? dco_decode_opt_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_String(raw);
-  }
-
-  @protected
-  ContactDto? dco_decode_opt_box_autoadd_contact_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_contact_dto(raw);
-  }
-
-  @protected
-  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_i_64(raw);
-  }
-
-  @protected
-  IncomingMessageDto? dco_decode_opt_box_autoadd_incoming_message_dto(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null
-        ? null
-        : dco_decode_box_autoadd_incoming_message_dto(raw);
-  }
-
-  @protected
-  IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_ingested_chunk_dto(raw);
-  }
-
-  @protected
-  SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_session_status_dto(raw);
-  }
-
-  @protected
-  TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null
-        ? null
-        : dco_decode_box_autoadd_transfer_progress_dto(raw);
-  }
-
-  @protected
-  Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
-  }
-
-  @protected
-  (Uint8List?, Uint8List)
-  dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2) {
-      throw Exception('Expected 2 elements, got ${arr.length}');
-    }
-    return (
-      dco_decode_opt_list_prim_u_8_strict(arr[0]),
-      dco_decode_list_prim_u_8_strict(arr[1]),
-    );
-  }
-
-  @protected
-  SafetyNumberDto dco_decode_safety_number_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return SafetyNumberDto(
-      digits: dco_decode_String(arr[0]),
-      words: dco_decode_String(arr[1]),
-    );
-  }
-
-  @protected
-  SealedMessageDto dco_decode_sealed_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return SealedMessageDto(
-      messageId: dco_decode_i_64(arr[0]),
-      bytes: dco_decode_opt_list_prim_u_8_strict(arr[1]),
-    );
-  }
-
-  @protected
-  SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return SendAudioStartedDto(
-      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
-      sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
-      messageId: dco_decode_i_64(arr[2]),
-    );
-  }
-
-  @protected
-  SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return SendFileStartedDto(
-      fileId: dco_decode_list_prim_u_8_strict(arr[0]),
-      sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
-    );
-  }
-
-  @protected
-  SessionStateKind dco_decode_session_state_kind(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return SessionStateKind.values[raw as int];
-  }
-
-  @protected
-  SessionStatusDto dco_decode_session_status_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return SessionStatusDto(
-      state: dco_decode_session_state_kind(arr[0]),
-      needsRehandshake: dco_decode_bool(arr[1]),
-      outgoingHandshake: dco_decode_opt_list_prim_u_8_strict(arr[2]),
-    );
-  }
-
-  @protected
-  SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return SignalingTopicsDto(
-      publishTopic: dco_decode_String(arr[0]),
-      subscribeTopics: dco_decode_list_String(arr[1]),
-    );
-  }
-
-  @protected
-  TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return TransferProgressDto(
-      blocksDone: dco_decode_u_32(arr[0]),
-      totalBlocks: dco_decode_u_32(arr[1]),
-      bytesDone: dco_decode_u_64(arr[2]),
-      isComplete: dco_decode_bool(arr[3]),
-    );
-  }
-
-  @protected
-  int dco_decode_u_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  BigInt dco_decode_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeU64(raw);
-  }
-
-  @protected
-  int dco_decode_u_8(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  void dco_decode_unit(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return;
-  }
-
-  @protected
-  BigInt dco_decode_usize(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeU64(raw);
-  }
-
-  @protected
-  Core
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return CoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  Core
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return CoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  Core
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return CoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  String sse_decode_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_list_prim_u_8_strict(deserializer);
-    return utf8.decoder.convert(inner);
-  }
-
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8() != 0;
-  }
-
-  @protected
-  ContactDto sse_decode_box_autoadd_contact_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_contact_dto(deserializer));
-  }
-
-  @protected
-  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_i_64(deserializer));
-  }
-
-  @protected
-  IncomingMessageDto sse_decode_box_autoadd_incoming_message_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_incoming_message_dto(deserializer));
-  }
-
-  @protected
-  IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_ingested_chunk_dto(deserializer));
-  }
-
-  @protected
-  SessionStatusDto sse_decode_box_autoadd_session_status_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_session_status_dto(deserializer));
-  }
-
-  @protected
-  TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_transfer_progress_dto(deserializer));
-  }
-
-  @protected
-  ContactDto sse_decode_contact_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_deviceId = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_signingPubkey = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_dhPubkey = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_pairedAtUnixSecs = sse_decode_i_64(deserializer);
-    var var_nickname = sse_decode_opt_String(deserializer);
-    return ContactDto(
-      deviceId: var_deviceId,
-      signingPubkey: var_signingPubkey,
-      dhPubkey: var_dhPubkey,
-      pairedAtUnixSecs: var_pairedAtUnixSecs,
-      nickname: var_nickname,
-    );
-  }
-
-  @protected
-  DeliveryStateDto sse_decode_delivery_state_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return DeliveryStateDto.values[inner];
-  }
-
-  @protected
-  DiscoveryBeaconsDto sse_decode_discovery_beacons_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_advertiseBeacon = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_scanBeacons = sse_decode_list_list_prim_u_8_strict(deserializer);
-    return DiscoveryBeaconsDto(
-      advertiseBeacon: var_advertiseBeacon,
-      scanBeacons: var_scanBeacons,
-    );
-  }
-
-  @protected
-  FfiError sse_decode_ffi_error(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return FfiError.values[inner];
-  }
-
-  @protected
-  FileOfferDto sse_decode_file_offer_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_name = sse_decode_String(deserializer);
-    var var_fileSize = sse_decode_u_64(deserializer);
-    return FileOfferDto(
-      fileId: var_fileId,
-      name: var_name,
-      fileSize: var_fileSize,
-    );
-  }
-
-  @protected
-  int sse_decode_i_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getInt32();
-  }
-
-  @protected
-  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getPlatformInt64();
-  }
-
-  @protected
-  IncomingMessageDto sse_decode_incoming_message_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_messageId = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_body = sse_decode_String(deserializer);
-    var var_isTyping = sse_decode_bool(deserializer);
-    var var_receivedAtUnixSecs = sse_decode_i_64(deserializer);
-    return IncomingMessageDto(
-      messageId: var_messageId,
-      body: var_body,
-      isTyping: var_isTyping,
-      receivedAtUnixSecs: var_receivedAtUnixSecs,
-    );
-  }
-
-  @protected
-  IngestedChunkDto sse_decode_ingested_chunk_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_progress = sse_decode_transfer_progress_dto(deserializer);
-    return IngestedChunkDto(fileId: var_fileId, progress: var_progress);
-  }
-
-  @protected
-  List<String> sse_decode_list_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <String>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_String(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<ContactDto> sse_decode_list_contact_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <ContactDto>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_contact_dto(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<FileOfferDto> sse_decode_list_file_offer_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <FileOfferDto>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_file_offer_dto(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<Uint8List> sse_decode_list_list_prim_u_8_strict(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <Uint8List>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_list_prim_u_8_strict(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <MessageDto>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_message_dto(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var len_ = sse_decode_i_32(deserializer);
-    return deserializer.buffer.getUint8List(len_);
-  }
-
-  @protected
-  Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var len_ = sse_decode_i_32(deserializer);
-    return deserializer.buffer.getUint8List(len_);
-  }
-
-  @protected
-  List<SealedMessageDto> sse_decode_list_sealed_message_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <SealedMessageDto>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_sealed_message_dto(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  MessageDirectionDto sse_decode_message_direction_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return MessageDirectionDto.values[inner];
-  }
-
-  @protected
-  MessageDto sse_decode_message_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_i_64(deserializer);
-    var var_direction = sse_decode_message_direction_dto(deserializer);
-    var var_kind = sse_decode_message_kind_dto(deserializer);
-    var var_body = sse_decode_String(deserializer);
-    var var_audioFileId = sse_decode_opt_list_prim_u_8_strict(deserializer);
-    var var_deliveryState = sse_decode_delivery_state_dto(deserializer);
-    var var_createdAtUnixSecs = sse_decode_i_64(deserializer);
-    return MessageDto(
-      id: var_id,
-      direction: var_direction,
-      kind: var_kind,
-      body: var_body,
-      audioFileId: var_audioFileId,
-      deliveryState: var_deliveryState,
-      createdAtUnixSecs: var_createdAtUnixSecs,
-    );
-  }
-
-  @protected
-  MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return MessageKindDto.values[inner];
-  }
-
-  @protected
-  String? sse_decode_opt_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_String(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  ContactDto? sse_decode_opt_box_autoadd_contact_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_contact_dto(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_i_64(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  IncomingMessageDto? sse_decode_opt_box_autoadd_incoming_message_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_incoming_message_dto(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_ingested_chunk_dto(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_session_status_dto(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_transfer_progress_dto(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_list_prim_u_8_strict(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  (Uint8List?, Uint8List)
-  sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_field0 = sse_decode_opt_list_prim_u_8_strict(deserializer);
-    var var_field1 = sse_decode_list_prim_u_8_strict(deserializer);
-    return (var_field0, var_field1);
-  }
-
-  @protected
-  SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_digits = sse_decode_String(deserializer);
-    var var_words = sse_decode_String(deserializer);
-    return SafetyNumberDto(digits: var_digits, words: var_words);
-  }
-
-  @protected
-  SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_messageId = sse_decode_i_64(deserializer);
-    var var_bytes = sse_decode_opt_list_prim_u_8_strict(deserializer);
-    return SealedMessageDto(messageId: var_messageId, bytes: var_bytes);
-  }
-
-  @protected
-  SendAudioStartedDto sse_decode_send_audio_started_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_messageId = sse_decode_i_64(deserializer);
-    return SendAudioStartedDto(
-      fileId: var_fileId,
-      sealedMetadata: var_sealedMetadata,
-      messageId: var_messageId,
-    );
-  }
-
-  @protected
-  SendFileStartedDto sse_decode_send_file_started_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
-    var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
-    return SendFileStartedDto(
-      fileId: var_fileId,
-      sealedMetadata: var_sealedMetadata,
-    );
-  }
-
-  @protected
-  SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return SessionStateKind.values[inner];
-  }
-
-  @protected
-  SessionStatusDto sse_decode_session_status_dto(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_state = sse_decode_session_state_kind(deserializer);
-    var var_needsRehandshake = sse_decode_bool(deserializer);
-    var var_outgoingHandshake = sse_decode_opt_list_prim_u_8_strict(
-      deserializer,
-    );
-    return SessionStatusDto(
-      state: var_state,
-      needsRehandshake: var_needsRehandshake,
-      outgoingHandshake: var_outgoingHandshake,
-    );
-  }
-
-  @protected
-  SignalingTopicsDto sse_decode_signaling_topics_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_publishTopic = sse_decode_String(deserializer);
-    var var_subscribeTopics = sse_decode_list_String(deserializer);
-    return SignalingTopicsDto(
-      publishTopic: var_publishTopic,
-      subscribeTopics: var_subscribeTopics,
-    );
-  }
-
-  @protected
-  TransferProgressDto sse_decode_transfer_progress_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_blocksDone = sse_decode_u_32(deserializer);
-    var var_totalBlocks = sse_decode_u_32(deserializer);
-    var var_bytesDone = sse_decode_u_64(deserializer);
-    var var_isComplete = sse_decode_bool(deserializer);
-    return TransferProgressDto(
-      blocksDone: var_blocksDone,
-      totalBlocks: var_totalBlocks,
-      bytesDone: var_bytesDone,
-      isComplete: var_isComplete,
-    );
-  }
-
-  @protected
-  int sse_decode_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint32();
-  }
-
-  @protected
-  BigInt sse_decode_u_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  int sse_decode_u_8(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8();
-  }
-
-  @protected
-  void sse_decode_unit(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  BigInt sse_decode_usize(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    Core self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as CoreImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    Core self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as CoreImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-    Core self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as CoreImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
-  }
-
-  @protected
-  void sse_encode_String(String self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
-  }
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self ? 1 : 0);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_contact_dto(
-    ContactDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_contact_dto(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_i_64(
-    PlatformInt64 self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_64(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_incoming_message_dto(
-    IncomingMessageDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_incoming_message_dto(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_ingested_chunk_dto(
-    IngestedChunkDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_ingested_chunk_dto(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_session_status_dto(
-    SessionStatusDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_session_status_dto(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_transfer_progress_dto(
-    TransferProgressDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_transfer_progress_dto(self, serializer);
-  }
-
-  @protected
-  void sse_encode_contact_dto(ContactDto self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.deviceId, serializer);
-    sse_encode_list_prim_u_8_strict(self.signingPubkey, serializer);
-    sse_encode_list_prim_u_8_strict(self.dhPubkey, serializer);
-    sse_encode_i_64(self.pairedAtUnixSecs, serializer);
-    sse_encode_opt_String(self.nickname, serializer);
-  }
-
-  @protected
-  void sse_encode_delivery_state_dto(
-    DeliveryStateDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_discovery_beacons_dto(
-    DiscoveryBeaconsDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.advertiseBeacon, serializer);
-    sse_encode_list_list_prim_u_8_strict(self.scanBeacons, serializer);
-  }
-
-  @protected
-  void sse_encode_ffi_error(FfiError self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_file_offer_dto(FileOfferDto self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
-    sse_encode_String(self.name, serializer);
-    sse_encode_u_64(self.fileSize, serializer);
-  }
-
-  @protected
-  void sse_encode_i_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putInt32(self);
-  }
-
-  @protected
-  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putPlatformInt64(self);
-  }
-
-  @protected
-  void sse_encode_incoming_message_dto(
-    IncomingMessageDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_box_autoadd_i_64(self.messageId, serializer);
-    sse_encode_String(self.body, serializer);
-    sse_encode_bool(self.isTyping, serializer);
-    sse_encode_i_64(self.receivedAtUnixSecs, serializer);
-  }
-
-  @protected
-  void sse_encode_ingested_chunk_dto(
-    IngestedChunkDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
-    sse_encode_transfer_progress_dto(self.progress, serializer);
-  }
-
-  @protected
-  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_String(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_contact_dto(
-    List<ContactDto> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_contact_dto(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_file_offer_dto(
-    List<FileOfferDto> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_file_offer_dto(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_list_prim_u_8_strict(
-    List<Uint8List> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_list_prim_u_8_strict(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_message_dto(
-    List<MessageDto> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_message_dto(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_prim_u_8_loose(
-    List<int> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    serializer.buffer.putUint8List(
-      self is Uint8List ? self : Uint8List.fromList(self),
-    );
-  }
-
-  @protected
-  void sse_encode_list_prim_u_8_strict(
-    Uint8List self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    serializer.buffer.putUint8List(self);
-  }
-
-  @protected
-  void sse_encode_list_sealed_message_dto(
-    List<SealedMessageDto> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_sealed_message_dto(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_message_direction_dto(
-    MessageDirectionDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_message_dto(MessageDto self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_64(self.id, serializer);
-    sse_encode_message_direction_dto(self.direction, serializer);
-    sse_encode_message_kind_dto(self.kind, serializer);
-    sse_encode_String(self.body, serializer);
-    sse_encode_opt_list_prim_u_8_strict(self.audioFileId, serializer);
-    sse_encode_delivery_state_dto(self.deliveryState, serializer);
-    sse_encode_i_64(self.createdAtUnixSecs, serializer);
-  }
-
-  @protected
-  void sse_encode_message_kind_dto(
-    MessageKindDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_opt_String(String? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_String(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_contact_dto(
-    ContactDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_contact_dto(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_i_64(
-    PlatformInt64? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_i_64(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_incoming_message_dto(
-    IncomingMessageDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_incoming_message_dto(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_ingested_chunk_dto(
-    IngestedChunkDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_ingested_chunk_dto(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_session_status_dto(
-    SessionStatusDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_session_status_dto(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_transfer_progress_dto(
-    TransferProgressDto? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_transfer_progress_dto(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_list_prim_u_8_strict(
-    Uint8List? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_list_prim_u_8_strict(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
-    (Uint8List?, Uint8List) self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_list_prim_u_8_strict(self.$1, serializer);
-    sse_encode_list_prim_u_8_strict(self.$2, serializer);
-  }
-
-  @protected
-  void sse_encode_safety_number_dto(
-    SafetyNumberDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.digits, serializer);
-    sse_encode_String(self.words, serializer);
-  }
-
-  @protected
-  void sse_encode_sealed_message_dto(
-    SealedMessageDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_64(self.messageId, serializer);
-    sse_encode_opt_list_prim_u_8_strict(self.bytes, serializer);
-  }
-
-  @protected
-  void sse_encode_send_audio_started_dto(
-    SendAudioStartedDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
-    sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
-    sse_encode_i_64(self.messageId, serializer);
-  }
-
-  @protected
-  void sse_encode_send_file_started_dto(
-    SendFileStartedDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
-    sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
-  }
-
-  @protected
-  void sse_encode_session_state_kind(
-    SessionStateKind self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_session_status_dto(
-    SessionStatusDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_session_state_kind(self.state, serializer);
-    sse_encode_bool(self.needsRehandshake, serializer);
-    sse_encode_opt_list_prim_u_8_strict(self.outgoingHandshake, serializer);
-  }
-
-  @protected
-  void sse_encode_signaling_topics_dto(
-    SignalingTopicsDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.publishTopic, serializer);
-    sse_encode_list_String(self.subscribeTopics, serializer);
-  }
-
-  @protected
-  void sse_encode_transfer_progress_dto(
-    TransferProgressDto self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self.blocksDone, serializer);
-    sse_encode_u_32(self.totalBlocks, serializer);
-    sse_encode_u_64(self.bytesDone, serializer);
-    sse_encode_bool(self.isComplete, serializer);
-  }
-
-  @protected
-  void sse_encode_u_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint32(self);
-  }
-
-  @protected
-  void sse_encode_u_64(BigInt self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putBigUint64(self);
-  }
-
-  @protected
-  void sse_encode_u_8(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self);
-  }
-
-  @protected
-  void sse_encode_unit(void self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  void sse_encode_usize(BigInt self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putBigUint64(self);
-  }
-}
-
-@sealed
-class CoreImpl extends RustOpaque implements Core {
-  // Not to be used by end users
-  CoreImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
-
-  // Not to be used by end users
-  CoreImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
-
-  static final _kStaticData = RustArcStaticData(
-    rustArcIncrementStrongCount:
-        RustLib.instance.api.rust_arc_increment_strong_count_Core,
-    rustArcDecrementStrongCount:
-        RustLib.instance.api.rust_arc_decrement_strong_count_Core,
-    rustArcDecrementStrongCountPtr:
-        RustLib.instance.api.rust_arc_decrement_strong_count_CorePtr,
-  );
-
-  /// Cancela uma transferência (de qualquer lado): remove o handle em
-  /// memória e o registro em `store`. Do lado receptor, também apaga o
-  /// `.staging` — mesma garantia de "abortar destrói a chave" de
-  /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
-  /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
-  /// foi fechado a cada bloco completado). Ver §7.5/D15.
-  Future<void> cancelTransfer({required List<int> fileId}) => RustLib
-      .instance
-      .api
-      .crateFfiCoreCoreCancelTransfer(that: this, fileId: fileId);
-
-  /// Decodifica o formato interno devolvido por
-  /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
-  /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
-  /// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
-  /// nenhum, com ou sem suporte a Opus (D18).
-  Future<Uint8List> decodeAudioToWav({required List<int> internalBytes}) =>
-      RustLib.instance.api.crateFfiCoreCoreDecodeAudioToWav(
-        that: this,
-        internalBytes: internalBytes,
-      );
-
-  /// Decifra um envelope recebido no `DataChannel`.
-  ///
-  /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
-  /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
-  /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-  /// DTO efêmero, sem `message_id`.
-  ///
-  /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
-  /// processados aqui como efeito colateral — inicia/atualiza/encerra o
-  /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
-  /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
-  /// deste método para acomodar isso quebraria `chat_controller.dart`
-  /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
-  /// `Core::pending_file_offers` depois. Falha ao processar um desses três
-  /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
-  /// política de silêncio de qualquer corpo malformado nesta fronteira, e
-  /// nunca deveria acontecer vindo de um par honesto.
-  ///
-  /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
-  /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
-  /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
-  Future<IncomingMessageDto?> decryptIncoming({
-    required List<int> peerDeviceId,
-    required List<int> envelope,
-  }) => RustLib.instance.api.crateFfiCoreCoreDecryptIncoming(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    envelope: envelope,
-  );
-
-  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
-  Future<DiscoveryBeaconsDto> discoveryBeacons({
-    required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCoreDiscoveryBeacons(
-    that: this,
-    peerDeviceId: peerDeviceId,
-  );
-
-  /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
-  ///
-  /// Idempotente: chamadas repetidas para o mesmo contato nunca reabrem o
-  /// handshake. `outgoing_handshake` vem preenchido em toda chamada feita
-  /// enquanto formos iniciador e ainda não tivermos recebido a RESP — não
-  /// só na primeira — porque mais de uma parte do app pode precisar desses
-  /// bytes em momentos diferentes (o transporte WebRTC, para decidir quem
-  /// oferta o SDP; o controlador de chat, para de fato publicar a mensagem
-  /// de handshake assim que o canal abrir). Ver
-  /// `viska_proto::session::Session::pending_outgoing_handshake`.
-  Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) =>
-      RustLib.instance.api.crateFfiCoreCoreEnsureSession(
-        that: this,
-        peerDeviceId: peerDeviceId,
-      );
-
-  /// Alimenta a sessão com uma mensagem de handshake recebida via
-  /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
-  /// de resposta a publicar, se houver.
-  ///
-  /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
-  /// sido chamado antes para este contato — este método nunca cria uma
-  /// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
-  /// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
-  /// errado dependendo só de qual mensagem chegou primeiro.
-  Future<Uint8List?> feedHandshake({
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  }) => RustLib.instance.api.crateFfiCoreCoreFeedHandshake(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    bytes: bytes,
-  );
-
-  /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
-  /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
-  /// chama remonta o contêiner para reprodução (ver
-  /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
-  Future<Uint8List> finishReceiveAudio({
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  }) => RustLib.instance.api.crateFfiCoreCoreFinishReceiveAudio(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    fileId: fileId,
-    destinationPath: destinationPath,
-  );
-
-  /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
-  /// decifra para `destination_path`, remove o `.staging` e o registro em
-  /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-  /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-  /// emissor pelo canal `control`.
-  Future<Uint8List> finishReceiveFile({
-    required List<int> peerDeviceId,
-    required List<int> fileId,
-    required String destinationPath,
-  }) => RustLib.instance.api.crateFfiCoreCoreFinishReceiveFile(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    fileId: fileId,
-    destinationPath: destinationPath,
-  );
-
-  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
-  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-  /// estabelecer. Para na primeira falha de cifragem (ex.:
-  /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
-  /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
-  /// ordem de entrega.
-  Future<List<SealedMessageDto>> flushPending({
-    required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCoreFlushPending(
-    that: this,
-    peerDeviceId: peerDeviceId,
-  );
-
-  /// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
-  /// sozinho a qual transferência ele pertence (D17: `file_id` vai em
-  /// claro na frente, ver `peek_wire_file_id`) e roteia para a
-  /// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
-  /// pode ser um pacote de uma transferência já concluída/cancelada, ou
-  /// que chegou antes do `FILE_METADATA` correspondente terminar de
-  /// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
-  /// de quem chama. Serve arquivo e áudio por igual.
-  Future<IngestedChunkDto?> ingestIncomingWireBytes({
-    required List<int> wireBytes,
-  }) => RustLib.instance.api.crateFfiCoreCoreIngestIncomingWireBytes(
-    that: this,
-    wireBytes: wireBytes,
-  );
-
-  /// Todos os contatos já pareados.
-  Future<List<ContactDto>> listContacts() =>
-      RustLib.instance.api.crateFfiCoreCoreListContacts(that: this);
-
-  /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
-  /// — histórico completo para a tela de chat abrir com.
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) =>
-      RustLib.instance.api.crateFfiCoreCoreListMessages(
-        that: this,
-        peerDeviceId: peerDeviceId,
-      );
-
-  /// Marca uma mensagem de saída como entregue ao transporte — chamar só
-  /// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
-  /// lançar erro.
-  Future<void> markMessageSent({required PlatformInt64 messageId}) => RustLib
-      .instance
-      .api
-      .crateFfiCoreCoreMarkMessageSent(that: this, messageId: messageId);
-
-  /// Identifica a qual contato pareado um `BeaconID` recebido do rádio
-  /// pertence — varre todos os contatos e compara a janela de três épocas
-  /// de cada um. Fica em Rust porque só aqui há a identidade privada
-  /// necessária para recalcular `K_sig` de qualquer contato arbitrário; o
-  /// Dart nunca vê `K_sig`, só o resultado do casamento.
-  Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon}) =>
-      RustLib.instance.api.crateFfiCoreCoreMatchDiscoveredBeacon(
-        that: this,
-        beacon: beacon,
-      );
-
-  /// `device_id` desta identidade local — dado já público (trocado no QR,
-  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
-  /// dele até a descoberta local.
-  Future<Uint8List> myDeviceId() =>
-      RustLib.instance.api.crateFfiCoreCoreMyDeviceId(that: this);
-
-  /// Os 145 bytes do QR Code desta identidade.
-  Future<Uint8List> myQrPayload() =>
-      RustLib.instance.api.crateFfiCoreCoreMyQrPayload(that: this);
-
-  /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
-  /// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
-  /// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
-  /// `file_id` não é uma transferência de envio conhecida (já terminou,
-  /// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
-  /// para o estado atual. Serve arquivo e áudio por igual — nada aqui
-  /// depende de `kind`.
-  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) =>
-      RustLib.instance.api.crateFfiCoreCoreNextOutgoingWireChunk(
-        that: this,
-        fileId: fileId,
-      );
-
-  /// Decifra um payload de sinalização recebido do broker.
-  ///
-  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-  /// inválida — sem distinguir a causa, mesma política de
-  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-  /// confiável.
-  Future<Uint8List?> openSignalingPayload({
-    required List<int> peerDeviceId,
-    required List<int> sealed,
-  }) => RustLib.instance.api.crateFfiCoreCoreOpenSignalingPayload(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    sealed: sealed,
-  );
-
-  /// Valida o payload lido pela câmera e persiste o contato.
-  Future<ContactDto> pairFromQr({required List<int> payload}) => RustLib
-      .instance
-      .api
-      .crateFfiCoreCorePairFromQr(that: this, payload: payload);
-
-  /// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
-  Future<List<FileOfferDto>> pendingAudioOffers({
-    required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCorePendingAudioOffers(
-    that: this,
-    peerDeviceId: peerDeviceId,
-  );
-
-  /// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
-  /// para a UI listar e (por ora, automaticamente — ver doc do módulo)
-  /// já em recebimento. Só `kind = File`; ver
-  /// [`Core::pending_audio_offers`] para notas de voz.
-  Future<List<FileOfferDto>> pendingFileOffers({
-    required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCorePendingFileOffers(
-    that: this,
-    peerDeviceId: peerDeviceId,
-  );
-
-  /// Safety number entre esta identidade e um contato já pareado.
-  Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) =>
-      RustLib.instance.api.crateFfiCoreCoreSafetyNumber(
-        that: this,
-        contactDeviceId: contactDeviceId,
-      );
-
-  /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
-  /// metadados) e grava, em `destination_path`, só o formato interno de
-  /// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
-  /// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
-  /// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
-  /// silêncio — mesma política do resto do crate para bytes externos.
-  Future<void> sanitizeAndStageAudio({
-    required String sourcePath,
-    required String destinationPath,
-  }) => RustLib.instance.api.crateFfiCoreCoreSanitizeAndStageAudio(
-    that: this,
-    sourcePath: sourcePath,
-    destinationPath: destinationPath,
-  );
-
-  /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
-  /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
-  /// mesmo que o transporte esteja indisponível no momento da chamada.
-  ///
-  /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-  /// `Established`: a mensagem já está persistida, e `flush_pending` a
-  /// entrega assim que a sessão ficar pronta.
-  Future<SealedMessageDto> sealOutgoingText({
-    required List<int> peerDeviceId,
-    required String body,
-  }) => RustLib.instance.api.crateFfiCoreCoreSealOutgoingText(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    body: body,
-  );
-
-  /// Cifra um payload de sinalização (SDP ou candidato ICE já
-  /// serializado) para publicar — sempre exatamente 1024 B.
-  Future<Uint8List> sealSignalingPayload({
-    required List<int> peerDeviceId,
-    required List<int> payloadBytes,
-  }) => RustLib.instance.api.crateFfiCoreCoreSealSignalingPayload(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    payloadBytes: payloadBytes,
-  );
-
-  /// Status atual da sessão com um contato, sem alterar nada — `None` se
-  /// `ensure_session` nunca foi chamado para ele.
-  Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId}) =>
-      RustLib.instance.api.crateFfiCoreCoreSessionStatus(
-        that: this,
-        peerDeviceId: peerDeviceId,
-      );
-
-  /// Tópico para publicar agora (época corrente, nossa direção) e os três
-  /// tópicos para assinar (épocas anterior/atual/seguinte, direção do
-  /// par) — `docs/protocol.md` §8.1.
-  Future<SignalingTopicsDto> signalingTopics({
-    required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCoreSignalingTopics(
-    that: this,
-    peerDeviceId: peerDeviceId,
-  );
-
-  /// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
-  /// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
-  /// `audio_path` deve apontar para um arquivo já no formato interno de
-  /// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
-  /// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
-  /// produziu, que ainda carregaria `OpusTags` com metadados de
-  /// aparelho. Também insere a linha `Pending` na timeline única
-  /// (`store::messages`) — `message_id` no DTO devolvido é para quem
-  /// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
-  /// de `seal_outgoing_text`.
-  Future<SendAudioStartedDto> startSendAudio({
-    required List<int> peerDeviceId,
-    required String audioPath,
-    required bool useLan,
-  }) => RustLib.instance.api.crateFfiCoreCoreStartSendAudio(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    audioPath: audioPath,
-    useLan: useLan,
-  );
-
-  /// Inicia o envio de um arquivo para um contato pareado com sessão já
-  /// estabelecida. Lê o arquivo inteiro uma vez para calcular a raiz de
-  /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
-  /// precisa da raiz completa antes do primeiro símbolo sair.
-  ///
-  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
-  /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
-  /// `block_symbols` é sempre o teto de D6 (1024).
-  Future<SendFileStartedDto> startSendFile({
-    required List<int> peerDeviceId,
-    required String filePath,
-    required bool useLan,
-  }) => RustLib.instance.api.crateFfiCoreCoreStartSendFile(
-    that: this,
-    peerDeviceId: peerDeviceId,
-    filePath: filePath,
-    useLan: useLan,
-  );
-
-  /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
-  /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
-  Future<TransferProgressDto?> transferProgress({required List<int> fileId}) =>
-      RustLib.instance.api.crateFfiCoreCoreTransferProgress(
-        that: this,
-        fileId: fileId,
-      );
-}
+        )
+        ,
+            constMeta: kCrateFfiJitterSampleJitterDelayMsConstMeta,
+            argValues: [],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateFfiJitterSampleJitterDelayMsConstMeta => const TaskConstMeta(
+            debugName: "sample_jitter_delay_ms",
+            argNames: [],
+        );
+        
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_Core => wire.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_Core => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
+
+
+
+                  @protected Core dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected Core dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected Core dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected String dco_decode_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as String; }
+
+@protected bool dco_decode_bool(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as bool; }
+
+@protected ContactDto dco_decode_box_autoadd_contact_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_contact_dto(raw); }
+
+@protected PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_i_64(raw); }
+
+@protected IncomingMessageDto dco_decode_box_autoadd_incoming_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_incoming_message_dto(raw); }
+
+@protected IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_ingested_chunk_dto(raw); }
+
+@protected SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_session_status_dto(raw); }
+
+@protected TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_transfer_progress_dto(raw); }
+
+@protected ContactDto dco_decode_contact_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return ContactDto(deviceId: dco_decode_list_prim_u_8_strict(arr[0]),
+signingPubkey: dco_decode_list_prim_u_8_strict(arr[1]),
+dhPubkey: dco_decode_list_prim_u_8_strict(arr[2]),
+pairedAtUnixSecs: dco_decode_i_64(arr[3]),
+nickname: dco_decode_opt_String(arr[4]),); }
+
+@protected DeliveryStateDto dco_decode_delivery_state_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DeliveryStateDto.values[raw as int]; }
+
+@protected DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DiscoveryBeaconsDto(advertiseBeacon: dco_decode_list_prim_u_8_strict(arr[0]),
+scanBeacons: dco_decode_list_list_prim_u_8_strict(arr[1]),); }
+
+@protected FfiError dco_decode_ffi_error(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return FfiError.values[raw as int]; }
+
+@protected FileOfferDto dco_decode_file_offer_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return FileOfferDto(fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+name: dco_decode_String(arr[1]),
+fileSize: dco_decode_u_64(arr[2]),); }
+
+@protected int dco_decode_i_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected PlatformInt64 dco_decode_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeI64(raw); }
+
+@protected IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return IncomingMessageDto(messageId: dco_decode_opt_box_autoadd_i_64(arr[0]),
+body: dco_decode_String(arr[1]),
+isTyping: dco_decode_bool(arr[2]),
+receivedAtUnixSecs: dco_decode_i_64(arr[3]),); }
+
+@protected IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return IngestedChunkDto(fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+progress: dco_decode_transfer_progress_dto(arr[1]),); }
+
+@protected List<String> dco_decode_list_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_String).toList(); }
+
+@protected List<ContactDto> dco_decode_list_contact_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_contact_dto).toList(); }
+
+@protected List<FileOfferDto> dco_decode_list_file_offer_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_file_offer_dto).toList(); }
+
+@protected List<Uint8List> dco_decode_list_list_prim_u_8_strict(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_list_prim_u_8_strict).toList(); }
+
+@protected List<MessageDto> dco_decode_list_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_message_dto).toList(); }
+
+@protected List<int> dco_decode_list_prim_u_8_loose(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as List<int>; }
+
+@protected Uint8List dco_decode_list_prim_u_8_strict(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as Uint8List; }
+
+@protected List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_sealed_message_dto).toList(); }
+
+@protected MessageDirectionDto dco_decode_message_direction_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return MessageDirectionDto.values[raw as int]; }
+
+@protected MessageDto dco_decode_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return MessageDto(id: dco_decode_i_64(arr[0]),
+direction: dco_decode_message_direction_dto(arr[1]),
+kind: dco_decode_message_kind_dto(arr[2]),
+body: dco_decode_String(arr[3]),
+audioFileId: dco_decode_opt_list_prim_u_8_strict(arr[4]),
+deliveryState: dco_decode_delivery_state_dto(arr[5]),
+createdAtUnixSecs: dco_decode_i_64(arr[6]),
+isEphemeral: dco_decode_bool(arr[7]),); }
+
+@protected MessageKindDto dco_decode_message_kind_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return MessageKindDto.values[raw as int]; }
+
+@protected String? dco_decode_opt_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_String(raw); }
+
+@protected ContactDto? dco_decode_opt_box_autoadd_contact_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_contact_dto(raw); }
+
+@protected PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_i_64(raw); }
+
+@protected IncomingMessageDto? dco_decode_opt_box_autoadd_incoming_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_incoming_message_dto(raw); }
+
+@protected IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_ingested_chunk_dto(raw); }
+
+@protected SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_session_status_dto(raw); }
+
+@protected TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_transfer_progress_dto(raw); }
+
+@protected Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_list_prim_u_8_strict(raw); }
+
+@protected (Uint8List?,Uint8List) dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+            if (arr.length != 2) {
+                throw Exception('Expected 2 elements, got ${arr.length}');
+            }
+            return (dco_decode_opt_list_prim_u_8_strict(arr[0]),dco_decode_list_prim_u_8_strict(arr[1]),); }
+
+@protected SafetyNumberDto dco_decode_safety_number_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return SafetyNumberDto(digits: dco_decode_String(arr[0]),
+words: dco_decode_String(arr[1]),); }
+
+@protected SealedMessageDto dco_decode_sealed_message_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return SealedMessageDto(messageId: dco_decode_i_64(arr[0]),
+bytes: dco_decode_opt_list_prim_u_8_strict(arr[1]),); }
+
+@protected SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return SendAudioStartedDto(fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
+messageId: dco_decode_i_64(arr[2]),); }
+
+@protected SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return SendFileStartedDto(fileId: dco_decode_list_prim_u_8_strict(arr[0]),
+sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),); }
+
+@protected SessionStateKind dco_decode_session_state_kind(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return SessionStateKind.values[raw as int]; }
+
+@protected SessionStatusDto dco_decode_session_status_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return SessionStatusDto(state: dco_decode_session_state_kind(arr[0]),
+needsRehandshake: dco_decode_bool(arr[1]),
+outgoingHandshake: dco_decode_opt_list_prim_u_8_strict(arr[2]),); }
+
+@protected SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return SignalingTopicsDto(publishTopic: dco_decode_String(arr[0]),
+subscribeTopics: dco_decode_list_String(arr[1]),); }
+
+@protected TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return TransferProgressDto(blocksDone: dco_decode_u_32(arr[0]),
+totalBlocks: dco_decode_u_32(arr[1]),
+bytesDone: dco_decode_u_64(arr[2]),
+isComplete: dco_decode_bool(arr[3]),); }
+
+@protected int dco_decode_u_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected BigInt dco_decode_u_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeU64(raw); }
+
+@protected int dco_decode_u_8(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected void dco_decode_unit(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return; }
+
+@protected BigInt dco_decode_usize(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeU64(raw); }
+
+@protected Core sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return CoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected Core sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return CoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected Core sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return CoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected String sse_decode_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_list_prim_u_8_strict(deserializer);
+        return utf8.decoder.convert(inner); }
+
+@protected bool sse_decode_bool(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint8() != 0; }
+
+@protected ContactDto sse_decode_box_autoadd_contact_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_contact_dto(deserializer)); }
+
+@protected PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_i_64(deserializer)); }
+
+@protected IncomingMessageDto sse_decode_box_autoadd_incoming_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_incoming_message_dto(deserializer)); }
+
+@protected IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_ingested_chunk_dto(deserializer)); }
+
+@protected SessionStatusDto sse_decode_box_autoadd_session_status_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_session_status_dto(deserializer)); }
+
+@protected TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_transfer_progress_dto(deserializer)); }
+
+@protected ContactDto sse_decode_contact_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_deviceId = sse_decode_list_prim_u_8_strict(deserializer);
+var var_signingPubkey = sse_decode_list_prim_u_8_strict(deserializer);
+var var_dhPubkey = sse_decode_list_prim_u_8_strict(deserializer);
+var var_pairedAtUnixSecs = sse_decode_i_64(deserializer);
+var var_nickname = sse_decode_opt_String(deserializer);
+return ContactDto(deviceId: var_deviceId, signingPubkey: var_signingPubkey, dhPubkey: var_dhPubkey, pairedAtUnixSecs: var_pairedAtUnixSecs, nickname: var_nickname); }
+
+@protected DeliveryStateDto sse_decode_delivery_state_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DeliveryStateDto.values[inner]; }
+
+@protected DiscoveryBeaconsDto sse_decode_discovery_beacons_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_advertiseBeacon = sse_decode_list_prim_u_8_strict(deserializer);
+var var_scanBeacons = sse_decode_list_list_prim_u_8_strict(deserializer);
+return DiscoveryBeaconsDto(advertiseBeacon: var_advertiseBeacon, scanBeacons: var_scanBeacons); }
+
+@protected FfiError sse_decode_ffi_error(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return FfiError.values[inner]; }
+
+@protected FileOfferDto sse_decode_file_offer_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+var var_name = sse_decode_String(deserializer);
+var var_fileSize = sse_decode_u_64(deserializer);
+return FileOfferDto(fileId: var_fileId, name: var_name, fileSize: var_fileSize); }
+
+@protected int sse_decode_i_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getInt32(); }
+
+@protected PlatformInt64 sse_decode_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getPlatformInt64(); }
+
+@protected IncomingMessageDto sse_decode_incoming_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_messageId = sse_decode_opt_box_autoadd_i_64(deserializer);
+var var_body = sse_decode_String(deserializer);
+var var_isTyping = sse_decode_bool(deserializer);
+var var_receivedAtUnixSecs = sse_decode_i_64(deserializer);
+return IncomingMessageDto(messageId: var_messageId, body: var_body, isTyping: var_isTyping, receivedAtUnixSecs: var_receivedAtUnixSecs); }
+
+@protected IngestedChunkDto sse_decode_ingested_chunk_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+var var_progress = sse_decode_transfer_progress_dto(deserializer);
+return IngestedChunkDto(fileId: var_fileId, progress: var_progress); }
+
+@protected List<String> sse_decode_list_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <String>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_String(deserializer)); }
+        return ans_;
+         }
+
+@protected List<ContactDto> sse_decode_list_contact_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <ContactDto>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_contact_dto(deserializer)); }
+        return ans_;
+         }
+
+@protected List<FileOfferDto> sse_decode_list_file_offer_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <FileOfferDto>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_file_offer_dto(deserializer)); }
+        return ans_;
+         }
+
+@protected List<Uint8List> sse_decode_list_list_prim_u_8_strict(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <Uint8List>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_list_prim_u_8_strict(deserializer)); }
+        return ans_;
+         }
+
+@protected List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <MessageDto>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_message_dto(deserializer)); }
+        return ans_;
+         }
+
+@protected List<int> sse_decode_list_prim_u_8_loose(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var len_ = sse_decode_i_32(deserializer);
+                return deserializer.buffer.getUint8List(len_); }
+
+@protected Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var len_ = sse_decode_i_32(deserializer);
+                return deserializer.buffer.getUint8List(len_); }
+
+@protected List<SealedMessageDto> sse_decode_list_sealed_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <SealedMessageDto>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_sealed_message_dto(deserializer)); }
+        return ans_;
+         }
+
+@protected MessageDirectionDto sse_decode_message_direction_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return MessageDirectionDto.values[inner]; }
+
+@protected MessageDto sse_decode_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_i_64(deserializer);
+var var_direction = sse_decode_message_direction_dto(deserializer);
+var var_kind = sse_decode_message_kind_dto(deserializer);
+var var_body = sse_decode_String(deserializer);
+var var_audioFileId = sse_decode_opt_list_prim_u_8_strict(deserializer);
+var var_deliveryState = sse_decode_delivery_state_dto(deserializer);
+var var_createdAtUnixSecs = sse_decode_i_64(deserializer);
+var var_isEphemeral = sse_decode_bool(deserializer);
+return MessageDto(id: var_id, direction: var_direction, kind: var_kind, body: var_body, audioFileId: var_audioFileId, deliveryState: var_deliveryState, createdAtUnixSecs: var_createdAtUnixSecs, isEphemeral: var_isEphemeral); }
+
+@protected MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return MessageKindDto.values[inner]; }
+
+@protected String? sse_decode_opt_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_String(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected ContactDto? sse_decode_opt_box_autoadd_contact_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_contact_dto(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_i_64(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected IncomingMessageDto? sse_decode_opt_box_autoadd_incoming_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_incoming_message_dto(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_ingested_chunk_dto(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_session_status_dto(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_transfer_progress_dto(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_list_prim_u_8_strict(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected (Uint8List?,Uint8List) sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_field0 = sse_decode_opt_list_prim_u_8_strict(deserializer);
+var var_field1 = sse_decode_list_prim_u_8_strict(deserializer);
+return (var_field0, var_field1); }
+
+@protected SafetyNumberDto sse_decode_safety_number_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_digits = sse_decode_String(deserializer);
+var var_words = sse_decode_String(deserializer);
+return SafetyNumberDto(digits: var_digits, words: var_words); }
+
+@protected SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_messageId = sse_decode_i_64(deserializer);
+var var_bytes = sse_decode_opt_list_prim_u_8_strict(deserializer);
+return SealedMessageDto(messageId: var_messageId, bytes: var_bytes); }
+
+@protected SendAudioStartedDto sse_decode_send_audio_started_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+var var_messageId = sse_decode_i_64(deserializer);
+return SendAudioStartedDto(fileId: var_fileId, sealedMetadata: var_sealedMetadata, messageId: var_messageId); }
+
+@protected SendFileStartedDto sse_decode_send_file_started_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+return SendFileStartedDto(fileId: var_fileId, sealedMetadata: var_sealedMetadata); }
+
+@protected SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return SessionStateKind.values[inner]; }
+
+@protected SessionStatusDto sse_decode_session_status_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_state = sse_decode_session_state_kind(deserializer);
+var var_needsRehandshake = sse_decode_bool(deserializer);
+var var_outgoingHandshake = sse_decode_opt_list_prim_u_8_strict(deserializer);
+return SessionStatusDto(state: var_state, needsRehandshake: var_needsRehandshake, outgoingHandshake: var_outgoingHandshake); }
+
+@protected SignalingTopicsDto sse_decode_signaling_topics_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_publishTopic = sse_decode_String(deserializer);
+var var_subscribeTopics = sse_decode_list_String(deserializer);
+return SignalingTopicsDto(publishTopic: var_publishTopic, subscribeTopics: var_subscribeTopics); }
+
+@protected TransferProgressDto sse_decode_transfer_progress_dto(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_blocksDone = sse_decode_u_32(deserializer);
+var var_totalBlocks = sse_decode_u_32(deserializer);
+var var_bytesDone = sse_decode_u_64(deserializer);
+var var_isComplete = sse_decode_bool(deserializer);
+return TransferProgressDto(blocksDone: var_blocksDone, totalBlocks: var_totalBlocks, bytesDone: var_bytesDone, isComplete: var_isComplete); }
+
+@protected int sse_decode_u_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint32(); }
+
+@protected BigInt sse_decode_u_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getBigUint64(); }
+
+@protected int sse_decode_u_8(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint8(); }
+
+@protected void sse_decode_unit(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+ }
+
+@protected BigInt sse_decode_usize(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getBigUint64(); }
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as CoreImpl).frbInternalSseEncode(move: true), serializer); }
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as CoreImpl).frbInternalSseEncode(move: false), serializer); }
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(Core self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as CoreImpl).frbInternalSseEncode(move: null), serializer); }
+
+@protected void sse_encode_String(String self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer); }
+
+@protected void sse_encode_bool(bool self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint8(self ? 1 : 0); }
+
+@protected void sse_encode_box_autoadd_contact_dto(ContactDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_contact_dto(self, serializer); }
+
+@protected void sse_encode_box_autoadd_i_64(PlatformInt64 self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_64(self, serializer); }
+
+@protected void sse_encode_box_autoadd_incoming_message_dto(IncomingMessageDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_incoming_message_dto(self, serializer); }
+
+@protected void sse_encode_box_autoadd_ingested_chunk_dto(IngestedChunkDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_ingested_chunk_dto(self, serializer); }
+
+@protected void sse_encode_box_autoadd_session_status_dto(SessionStatusDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_session_status_dto(self, serializer); }
+
+@protected void sse_encode_box_autoadd_transfer_progress_dto(TransferProgressDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_transfer_progress_dto(self, serializer); }
+
+@protected void sse_encode_contact_dto(ContactDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.deviceId, serializer);
+sse_encode_list_prim_u_8_strict(self.signingPubkey, serializer);
+sse_encode_list_prim_u_8_strict(self.dhPubkey, serializer);
+sse_encode_i_64(self.pairedAtUnixSecs, serializer);
+sse_encode_opt_String(self.nickname, serializer);
+ }
+
+@protected void sse_encode_delivery_state_dto(DeliveryStateDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_discovery_beacons_dto(DiscoveryBeaconsDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.advertiseBeacon, serializer);
+sse_encode_list_list_prim_u_8_strict(self.scanBeacons, serializer);
+ }
+
+@protected void sse_encode_ffi_error(FfiError self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_file_offer_dto(FileOfferDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+sse_encode_String(self.name, serializer);
+sse_encode_u_64(self.fileSize, serializer);
+ }
+
+@protected void sse_encode_i_32(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putInt32(self); }
+
+@protected void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putPlatformInt64(self); }
+
+@protected void sse_encode_incoming_message_dto(IncomingMessageDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_box_autoadd_i_64(self.messageId, serializer);
+sse_encode_String(self.body, serializer);
+sse_encode_bool(self.isTyping, serializer);
+sse_encode_i_64(self.receivedAtUnixSecs, serializer);
+ }
+
+@protected void sse_encode_ingested_chunk_dto(IngestedChunkDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+sse_encode_transfer_progress_dto(self.progress, serializer);
+ }
+
+@protected void sse_encode_list_String(List<String> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_String(item, serializer); } }
+
+@protected void sse_encode_list_contact_dto(List<ContactDto> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_contact_dto(item, serializer); } }
+
+@protected void sse_encode_list_file_offer_dto(List<FileOfferDto> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_file_offer_dto(item, serializer); } }
+
+@protected void sse_encode_list_list_prim_u_8_strict(List<Uint8List> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_list_prim_u_8_strict(item, serializer); } }
+
+@protected void sse_encode_list_message_dto(List<MessageDto> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_message_dto(item, serializer); } }
+
+@protected void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+                    serializer.buffer.putUint8List(self is Uint8List ? self : Uint8List.fromList(self)); }
+
+@protected void sse_encode_list_prim_u_8_strict(Uint8List self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+                    serializer.buffer.putUint8List(self); }
+
+@protected void sse_encode_list_sealed_message_dto(List<SealedMessageDto> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_sealed_message_dto(item, serializer); } }
+
+@protected void sse_encode_message_direction_dto(MessageDirectionDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_message_dto(MessageDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_64(self.id, serializer);
+sse_encode_message_direction_dto(self.direction, serializer);
+sse_encode_message_kind_dto(self.kind, serializer);
+sse_encode_String(self.body, serializer);
+sse_encode_opt_list_prim_u_8_strict(self.audioFileId, serializer);
+sse_encode_delivery_state_dto(self.deliveryState, serializer);
+sse_encode_i_64(self.createdAtUnixSecs, serializer);
+sse_encode_bool(self.isEphemeral, serializer);
+ }
+
+@protected void sse_encode_message_kind_dto(MessageKindDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_opt_String(String? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_String(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_contact_dto(ContactDto? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_contact_dto(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_i_64(PlatformInt64? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_i_64(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_incoming_message_dto(IncomingMessageDto? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_incoming_message_dto(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_ingested_chunk_dto(IngestedChunkDto? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_ingested_chunk_dto(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_session_status_dto(SessionStatusDto? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_session_status_dto(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_transfer_progress_dto(TransferProgressDto? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_transfer_progress_dto(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_list_prim_u_8_strict(Uint8List? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_list_prim_u_8_strict(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict((Uint8List?,Uint8List) self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_list_prim_u_8_strict(self.$1, serializer);
+sse_encode_list_prim_u_8_strict(self.$2, serializer);
+ }
+
+@protected void sse_encode_safety_number_dto(SafetyNumberDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.digits, serializer);
+sse_encode_String(self.words, serializer);
+ }
+
+@protected void sse_encode_sealed_message_dto(SealedMessageDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_64(self.messageId, serializer);
+sse_encode_opt_list_prim_u_8_strict(self.bytes, serializer);
+ }
+
+@protected void sse_encode_send_audio_started_dto(SendAudioStartedDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
+sse_encode_i_64(self.messageId, serializer);
+ }
+
+@protected void sse_encode_send_file_started_dto(SendFileStartedDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
+ }
+
+@protected void sse_encode_session_state_kind(SessionStateKind self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_session_status_dto(SessionStatusDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_session_state_kind(self.state, serializer);
+sse_encode_bool(self.needsRehandshake, serializer);
+sse_encode_opt_list_prim_u_8_strict(self.outgoingHandshake, serializer);
+ }
+
+@protected void sse_encode_signaling_topics_dto(SignalingTopicsDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.publishTopic, serializer);
+sse_encode_list_String(self.subscribeTopics, serializer);
+ }
+
+@protected void sse_encode_transfer_progress_dto(TransferProgressDto self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self.blocksDone, serializer);
+sse_encode_u_32(self.totalBlocks, serializer);
+sse_encode_u_64(self.bytesDone, serializer);
+sse_encode_bool(self.isComplete, serializer);
+ }
+
+@protected void sse_encode_u_32(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint32(self); }
+
+@protected void sse_encode_u_64(BigInt self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putBigUint64(self); }
+
+@protected void sse_encode_u_8(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint8(self); }
+
+@protected void sse_encode_unit(void self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+ }
+
+@protected void sse_encode_usize(BigInt self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putBigUint64(self); }
+                }
+                
+
+            @sealed class CoreImpl extends RustOpaque implements Core {
+                // Not to be used by end users
+                CoreImpl.frbInternalDcoDecode(List<dynamic> wire):
+                    super.frbInternalDcoDecode(wire, _kStaticData);
+
+                // Not to be used by end users
+                CoreImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):
+                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+                static final _kStaticData = RustArcStaticData(
+                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_Core,
+                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_Core,
+                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_CorePtr,
+                );
+
+                /// Cancela uma transferência (de qualquer lado): remove o handle em
+/// memória e o registro em `store`. Do lado receptor, também apaga o
+/// `.staging` — mesma garantia de "abortar destrói a chave" de
+/// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
+/// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
+/// foi fechado a cada bloco completado). Ver §7.5/D15.
+ Future<void>  cancelTransfer({required List<int> fileId })=>RustLib.instance.api.crateFfiCoreCoreCancelTransfer(that: this, fileId: fileId);
+
+
+/// Decodifica o formato interno devolvido por
+/// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
+/// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
+/// não Ogg-Opus remontado: `AVPlayer` (iOS) não demuxa Ogg de jeito
+/// nenhum, com ou sem suporte a Opus (D18).
+ Future<Uint8List>  decodeAudioToWav({required List<int> internalBytes })=>RustLib.instance.api.crateFfiCoreCoreDecodeAudioToWav(that: this, internalBytes: internalBytes);
+
+
+/// Decifra um envelope recebido no `DataChannel`.
+///
+/// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
+/// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
+/// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
+/// DTO efêmero, sem `message_id`.
+///
+/// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
+/// processados aqui como efeito colateral — inicia/atualiza/encerra o
+/// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
+/// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
+/// deste método para acomodar isso quebraria `chat_controller.dart`
+/// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
+/// `Core::pending_file_offers` depois. Falha ao processar um desses três
+/// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
+/// política de silêncio de qualquer corpo malformado nesta fronteira, e
+/// nunca deveria acontecer vindo de um par honesto.
+///
+/// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
+/// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
+/// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
+ Future<IncomingMessageDto?>  decryptIncoming({required List<int> peerDeviceId , required List<int> envelope })=>RustLib.instance.api.crateFfiCoreCoreDecryptIncoming(that: this, peerDeviceId: peerDeviceId, envelope: envelope);
+
+
+/// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
+/// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
+/// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+ Future<DiscoveryBeaconsDto>  discoveryBeacons({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreDiscoveryBeacons(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
+/// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+ Future<void>  emergencyErase()=>RustLib.instance.api.crateFfiCoreCoreEmergencyErase(that: this, );
+
+
+/// Abre (ou devolve, se já existir) a sessão com um contato pareado.
+///
+/// Idempotente: chamadas repetidas para o mesmo contato nunca reabrem o
+/// handshake. `outgoing_handshake` vem preenchido em toda chamada feita
+/// enquanto formos iniciador e ainda não tivermos recebido a RESP — não
+/// só na primeira — porque mais de uma parte do app pode precisar desses
+/// bytes em momentos diferentes (o transporte WebRTC, para decidir quem
+/// oferta o SDP; o controlador de chat, para de fato publicar a mensagem
+/// de handshake assim que o canal abrir). Ver
+/// `viska_proto::session::Session::pending_outgoing_handshake`.
+ Future<SessionStatusDto>  ensureSession({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreEnsureSession(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Alimenta a sessão com uma mensagem de handshake recebida via
+/// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
+/// de resposta a publicar, se houver.
+///
+/// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
+/// sido chamado antes para este contato — este método nunca cria uma
+/// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
+/// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
+/// errado dependendo só de qual mensagem chegou primeiro.
+ Future<Uint8List?>  feedHandshake({required List<int> peerDeviceId , required List<int> bytes })=>RustLib.instance.api.crateFfiCoreCoreFeedHandshake(that: this, peerDeviceId: peerDeviceId, bytes: bytes);
+
+
+/// Como [`Core::finish_receive_file`] — `destination_path` recebe o
+/// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
+/// chama remonta o contêiner para reprodução (ver
+/// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
+ Future<Uint8List>  finishReceiveAudio({required List<int> peerDeviceId , required List<int> fileId , required String destinationPath })=>RustLib.instance.api.crateFfiCoreCoreFinishReceiveAudio(that: this, peerDeviceId: peerDeviceId, fileId: fileId, destinationPath: destinationPath);
+
+
+/// Fecha um recebimento completo: verifica a raiz Merkle inteira,
+/// decifra para `destination_path`, remove o `.staging` e o registro em
+/// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
+/// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
+/// emissor pelo canal `control`.
+ Future<Uint8List>  finishReceiveFile({required List<int> peerDeviceId , required List<int> fileId , required String destinationPath })=>RustLib.instance.api.crateFfiCoreCoreFinishReceiveFile(that: this, peerDeviceId: peerDeviceId, fileId: fileId, destinationPath: destinationPath);
+
+
+/// Cifra todas as mensagens `pending` de um contato — chamar quando o
+/// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
+/// estabelecer. Para na primeira falha de cifragem (ex.:
+/// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
+/// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
+/// ordem de entrega.
+ Future<List<SealedMessageDto>>  flushPending({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreFlushPending(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Consulta o TTL efêmero configurado para o contato.
+ Future<PlatformInt64>  getEphemeralTtl({required List<int> contactDeviceId })=>RustLib.instance.api.crateFfiCoreCoreGetEphemeralTtl(that: this, contactDeviceId: contactDeviceId);
+
+
+/// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
+/// sozinho a qual transferência ele pertence (D17: `file_id` vai em
+/// claro na frente, ver `peek_wire_file_id`) e roteia para a
+/// `ReceiveTransfer` certa. `Ok(None)` para um `file_id` desconhecido —
+/// pode ser um pacote de uma transferência já concluída/cancelada, ou
+/// que chegou antes do `FILE_METADATA` correspondente terminar de
+/// processar; nunca um erro, porque nenhum dos dois é sinal de mau uso
+/// de quem chama. Serve arquivo e áudio por igual.
+ Future<IngestedChunkDto?>  ingestIncomingWireBytes({required List<int> wireBytes })=>RustLib.instance.api.crateFfiCoreCoreIngestIncomingWireBytes(that: this, wireBytes: wireBytes);
+
+
+/// Informa se a Core está trancada.
+ Future<bool>  isLocked()=>RustLib.instance.api.crateFfiCoreCoreIsLocked(that: this, );
+
+
+/// Todos os contatos já pareados.
+ Future<List<ContactDto>>  listContacts()=>RustLib.instance.api.crateFfiCoreCoreListContacts(that: this, );
+
+
+/// Todas as mensagens já trocadas com um contato, mais antigas primeiro
+/// — histórico completo para a tela de chat abrir com.
+ Future<List<MessageDto>>  listMessages({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreListMessages(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
+/// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+/// limpa a chave mestra nativa injetada.
+ Future<void>  lock()=>RustLib.instance.api.crateFfiCoreCoreLock(that: this, );
+
+
+/// Marca uma mensagem como lida, disparando o temporizador de expiração.
+ Future<void>  markMessageRead({required PlatformInt64 messageId })=>RustLib.instance.api.crateFfiCoreCoreMarkMessageRead(that: this, messageId: messageId);
+
+
+/// Marca uma mensagem de saída como entregue ao transporte — chamar só
+/// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
+/// lançar erro.
+ Future<void>  markMessageSent({required PlatformInt64 messageId })=>RustLib.instance.api.crateFfiCoreCoreMarkMessageSent(that: this, messageId: messageId);
+
+
+/// Identifica a qual contato pareado um `BeaconID` recebido do rádio
+/// pertence — varre todos os contatos e compara a janela de três épocas
+/// de cada um. Fica em Rust porque só aqui há a identidade privada
+/// necessária para recalcular `K_sig` de qualquer contato arbitrário; o
+/// Dart nunca vê `K_sig`, só o resultado do casamento.
+ Future<ContactDto?>  matchDiscoveredBeacon({required List<int> beacon })=>RustLib.instance.api.crateFfiCoreCoreMatchDiscoveredBeacon(that: this, beacon: beacon);
+
+
+/// `device_id` desta identidade local — dado já público (trocado no QR,
+/// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
+/// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+/// dele até a descoberta local.
+ Future<Uint8List>  myDeviceId()=>RustLib.instance.api.crateFfiCoreCoreMyDeviceId(that: this, );
+
+
+/// Os 145 bytes do QR Code desta identidade.
+ Future<Uint8List>  myQrPayload()=>RustLib.instance.api.crateFfiCoreCoreMyQrPayload(that: this, );
+
+
+/// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
+/// `K_symbol`/`K_audio_chunk` e prefixado com `file_id` em claro (D17,
+/// contorna `Session`, ver doc do módulo). `Ok(None)` quando o
+/// `file_id` não é uma transferência de envio conhecida (já terminou,
+/// ou nunca existiu) ou quando o emissor esgotou o que tinha a mandar
+/// para o estado atual. Serve arquivo e áudio por igual — nada aqui
+/// depende de `kind`.
+ Future<Uint8List?>  nextOutgoingWireChunk({required List<int> fileId })=>RustLib.instance.api.crateFfiCoreCoreNextOutgoingWireChunk(that: this, fileId: fileId);
+
+
+/// Decifra um payload de sinalização recebido do broker.
+///
+/// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
+/// inválida — sem distinguir a causa, mesma política de
+/// `Session::decrypt_incoming` para não abrir oráculo a um broker não
+/// confiável.
+ Future<Uint8List?>  openSignalingPayload({required List<int> peerDeviceId , required List<int> sealed })=>RustLib.instance.api.crateFfiCoreCoreOpenSignalingPayload(that: this, peerDeviceId: peerDeviceId, sealed: sealed);
+
+
+/// Valida o payload lido pela câmera e persiste o contato.
+ Future<ContactDto>  pairFromQr({required List<int> payload })=>RustLib.instance.api.crateFfiCoreCorePairFromQr(that: this, payload: payload);
+
+
+/// Como [`Core::pending_file_offers`], só `kind = Audio` (Fase 5, D16).
+ Future<List<FileOfferDto>>  pendingAudioOffers({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCorePendingAudioOffers(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Ofertas de arquivo recebidas de um contato, ainda não concluídas —
+/// para a UI listar e (por ora, automaticamente — ver doc do módulo)
+/// já em recebimento. Só `kind = File`; ver
+/// [`Core::pending_audio_offers`] para notas de voz.
+ Future<List<FileOfferDto>>  pendingFileOffers({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCorePendingFileOffers(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Safety number entre esta identidade e um contato já pareado.
+ Future<SafetyNumberDto>  safetyNumber({required List<int> contactDeviceId })=>RustLib.instance.api.crateFfiCoreCoreSafetyNumber(that: this, contactDeviceId: contactDeviceId);
+
+
+/// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
+/// metadados) e grava, em `destination_path`, só o formato interno de
+/// `RawOpusStream::encode` — canais, taxa, pre-skip e pacotes crus, sem
+/// nenhum comentário do gravador original (Fase 5, F1, D16). Falha alto
+/// (`Error::Malformed`) em vez de aceitar um Ogg malformado em
+/// silêncio — mesma política do resto do crate para bytes externos.
+ Future<void>  sanitizeAndStageAudio({required String sourcePath , required String destinationPath })=>RustLib.instance.api.crateFfiCoreCoreSanitizeAndStageAudio(that: this, sourcePath: sourcePath, destinationPath: destinationPath);
+
+
+/// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
+/// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
+/// mesmo que o transporte esteja indisponível no momento da chamada.
+///
+/// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
+/// `Established`: a mensagem já está persistida, e `flush_pending` a
+/// entrega assim que a sessão ficar pronta.
+ Future<SealedMessageDto>  sealOutgoingText({required List<int> peerDeviceId , required String body })=>RustLib.instance.api.crateFfiCoreCoreSealOutgoingText(that: this, peerDeviceId: peerDeviceId, body: body);
+
+
+/// Cifra um payload de sinalização (SDP ou candidato ICE já
+/// serializado) para publicar — sempre exatamente 1024 B.
+ Future<Uint8List>  sealSignalingPayload({required List<int> peerDeviceId , required List<int> payloadBytes })=>RustLib.instance.api.crateFfiCoreCoreSealSignalingPayload(that: this, peerDeviceId: peerDeviceId, payloadBytes: payloadBytes);
+
+
+/// Status atual da sessão com um contato, sem alterar nada — `None` se
+/// `ensure_session` nunca foi chamado para ele.
+ Future<SessionStatusDto?>  sessionStatus({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreSessionStatus(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Define o tempo de expiração (TTL em segundos) para mensagens efêmeras com o contato.
+ Future<void>  setEphemeralTtl({required List<int> contactDeviceId , required PlatformInt64 ttlSecs })=>RustLib.instance.api.crateFfiCoreCoreSetEphemeralTtl(that: this, contactDeviceId: contactDeviceId, ttlSecs: ttlSecs);
+
+
+/// Tópico para publicar agora (época corrente, nossa direção) e os três
+/// tópicos para assinar (épocas anterior/atual/seguinte, direção do
+/// par) — `docs/protocol.md` §8.1.
+ Future<SignalingTopicsDto>  signalingTopics({required List<int> peerDeviceId })=>RustLib.instance.api.crateFfiCoreCoreSignalingTopics(that: this, peerDeviceId: peerDeviceId);
+
+
+/// Como [`Core::start_send_file`], mas para uma nota de voz — `kind =
+/// Audio` (Fase 5, D16) seleciona `K_audio_chunk` em vez de `K_symbol`.
+/// `audio_path` deve apontar para um arquivo já no formato interno de
+/// `viska_proto::file::opus_container::RawOpusStream::encode` (ver
+/// `Core::sanitize_and_stage_audio`) — nunca o Ogg cru que o gravador
+/// produziu, que ainda carregaria `OpusTags` com metadados de
+/// aparelho. Também insere a linha `Pending` na timeline única
+/// (`store::messages`) — `message_id` no DTO devolvido é para quem
+/// chama marcar `Sent` depois (`Core::mark_message_sent`), mesmo padrão
+/// de `seal_outgoing_text`.
+ Future<SendAudioStartedDto>  startSendAudio({required List<int> peerDeviceId , required String audioPath , required bool useLan })=>RustLib.instance.api.crateFfiCoreCoreStartSendAudio(that: this, peerDeviceId: peerDeviceId, audioPath: audioPath, useLan: useLan);
+
+
+/// Inicia o envio de um arquivo para um contato pareado com sessão já
+/// estabelecida. Lê o arquivo inteiro uma vez para calcular a raiz de
+/// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
+/// precisa da raiz completa antes do primeiro símbolo sair.
+///
+/// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+/// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
+/// `block_symbols` é sempre o teto de D6 (1024).
+ Future<SendFileStartedDto>  startSendFile({required List<int> peerDeviceId , required String filePath , required bool useLan })=>RustLib.instance.api.crateFfiCoreCoreStartSendFile(that: this, peerDeviceId: peerDeviceId, filePath: filePath, useLan: useLan);
+
+
+/// Varre e destrói chaves de mensagens efêmeras expiradas.
+ Future<int>  sweepExpiredMessages()=>RustLib.instance.api.crateFfiCoreCoreSweepExpiredMessages(that: this, );
+
+
+/// Progresso de uma transferência conhecida, de qualquer lado (arquivo
+/// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
+ Future<TransferProgressDto?>  transferProgress({required List<int> fileId })=>RustLib.instance.api.crateFfiCoreCoreTransferProgress(that: this, fileId: fileId);
+
+
+/// Destranca a Core após autenticação bem-sucedida: recarrega a chave
+/// mestre e reabre a conexão do SQLCipher.
+ Future<void>  unlock()=>RustLib.instance.api.crateFfiCoreCoreUnlock(that: this, );
+
+
+            }

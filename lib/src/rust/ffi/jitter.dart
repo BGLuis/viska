@@ -7,8 +7,13 @@ import '../frb_generated.dart';
 import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Atraso a aplicar antes do próximo envio, em milissegundos — normal
+
+            
+
+            /// Atraso a aplicar antes do próximo envio, em milissegundos — normal
 /// truncada em [5, 25] ms (§6.5). Chamar de novo a cada mensagem: o valor
 /// não deve ser reaproveitado entre envios.
-Future<BigInt> sampleJitterDelayMs() =>
-    RustLib.instance.api.crateFfiJitterSampleJitterDelayMs();
+Future<BigInt>  sampleJitterDelayMs() => RustLib.instance.api.crateFfiJitterSampleJitterDelayMs();
+
+            
+            
