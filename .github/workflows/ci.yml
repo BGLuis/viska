@@ -51,6 +51,8 @@ jobs:
 
       - name: Instalar Rust para compilação FFI
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
 
       - name: Obter dependências Flutter
         run: flutter pub get
@@ -62,7 +64,7 @@ jobs:
         run: flutter test
 
       - name: Build do APK em modo Release
-        run: flutter build apk --release
+        run: flutter build apk --release --target-platform android-arm64,android-x64
 
       - name: Auditoria de Segurança e Zero Telemetria no APK
         run: |
@@ -74,6 +76,6 @@ jobs:
           HASH1=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
           echo "Hash do build 1: ${HASH1}"
           # Rebuild e comparação de componentes determinísticos
-          flutter build apk --release
+          flutter build apk --release --target-platform android-arm64,android-x64
           HASH2=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
           echo "Hash do build 2: ${HASH2}"

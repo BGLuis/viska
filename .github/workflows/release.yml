@@ -35,12 +35,14 @@ jobs:
 
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
 
       - name: Obter dependências Flutter
         run: flutter pub get
 
       - name: Compilar APK (Release)
-        run: flutter build apk --release
+        run: flutter build apk --release --target-platform android-arm64,android-x64
 
       - name: Preparar artefato Android
         run: cp build/app/outputs/flutter-apk/app-release.apk viska-android.apk
@@ -59,6 +61,9 @@ jobs:
       - name: Checkout do código
         uses: actions/checkout@v4
 
+      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
+        run: brew install autoconf automake libtool
+
       - name: Configurar Rust e alvos iOS
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,6 +74,9 @@ jobs:
         with:
           channel: 'stable'
           cache: true
+
+      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
+        run: flutter config --no-enable-swift-package-manager
 
       - name: Configurar Ruby e CocoaPods
         uses: ruby/setup-ruby@v1

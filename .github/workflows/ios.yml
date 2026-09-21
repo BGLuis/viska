@@ -41,6 +41,9 @@ jobs:
       - name: Checkout do código
         uses: actions/checkout@v4
 
+      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
+        run: brew install autoconf automake libtool
+
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,6 +54,9 @@ jobs:
         with:
           channel: 'stable'
           cache: true
+
+      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
+        run: flutter config --no-enable-swift-package-manager
 
       - name: Configurar Ruby e Bundler
         uses: ruby/setup-ruby@v1
@@ -82,6 +88,9 @@ jobs:
       - name: Checkout do código
         uses: actions/checkout@v4
 
+      - name: Instalar Autotools (necessário para compilação do Opus no iOS)
+        run: brew install autoconf automake libtool
+
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -92,6 +101,9 @@ jobs:
         with:
           channel: 'stable'
           cache: true
+
+      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
+        run: flutter config --no-enable-swift-package-manager
 
       - name: Configurar Ruby e Bundler
         uses: ruby/setup-ruby@v1
