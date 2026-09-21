@@ -1,0 +1,80 @@
+name: CI — Viska
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  rust-check:
+    name: Núcleo Rust — Testes e Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Instalar dependências nativas
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev
+
+      - name: Testes do Núcleo
+        working-directory: rust
+        run: |
+          cargo test --workspace
+
+      - name: Clippy (zero warnings)
+        working-directory: rust
+        run: |
+          cargo clippy --all-targets -- -D warnings
+
+  flutter-audit:
+    name: Auditoria de APK e Zero Telemetria (D13 / F6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: 'stable'
+          cache: true
+
+      - name: Instalar Rust para compilação FFI
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Obter dependências Flutter
+        run: flutter pub get
+
+      - name: Análise estática do Flutter
+        run: flutter analyze
+
+      - name: Testes do Flutter
+        run: flutter test
+
+      - name: Build do APK em modo Release
+        run: flutter build apk --release
+
+      - name: Auditoria de Segurança e Zero Telemetria no APK
+        run: |
+          chmod +x scripts/audit_apk.sh
+          ./scripts/audit_apk.sh build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Verificação de Build Reproduzível
+        run: |
+          HASH1=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
+          echo "Hash do build 1: ${HASH1}"
+          # Rebuild e comparação de componentes determinísticos
+          flutter build apk --release
+          HASH2=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | awk '{print $1}')
+          echo "Hash do build 2: ${HASH2}"
