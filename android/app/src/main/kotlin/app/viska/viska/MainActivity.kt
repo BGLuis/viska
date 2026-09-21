@@ -1,9 +1,18 @@
 package app.viska.viska
 
-import io.flutter.embedding.android.FlutterActivity
+import android.os.Bundle
+import android.view.WindowManager
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // FLAG_SECURE ligado por padrão (Fase 7, F0 / D13) — protege contra captura
+        // de tela e oculta a miniatura da tela no seletor de aplicativos recentes.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
@@ -13,5 +22,7 @@ class MainActivity : FlutterActivity() {
         // se usa o canal, o registro em si não exige o rádio presente.
         BleAdvertiserPlugin.register(messenger, applicationContext)
         WifiAwarePlugin.register(messenger, applicationContext)
+        // Canal de segurança de plataforma — Fase 7, F0/F1/F2.
+        SecurityPlugin.register(messenger, this)
     }
 }
