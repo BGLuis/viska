@@ -2,7 +2,7 @@ name: CI/CD iOS — Viska
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop, developer ]
     paths:
       - 'ios/**'
       - 'rust/**'
@@ -11,7 +11,7 @@ on:
       - 'pubspec.yaml'
       - '.github/workflows/ios.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, developer ]
     paths:
       - 'ios/**'
       - 'rust/**'

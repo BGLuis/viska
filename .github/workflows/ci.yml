@@ -2,9 +2,9 @@ name: CI — Viska
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop, developer ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, developer ]
 
 jobs:
   rust-check:

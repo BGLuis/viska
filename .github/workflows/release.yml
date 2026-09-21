@@ -2,12 +2,11 @@ name: Releases Automatizadas (Android & iOS)
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Nome da tag da release (ex: v0.1.0)'
+        description: 'Nome customizado da tag (opcional, ex: v0.1.0)'
         required: false
         default: ''
 
@@ -107,6 +106,11 @@ jobs:
     needs: [build-android, build-ios]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Baixar artefato Android
         uses: actions/download-artifact@v4
         with:
@@ -122,22 +126,27 @@ jobs:
           sha256sum viska-android.apk viska-ios-unsigned.ipa > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Determinar identificador da Tag
+      - name: Determinar identificador da Tag a partir do pubspec.yaml
         id: tag_info
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"
-          elif [ -n "${{ inputs.tag_name }}" ]; then
+          if [ -n "${{ inputs.tag_name }}" ]; then
             TAG="${{ inputs.tag_name }}"
           else
-            TAG="v$(date +'%Y.%m.%d-%H%M')"
+            VERSION=$(grep '^version: ' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+            TAG="v${VERSION}"
+            git fetch --tags || true
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              TAG="${TAG}-build.${{ github.run_number }}"
+            fi
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Versão definida para a Release: ${TAG}"
 
       - name: Criar Release e Anexar Binários
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag_info.outputs.tag }}
+          name: Viska ${{ steps.tag_info.outputs.tag }}
           files: |
             viska-android.apk
             viska-ios-unsigned.ipa
