@@ -85,29 +85,35 @@ class _NoopVoicePlayer implements VoicePlayer {
 }
 
 void main() {
-  late String soPath;
+  final candidates = [
+    'rust/target/debug/libviska_core.so',
+    'build/linux/x64/release/bundle/lib/libviska_core.so',
+  ];
+  final soPath = candidates.cast<String?>().firstWhere(
+    (p) => File(p!).existsSync(),
+    orElse: () => null,
+  );
+  final skipE2E = soPath == null
+      ? 'libviska_core.so não encontrada. Execute `cargo build` no diretório rust/ para habilitar os testes E2E.'
+      : null;
+
   late Directory tempDirAlice;
   late Directory tempDirBob;
   late Core coreAlice;
   late Core coreBob;
 
   setUpAll(() async {
-    final candidates = [
-      'rust/target/debug/libviska_core.so',
-      'build/linux/x64/release/bundle/lib/libviska_core.so',
-    ];
-    soPath = candidates.firstWhere(
-      (p) => File(p).existsSync(),
-      orElse: () => 'build/linux/x64/release/bundle/lib/libviska_core.so',
-    );
-    try {
-      await RustLib.init(externalLibrary: ExternalLibrary.open(File(soPath).absolute.path));
-    } catch (_) {
-      // Já inicializado
+    if (soPath != null) {
+      try {
+        await RustLib.init(externalLibrary: ExternalLibrary.open(File(soPath).absolute.path));
+      } catch (_) {
+        // Já inicializado
+      }
     }
   });
 
   setUp(() async {
+    if (soPath == null) return;
     tempDirAlice = Directory.systemTemp.createTempSync('viska-e2e-alice');
     tempDirBob = Directory.systemTemp.createTempSync('viska-e2e-bob');
 
@@ -116,6 +122,7 @@ void main() {
   });
 
   tearDown(() async {
+    if (soPath == null) return;
     coreAlice.dispose();
     coreBob.dispose();
 
@@ -177,7 +184,7 @@ void main() {
     expect(snAlice.digits.replaceAll(' ', '').length, 60);
     expect(snBob.digits.replaceAll(' ', '').length, 60);
     expect(snAlice.digits, equals(snBob.digits), reason: 'Safety numbers devem ser rigorosamente idênticos dos dois lados');
-  });
+  }, skip: skipE2E);
 
   test('E2E: Estabelecimento de sessão pós-quântica e troca de mensagens cifradas', () async {
     // 1. Pareamento prévio dos dois nós
@@ -288,7 +295,7 @@ void main() {
     // Limpeza dos controladores
     controllerAlice.dispose();
     controllerBob.dispose();
-  });
+  }, skip: skipE2E);
 }
 
 bool _bytesEqual(List<int> a, List<int> b) {

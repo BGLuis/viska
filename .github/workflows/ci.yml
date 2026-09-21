@@ -54,13 +54,31 @@ jobs:
         working-directory: rust
         run: cargo build --no-default-features
 
+      - name: Compilar biblioteca nativa (cdylib)
+        working-directory: rust
+        run: cargo build
+
+      - name: Upload da biblioteca nativa Rust (para testes E2E do Flutter)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        with:
+          name: viska-core-linux-x64
+          path: rust/target/debug/libviska_core.so
+          retention-days: 1
+
   flutter-check:
     name: Flutter — Análise Estática e Testes
+    needs: [rust-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout do código
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Baixar biblioteca nativa Rust
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
+        with:
+          name: viska-core-linux-x64
+          path: rust/target/debug/
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
@@ -79,7 +97,7 @@ jobs:
 
   android-audit:
     name: Android — Build APK e Auditoria Zero Telemetria (D13 / F6)
-    needs: [rust-check, flutter-check]
+    needs: [flutter-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
