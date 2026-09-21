@@ -37,9 +37,12 @@ import UIKit
     // (MultipeerConnectivity). Mesmo padrão de
     // `registrar(forPlugin:).messenger()` que todo plugin Flutter usa em
     // `register(with registrar:)`.
-    let bleRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "BleAdvertiser")
-    BleAdvertiser.register(with: bleRegistrar.messenger())
-    let multipeerRegistrar = engineBridge.pluginRegistry.registrar(forPlugin: "MultipeerPlugin")
-    MultipeerPlugin.register(with: multipeerRegistrar.messenger())
+    let registry = engineBridge.pluginRegistry
+    if let bleRegistrar = registry.registrar(forPlugin: "BleAdvertiser") {
+      BleAdvertiser.register(with: bleRegistrar.messenger())
+    }
+    if let multipeerRegistrar = registry.registrar(forPlugin: "MultipeerPlugin") {
+      MultipeerPlugin.register(with: multipeerRegistrar.messenger())
+    }
   }
 }

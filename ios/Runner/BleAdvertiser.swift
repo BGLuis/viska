@@ -65,7 +65,7 @@ class BleAdvertiser: NSObject, CBPeripheralManagerDelegate {
       result(FlutterError(code: "bad_args", message: "serviceUuid inválido", details: nil))
       return
     }
-    pendingServiceUuid = CBUUID(nsuuid: uuid)
+    pendingServiceUuid = CBUUID(string: uuid.uuidString)
     pendingResult = result
     // A publicidade em si só pode começar em `peripheralManagerDidUpdateState`,
     // quando o estado chegar a `.poweredOn` — não dá para anunciar antes disso.

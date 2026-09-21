@@ -35,9 +35,20 @@
 	     nenhum erro visível. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>A rede local é usada para encontrar um contato por perto e transferir mensagens e arquivos diretamente, sem passar por um servidor.</string>
+	<!-- Autenticacao biometrica para o cofre do aplicativo (Fase 7, local_auth) -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>O Face ID é usado para desbloquear o cofre de mensagens e arquivos protegidos.</string>
 	<!-- Descoberta local por BLE (docs/protocol.md §9.1, Fase 6 F2). -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>O Bluetooth é usado para encontrar um contato por perto quando não há rede Wi-Fi em comum.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>O Bluetooth é usado para anunciar a presença local para contatos autorizados.</string>
+	<!-- Execucao em segundo plano para descoberta BLE passiva/ativa -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+	</array>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_viska._tcp</string>
