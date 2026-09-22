@@ -1,9 +1,13 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:viska/src/features/backup/backup_screen.dart';
+import 'package:viska/src/features/backup/restore_screen.dart';
 import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/security_channel.dart';
+import 'package:viska/src/features/settings/proxy_settings_screen.dart';
+import 'package:viska/src/theme/dark_tech_theme.dart';
 
-/// Tela de configurações de segurança e privacidade (Fase 7, F0/F1/F2/F3/F5).
+/// Tela de configurações de segurança, privacidade, rede e backup.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.controller});
 
@@ -46,6 +50,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  void _showDuressPinDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => _DuressPinSetupDialog(
+        controller: widget.controller,
+        onSaved: () => setState(() {}),
+      ),
+    );
+  }
+
   void _showEmergencyEraseDialog() {
     showDialog<void>(
       context: context,
@@ -57,6 +71,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final timeoutSeconds = widget.controller.autoLockTimeout?.inSeconds ?? -1;
+
+    final duressModeText = widget.controller.duressActionMode == 0
+        ? 'Destruição Silenciosa'
+        : 'Cofre Falso (Decoy Vault)';
+
+    final pinStatusSubtitle = widget.controller.hasDuressPin
+        ? 'PIN de Coação ativo ($duressModeText)'
+        : widget.controller.hasNormalPin
+            ? 'PIN Normal configurado (Sem coação)'
+            : 'Nenhum PIN configurado';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Configurações de Segurança')),
@@ -73,6 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: _toggleFlagSecure,
             ),
           const Divider(),
+
           const _SectionHeader(title: 'Bloqueio do Aplicativo'),
           SwitchListTile(
             title: const Text('Bloquear ao suspender'),
@@ -100,6 +125,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           ListTile(
+            leading: const Icon(Icons.pin_outlined),
+            title: const Text('PIN de Coação (Defesa Física)'),
+            subtitle: Text(pinStatusSubtitle),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _showDuressPinDialog,
+          ),
+          ListTile(
             leading: const Icon(Icons.lock_outline),
             title: const Text('Bloquear agora'),
             subtitle: const Text('Zera as sessões em memória e protege o app'),
@@ -109,6 +141,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
           const Divider(),
+
+          const _SectionHeader(title: 'Rede e Anonimato'),
+          ListTile(
+            leading: const Icon(Icons.vpn_lock_outlined, color: DarkTechTheme.primary),
+            title: const Text('Rede e Proxy SOCKS5 (Tor)'),
+            subtitle: const Text('Roteamento anônimo para sinalização via Orbot / Tor'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ProxySettingsScreen(core: widget.controller.activeCore),
+                ),
+              );
+            },
+          ),
+          const Divider(),
+
+          const _SectionHeader(title: 'Backup e Restauração Cifrada'),
+          ListTile(
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('Exportar Backup Cifrado'),
+            subtitle: const Text('Gera contêiner .viskasafe com mnemônico de 24 palavras'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => BackupScreen(core: widget.controller.activeCore),
+                ),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_backup_restore_outlined),
+            title: const Text('Restaurar Backup Cifrado'),
+            subtitle: const Text('Recupera identidade e contatos a partir de arquivo e 24 palavras'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => RestoreScreen(core: widget.controller.activeCore),
+                ),
+              );
+            },
+          ),
+          const Divider(),
+
           const _SectionHeader(title: 'Zona de Perigo'),
           ListTile(
             leading: const Icon(Icons.delete_forever, color: Colors.redAccent),
@@ -151,6 +229,189 @@ class _SectionHeader extends StatelessWidget {
               letterSpacing: 1.1,
             ),
       ),
+    );
+  }
+}
+
+/// Diálogo de configuração de PIN Normal e PIN de Coação (Defesa Física).
+class _DuressPinSetupDialog extends StatefulWidget {
+  const _DuressPinSetupDialog({
+    required this.controller,
+    required this.onSaved,
+  });
+
+  final LockController controller;
+  final VoidCallback onSaved;
+
+  @override
+  State<_DuressPinSetupDialog> createState() => _DuressPinSetupDialogState();
+}
+
+class _DuressPinSetupDialogState extends State<_DuressPinSetupDialog> {
+  final _normalPinController = TextEditingController();
+  final _duressPinController = TextEditingController();
+  late int _actionMode;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _actionMode = widget.controller.duressActionMode;
+  }
+
+  @override
+  void dispose() {
+    _normalPinController.dispose();
+    _duressPinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final normal = _normalPinController.text.trim();
+    final duress = _duressPinController.text.trim();
+
+    if (normal.isNotEmpty && normal.length < 4) {
+      setState(() => _errorText = 'O PIN Normal deve ter pelo menos 4 dígitos.');
+      return;
+    }
+
+    if (duress.isNotEmpty && duress.length < 4) {
+      setState(() => _errorText = 'O PIN de Coação deve ter pelo menos 4 dígitos.');
+      return;
+    }
+
+    if (normal.isNotEmpty && duress.isNotEmpty && normal == duress) {
+      setState(() => _errorText = 'O PIN de Coação deve ser diferente do PIN Normal.');
+      return;
+    }
+
+    if (normal.isNotEmpty) {
+      await widget.controller.setNormalPin(normal);
+    }
+    if (duress.isNotEmpty) {
+      await widget.controller.setDuressPin(duress, actionMode: _actionMode);
+    } else {
+      widget.controller.duressActionMode = _actionMode;
+    }
+
+    widget.onSaved();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  Future<void> _clearPins() async {
+    await widget.controller.setNormalPin(null);
+    await widget.controller.setDuressPin(null);
+    widget.onSaved();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.shield_outlined, color: DarkTechTheme.primary),
+          SizedBox(width: 8),
+          Expanded(child: Text('PIN e Defesa Física')),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'O PIN de Coação (Duress PIN) é uma salvaguarda para quando você é forçado fisicamente '
+              'a desbloquear o aparelho sob ameaça.',
+              style: TextStyle(fontSize: 12, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _normalPinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 8,
+              decoration: InputDecoration(
+                labelText: 'Novo PIN Normal (desbloqueio legítimo)',
+                hintText: widget.controller.hasNormalPin ? '•••• (mantém atual)' : 'Ex: 1234',
+                prefixIcon: const Icon(Icons.pin),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _duressPinController,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              maxLength: 8,
+              decoration: InputDecoration(
+                labelText: 'Novo PIN de Coação (Duress PIN)',
+                hintText: widget.controller.hasDuressPin ? '•••• (mantém atual)' : 'Ex: 9999',
+                prefixIcon: const Icon(Icons.warning_amber_rounded, color: Colors.amber),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'AÇÃO AO DIGITAR O PIN DE COAÇÃO:',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.1,
+                color: DarkTechTheme.textSecondary,
+              ),
+            ),
+            RadioListTile<int>(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Destruição Silenciosa', style: TextStyle(fontSize: 13)),
+              subtitle: const Text(
+                'Apaga chaves e banco imediatamente e fecha o app simulando encerramento inesperado.',
+                style: TextStyle(fontSize: 11),
+              ),
+              value: 0,
+              // ignore: deprecated_member_use
+              groupValue: _actionMode,
+              // ignore: deprecated_member_use
+              onChanged: (val) => setState(() => _actionMode = val ?? 0),
+            ),
+            RadioListTile<int>(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Cofre Falso (Decoy Vault)', style: TextStyle(fontSize: 13)),
+              subtitle: const Text(
+                'Abre um cofre alternativo com histórico inócuo sem revelar a existência dos dados reais.',
+                style: TextStyle(fontSize: 11),
+              ),
+              value: 1,
+              // ignore: deprecated_member_use
+              groupValue: _actionMode,
+              // ignore: deprecated_member_use
+              onChanged: (val) => setState(() => _actionMode = val ?? 1),
+            ),
+            if (_errorText != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                _errorText!,
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        if (widget.controller.hasNormalPin || widget.controller.hasDuressPin)
+          TextButton(
+            onPressed: _clearPins,
+            child: const Text('Remover PINs', style: TextStyle(color: Colors.redAccent)),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('Salvar'),
+        ),
+      ],
     );
   }
 }

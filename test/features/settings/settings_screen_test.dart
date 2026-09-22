@@ -118,6 +118,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Abre diálogo de emergência
+    await tester.scrollUntilVisible(find.text('Apagamento de emergência'), 100);
     await tester.tap(find.text('Apagamento de emergência'));
     await tester.pumpAndSettle();
 

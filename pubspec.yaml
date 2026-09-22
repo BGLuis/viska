@@ -22,6 +22,8 @@ dependencies:
   qr_flutter: ^4.1.0
   record: ^6.2.1
   typed_data: ^1.4.0
+  crypto: ^3.0.6
+  collection: ^1.19.0
   viska_core:
     path: rust_builder
 

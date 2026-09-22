@@ -238,6 +238,54 @@ class _FakeCore implements Core {
 
   @override
   Future<void> unlock() => throw UnimplementedError();
+
+  @override
+  Future<void> addReaction({
+    required U8Array16 contactDeviceId,
+    required PlatformInt64 targetMsgId,
+    required String emoji,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> configureDuressPin({
+    required String duressPin,
+    required int actionMode,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String> exportEncryptedBackup({required String destPath}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> restoreEncryptedBackup({
+    required String mnemonic,
+    required String srcPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String?> getConfig({required String key}) => throw UnimplementedError();
+
+  @override
+  Future<void> setConfig({required String key, required String value}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> verifyContact({
+    required List<int> contactDeviceId,
+    required bool verified,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {

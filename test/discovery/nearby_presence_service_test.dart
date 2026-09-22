@@ -43,6 +43,7 @@ class _FakeCore implements Core {
           dhPubkey: Uint8List(0),
           pairedAtUnixSecs: 0,
           nickname: null,
+          isVerified: false,
         );
       }
     }
