@@ -15,3 +15,28 @@ pub fn sample_jitter_delay_ms() -> Result<u64, FfiError> {
     let delay = viska_proto::wire::jitter::sample_delay()?;
     Ok(delay.as_millis() as u64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn sample_jitter_delay_ms_stays_within_protocol_bounds() {
+        for _ in 0..100 {
+            let delay = sample_jitter_delay_ms().expect("amostragem de jitter falhou");
+            assert!(
+                (5..=25).contains(&delay),
+                "atraso de jitter {delay} fora da faixa [5, 25] ms"
+            );
+        }
+    }
+
+    #[test]
+    fn sample_jitter_delay_ms_is_not_constant() {
+        let distinct: HashSet<u64> = (0..50)
+            .map(|_| sample_jitter_delay_ms().expect("amostragem de jitter falhou"))
+            .collect();
+        assert!(distinct.len() > 1, "amostrador de jitter gerou valor constante");
+    }
+}

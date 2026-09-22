@@ -34,3 +34,60 @@ pub fn read_u40(src: &[u8; 5]) -> u64 {
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && bool::from(a.ct_eq(b))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_u16_reads_big_endian_and_handles_boundaries() {
+        assert_eq!(read_u16(&[0x12, 0x34]), Some(0x1234));
+        assert_eq!(read_u16(&[0x12, 0x34, 0x56]), Some(0x1234));
+        assert_eq!(read_u16(&[0x12]), None);
+        assert_eq!(read_u16(&[]), None);
+    }
+
+    #[test]
+    fn read_u32_reads_big_endian_and_handles_boundaries() {
+        assert_eq!(read_u32(&[0x12, 0x34, 0x56, 0x78]), Some(0x12345678));
+        assert_eq!(read_u32(&[0x12, 0x34, 0x56, 0x78, 0x99]), Some(0x12345678));
+        assert_eq!(read_u32(&[0x12, 0x34, 0x56]), None);
+        assert_eq!(read_u32(&[]), None);
+    }
+
+    #[test]
+    fn read_u64_reads_big_endian_and_handles_boundaries() {
+        assert_eq!(
+            read_u64(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]),
+            Some(0x0123456789abcdef)
+        );
+        assert_eq!(
+            read_u64(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xff]),
+            Some(0x0123456789abcdef)
+        );
+        assert_eq!(
+            read_u64(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd]),
+            None
+        );
+        assert_eq!(read_u64(&[]), None);
+    }
+
+    #[test]
+    fn read_u40_assembles_40_bit_integer_correctly() {
+        assert_eq!(read_u40(&[0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            read_u40(&[0xff, 0xff, 0xff, 0xff, 0xff]),
+            0x0000_00ff_ffff_ffff
+        );
+        assert_eq!(read_u40(&[0x01, 0x02, 0x03, 0x04, 0x05]), 0x0102030405);
+    }
+
+    #[test]
+    fn ct_eq_compares_slices_correctly() {
+        assert!(ct_eq(&[], &[]));
+        assert!(ct_eq(&[1, 2, 3], &[1, 2, 3]));
+        assert!(!ct_eq(&[1, 2, 3], &[1, 2, 4]));
+        assert!(!ct_eq(&[1, 2, 3], &[1, 2, 3, 4]));
+        assert!(!ct_eq(&[1, 2, 3, 4], &[1, 2, 3]));
+    }
+}

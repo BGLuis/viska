@@ -112,3 +112,74 @@ pub fn derive_bytes<const N: usize>(context: &str, material: &[u8]) -> [u8; N] {
 pub fn keyed(key: &Key, data: &[u8]) -> [u8; 32] {
     *blake3::keyed_hash(key.as_bytes(), data).as_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_separation_produces_distinct_keys_for_same_material() {
+        let material = b"shared secret material";
+        let key1 = derive(context::HANDSHAKE, material);
+        let key2 = derive(context::ROOT_CHAIN, material);
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
+    }
+
+    #[test]
+    fn different_material_produces_distinct_keys_in_same_context() {
+        let key1 = derive(context::MESSAGE_KEY, b"input-a");
+        let key2 = derive(context::MESSAGE_KEY, b"input-b");
+        assert_ne!(key1.as_bytes(), key2.as_bytes());
+    }
+
+    #[test]
+    fn derive_pair_produces_two_mutually_distinct_keys() {
+        let (k1, k2) = derive_pair(context::ROOT_CHAIN, b"ratchet step");
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+    }
+
+    #[test]
+    fn derive_pair_matches_derive_bytes_stream_split() {
+        let material = b"deterministic stream input";
+        let (k1, k2) = derive_pair(context::ROOT_CHAIN, material);
+        let full_stream = derive_bytes::<64>(context::ROOT_CHAIN, material);
+
+        assert_eq!(k1.as_bytes(), &full_stream[..32]);
+        assert_eq!(k2.as_bytes(), &full_stream[32..]);
+    }
+
+    #[test]
+    fn derive_bytes_produces_requested_length_deterministically() {
+        let out1 = derive_bytes::<16>(context::SAFETY_NUMBER, b"seed");
+        let out2 = derive_bytes::<16>(context::SAFETY_NUMBER, b"seed");
+        let out3 = derive_bytes::<16>(context::SAFETY_NUMBER, b"other seed");
+
+        assert_eq!(out1, out2);
+        assert_ne!(out1, out3);
+    }
+
+    #[test]
+    fn keyed_hash_acts_as_prf_and_changes_with_key_and_data() {
+        let key1 = Key::from_bytes([1u8; KEY_LEN]);
+        let key2 = Key::from_bytes([2u8; KEY_LEN]);
+        let data1 = b"topic epoch 100";
+        let data2 = b"topic epoch 101";
+
+        let tag1 = keyed(&key1, data1);
+        let tag1_repeat = keyed(&key1, data1);
+        let tag_diff_data = keyed(&key1, data2);
+        let tag_diff_key = keyed(&key2, data1);
+
+        assert_eq!(tag1, tag1_repeat);
+        assert_ne!(tag1, tag_diff_data);
+        assert_ne!(tag1, tag_diff_key);
+    }
+
+    #[test]
+    fn debug_representation_redacts_key_material() {
+        let key = Key::from_bytes([0x42; KEY_LEN]);
+        let debug_str = format!("{:?}", key);
+        assert_eq!(debug_str, "Key(<redigida>)");
+        assert!(!debug_str.contains("42"));
+    }
+}

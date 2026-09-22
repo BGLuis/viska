@@ -44,6 +44,25 @@ void main() {
       expect(policy.shouldAdvertise(contact), isFalse);
     });
 
+    test('respects exact boundary of ttl inclusive and expires at ttl + 1ms', () {
+      var now = DateTime(2026, 1, 1, 12);
+      final policy = ActiveContactsAdvertisingPolicy(
+        ttl: const Duration(minutes: 5),
+        now: () => now,
+      );
+      final contact = ContactId([1]);
+
+      policy.markActive(contact);
+
+      // No exato limite do TTL (5m), ainda deve anunciar (<=)
+      now = now.add(const Duration(minutes: 5));
+      expect(policy.shouldAdvertise(contact), isTrue);
+
+      // 1 milissegundo após o TTL, deixa de anunciar
+      now = now.add(const Duration(milliseconds: 1));
+      expect(policy.shouldAdvertise(contact), isFalse);
+    });
+
     test('markInactive stops advertising immediately', () {
       final policy = ActiveContactsAdvertisingPolicy();
       final contact = ContactId([1]);

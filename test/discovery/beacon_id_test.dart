@@ -26,6 +26,8 @@ void main() {
   });
 
   test('rejects beacon with length different from 16 bytes', () {
+    expect(() => toBleServiceUuid(Uint8List(0)), throwsArgumentError);
     expect(() => toBleServiceUuid(Uint8List(15)), throwsArgumentError);
+    expect(() => toBleServiceUuid(Uint8List(17)), throwsArgumentError);
   });
 }

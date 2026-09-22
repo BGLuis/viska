@@ -138,3 +138,60 @@ fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<(PublicIdentity, 
         nickname,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::identity::LocalIdentity;
+
+    fn setup_test_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::schema::migrate(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn update_nickname_on_unknown_contact_fails() {
+        let conn = setup_test_db();
+        let unknown_id = [0x99; DEVICE_ID_LEN];
+        let err = update_nickname(&conn, &unknown_id, "Novo Nome");
+        assert!(matches!(err, Err(Error::ContactNotFound)));
+    }
+
+    #[test]
+    fn get_ephemeral_ttl_on_unknown_contact_fails() {
+        let conn = setup_test_db();
+        let unknown_id = [0x99; DEVICE_ID_LEN];
+        let err = get_ephemeral_ttl(&conn, &unknown_id);
+        assert!(matches!(err, Err(Error::ContactNotFound)));
+    }
+
+    #[test]
+    fn insert_conflict_updates_keys_and_preserves_existing_nickname() {
+        let conn = setup_test_db();
+        let id1 = LocalIdentity::generate().unwrap().public();
+        let id2 = LocalIdentity::generate().unwrap().public();
+        // Mesma identidade de contato (mesmo device_id), mas com chaves atualizadas
+        let updated_contact = PublicIdentity {
+            device_id: id1.device_id,
+            signing: id2.signing,
+            dh: id2.dh,
+        };
+
+        insert(&conn, &id1, 1000, Some("Amigo Original")).unwrap();
+        // Re-insere com nickname None: COALESCE deve manter "Amigo Original"
+        insert(&conn, &updated_contact, 2000, None).unwrap();
+
+        let found = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
+        assert_eq!(found.0.signing, id2.signing);
+        assert_eq!(found.0.dh, id2.dh);
+        assert_eq!(found.1, 2000);
+        assert_eq!(found.2.as_deref(), Some("Amigo Original"));
+
+        // Re-insere com novo nickname: deve sobrescrever
+        insert(&conn, &updated_contact, 3000, Some("Amigo Renomeado")).unwrap();
+        let found2 = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
+        assert_eq!(found2.1, 3000);
+        assert_eq!(found2.2.as_deref(), Some("Amigo Renomeado"));
+    }
+}
