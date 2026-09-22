@@ -3,8 +3,18 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+
+/// Exceção de controle para fluxos de pareamento por proximidade.
+class ProximityPairingException implements Exception {
+  const ProximityPairingException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 /// Identificador de um dispositivo próximo descoberto na rede local.
 class DiscoveredProximityPeer {
@@ -34,7 +44,7 @@ class DiscoveredProximityPeer {
   int get hashCode => Object.hash(id, address, port);
 }
 
-/// Solicitação de pareamento recebida de um par próximo.
+/// Solicitação de pareamento recebida de um par próximo (papel: receptor).
 class IncomingProximityPairingRequest {
   IncomingProximityPairingRequest({
     required this.peerName,
@@ -42,6 +52,7 @@ class IncomingProximityPairingRequest {
     required this.sasCode,
     required this.accept,
     required this.reject,
+    this.whenCancelled,
   });
 
   final String peerName;
@@ -49,9 +60,10 @@ class IncomingProximityPairingRequest {
   final String sasCode;
   final Future<ContactDto> Function() accept;
   final void Function() reject;
+  final Future<void>? whenCancelled;
 }
 
-/// Sessão ativa de pareamento por proximidade.
+/// Sessão ativa de pareamento por proximidade (papel: solicitante).
 class ProximityPairingConfirmation {
   ProximityPairingConfirmation({
     required this.peerName,
@@ -59,6 +71,7 @@ class ProximityPairingConfirmation {
     required this.sasCode,
     required this.confirm,
     required this.cancel,
+    this.whenCancelled,
   });
 
   final String peerName;
@@ -66,13 +79,14 @@ class ProximityPairingConfirmation {
   final String sasCode;
   final Future<ContactDto> Function() confirm;
   final void Function() cancel;
+  final Future<void>? whenCancelled;
 }
 
 /// Serviço de pareamento seguro por proximidade na rede local (LAN).
 ///
-/// Implementa anúncio e descoberta direta via broadcast UDP local + conexão TCP
-/// efêmera e autenticação presencial fora de banda (Short Authentication String - SAS
-/// de 6 dígitos derivada do Safety Number pós-quântico).
+/// Implementa anúncio e descoberta direta via broadcast UDP local, conexão TCP
+/// efêmera e autenticação presencial fora de banda bilateral (Short Authentication
+/// String - SAS de 6 dígitos derivada do Safety Number pós-quântico).
 class ProximityPairingService {
   ProximityPairingService({
     required this.core,
@@ -83,10 +97,14 @@ class ProximityPairingService {
   final int broadcastPort;
 
   static const List<int> _magicHeader = [0x56, 0x50, 0x01]; // 'V', 'P', v1
+  static const int _cmdConfirm = 0x06; // ACK de confirmação presencial
+  static const int _cmdCancel = 0x15; // NAK / cancelamento explícito
 
   ServerSocket? _tcpServer;
   RawDatagramSocket? _udpSocket;
   Timer? _broadcastTimer;
+
+  final Set<Socket> _activeSockets = {};
 
   String? _myId;
   String _myName = 'Viska';
@@ -102,6 +120,9 @@ class ProximityPairingService {
 
   bool _isBroadcasting = false;
   bool get isBroadcasting => _isBroadcasting;
+
+  @visibleForTesting
+  int? get tcpPort => _tcpServer?.port;
 
   /// Inicia a escuta e anúncio por proximidade.
   Future<void> start({String? customName}) async {
@@ -147,7 +168,7 @@ class ProximityPairingService {
     _broadcastPresence();
   }
 
-  /// Interrompe a busca e o anúncio.
+  /// Interrompe a busca e o anúncio, encerrando todas as conexões ativas.
   Future<void> stop() async {
     _isBroadcasting = false;
     _broadcastTimer?.cancel();
@@ -159,10 +180,27 @@ class ProximityPairingService {
     await _tcpServer?.close();
     _tcpServer = null;
 
+    for (final socket in _activeSockets.toList()) {
+      try {
+        socket.destroy();
+      } catch (_) {}
+    }
+    _activeSockets.clear();
+
     _discoveredPeers.clear();
     if (!_peersController.isClosed) {
       _peersController.add([]);
     }
+  }
+
+  Uint8List _buildHandshakePacket(Uint8List payload, String name) {
+    final nameBytes = utf8.encode(name);
+    final buffer = BytesBuilder();
+    buffer.add(_magicHeader);
+    buffer.add(payload);
+    buffer.addByte(nameBytes.length);
+    buffer.add(nameBytes);
+    return buffer.toBytes();
   }
 
   void _broadcastPresence() {
@@ -210,141 +248,418 @@ class ProximityPairingService {
       );
 
       _discoveredPeers[peerId] = peer;
-      _peersController.add(_discoveredPeers.values.toList());
+      if (!_peersController.isClosed) {
+        _peersController.add(_discoveredPeers.values.toList());
+      }
     } catch (_) {
       // Ignora pacotes de terceiros na rede
     }
   }
 
-  /// Inicia o pareamento com um dispositivo selecionado.
+  /// Inicia o pareamento com um dispositivo selecionado (papel: solicitante).
+  ///
+  /// Conecta ao servidor TCP do dispositivo remoto, envia o handshake próprio e
+  /// aguarda o handshake remoto de volta. Ambos exibem o código SAS de 6 dígitos
+  /// em simultâneo.
   Future<ProximityPairingConfirmation> connectAndPair(DiscoveredProximityPeer peer) async {
     final socket = await Socket.connect(peer.address, peer.port, timeout: const Duration(seconds: 5));
-    final completer = Completer<ProximityPairingConfirmation>();
+    _activeSockets.add(socket);
 
-    final myPayload = await core.myQrPayload();
-    final myNameBytes = utf8.encode(_myName);
+    final handshakeCompleter = Completer<ProximityPairingConfirmation>();
+    final remoteConfirmCompleter = Completer<void>();
+    final remoteCancelledCompleter = Completer<void>();
+
+    bool remoteConfirmed = false;
+    bool isCompleted = false;
+    bool isCancelled = false;
 
     // Envia preâmbulo + nosso payload + nosso apelido sugerido
-    final buffer = BytesBuilder();
-    buffer.add(_magicHeader);
-    buffer.add(myPayload);
-    buffer.addByte(myNameBytes.length);
-    buffer.add(myNameBytes);
-    socket.add(buffer.toBytes());
-    await socket.flush();
+    try {
+      final myPayload = await core.myQrPayload();
+      socket.add(_buildHandshakePacket(myPayload, _myName));
+      await socket.flush();
+    } catch (e) {
+      _activeSockets.remove(socket);
+      socket.destroy();
+      rethrow;
+    }
 
     final receivedBytes = <int>[];
+    bool handshakeReceived = false;
+    Uint8List? peerPayload;
+    String peerNickname = '';
 
     socket.listen(
       (chunk) async {
-        receivedBytes.addAll(chunk);
+        try {
+          if (!handshakeReceived) {
+            receivedBytes.addAll(chunk);
+            if (receivedBytes.length < 149) return;
 
-        // Preâmbulo (3 B) + Payload (145 B) + Comprimento do Nome (1 B) = 149 B mínimo
-        if (receivedBytes.length < 149) return;
-
-        // Valida cabeçalho
-        if (receivedBytes[0] != _magicHeader[0] ||
-            receivedBytes[1] != _magicHeader[1] ||
-            receivedBytes[2] != _magicHeader[2]) {
-          socket.destroy();
-          if (!completer.isCompleted) {
-            completer.completeError(Exception('Cabeçalho de protocolo inválido'));
-          }
-          return;
-        }
-
-        final peerPayload = Uint8List.fromList(receivedBytes.sublist(3, 148));
-        final nameLen = receivedBytes[148];
-        if (receivedBytes.length < 149 + nameLen) return;
-
-        final peerNickname = utf8.decode(receivedBytes.sublist(149, 149 + nameLen));
-
-        // Calcula o código SAS de 6 dígitos a partir do payload recebido
-        final sasCode = await core.computeSasCode(peerPayload: peerPayload);
-
-        if (!completer.isCompleted) {
-          completer.complete(ProximityPairingConfirmation(
-            peerName: peerNickname.isNotEmpty ? peerNickname : peer.name,
-            channel: peer.channel,
-            sasCode: sasCode,
-            confirm: () async {
-              socket.add([0x06]); // ACK de confirmação
-              await socket.flush();
-              await Future<void>.delayed(const Duration(milliseconds: 100));
-              await socket.close();
-
-              return core.pairFromQr(
-                payload: peerPayload,
-                nickname: peerNickname.isNotEmpty ? peerNickname : peer.name,
-              );
-            },
-            cancel: () {
+            // Valida cabeçalho
+            if (receivedBytes[0] != _magicHeader[0] ||
+                receivedBytes[1] != _magicHeader[1] ||
+                receivedBytes[2] != _magicHeader[2]) {
+              _activeSockets.remove(socket);
               socket.destroy();
-            },
-          ));
+              if (!handshakeCompleter.isCompleted) {
+                handshakeCompleter.completeError(
+                  const ProximityPairingException('Cabeçalho de protocolo inválido.'),
+                );
+              }
+              return;
+            }
+
+            peerPayload = Uint8List.fromList(receivedBytes.sublist(3, 148));
+            final nameLen = receivedBytes[148];
+            if (receivedBytes.length < 149 + nameLen) return;
+
+            peerNickname = utf8.decode(
+              receivedBytes.sublist(149, 149 + nameLen),
+              allowMalformed: true,
+            );
+
+            final remainingBytes = receivedBytes.sublist(149 + nameLen);
+            receivedBytes.clear();
+            handshakeReceived = true;
+
+            // Calcula o código SAS de 6 dígitos a partir do payload recebido
+            final sasCode = await core.computeSasCode(peerPayload: peerPayload!);
+
+            if (!handshakeCompleter.isCompleted) {
+              handshakeCompleter.complete(
+                ProximityPairingConfirmation(
+                  peerName: peerNickname.isNotEmpty ? peerNickname : peer.name,
+                  channel: peer.channel,
+                  sasCode: sasCode,
+                  whenCancelled: remoteCancelledCompleter.future,
+                  confirm: () async {
+                    if (isCancelled) {
+                      throw const ProximityPairingException('O pareamento foi cancelado.');
+                    }
+                    // Envia confirmação (ACK) para o receptor
+                    try {
+                      socket.add([_cmdConfirm]);
+                      await socket.flush();
+                    } catch (e) {
+                      throw const ProximityPairingException(
+                        'Falha de comunicação ao confirmar pareamento.',
+                      );
+                    }
+
+                    // Se o outro lado ainda não confirmou, aguarda a confirmação mútua
+                    if (!remoteConfirmed) {
+                      await Future.any([
+                        remoteConfirmCompleter.future,
+                        remoteCancelledCompleter.future.then((_) {
+                          throw const ProximityPairingException(
+                            'O outro dispositivo cancelou ou recusou o pareamento.',
+                          );
+                        }),
+                      ]).timeout(
+                        const Duration(seconds: 45),
+                        onTimeout: () {
+                          throw const ProximityPairingException(
+                            'Tempo esgotado aguardando confirmação do outro dispositivo.',
+                          );
+                        },
+                      );
+                    }
+
+                    // Ambos confirmaram! Salva no banco de dados local
+                    final contact = await core.pairFromQr(
+                      payload: peerPayload!,
+                      nickname: peerNickname.isNotEmpty ? peerNickname : peer.name,
+                    );
+
+                    isCompleted = true;
+                    _activeSockets.remove(socket);
+                    try {
+                      await socket.flush();
+                      await socket.close();
+                    } catch (_) {}
+
+                    return contact;
+                  },
+                  cancel: () {
+                    if (!isCompleted && !isCancelled) {
+                      isCancelled = true;
+                      try {
+                        socket.add([_cmdCancel]);
+                        socket.flush().ignore();
+                      } catch (_) {}
+                      _activeSockets.remove(socket);
+                      socket.destroy();
+                    }
+                  },
+                ),
+              );
+            }
+
+            // Processa bytes subsequentes (ex: confirmação ou cancelamento)
+            for (final byte in remainingBytes) {
+              _processControlByte(
+                byte,
+                onConfirm: () {
+                  remoteConfirmed = true;
+                  if (!remoteConfirmCompleter.isCompleted) {
+                    remoteConfirmCompleter.complete();
+                  }
+                },
+                onCancel: () {
+                  isCancelled = true;
+                  if (!remoteCancelledCompleter.isCompleted) {
+                    remoteCancelledCompleter.complete();
+                  }
+                },
+              );
+            }
+          } else {
+            // Handshake já concluído; processa bytes de controle
+            for (final byte in chunk) {
+              _processControlByte(
+                byte,
+                onConfirm: () {
+                  remoteConfirmed = true;
+                  if (!remoteConfirmCompleter.isCompleted) {
+                    remoteConfirmCompleter.complete();
+                  }
+                },
+                onCancel: () {
+                  isCancelled = true;
+                  if (!remoteCancelledCompleter.isCompleted) {
+                    remoteCancelledCompleter.complete();
+                  }
+                },
+              );
+            }
+          }
+        } catch (e) {
+          if (!handshakeCompleter.isCompleted) {
+            handshakeCompleter.completeError(e);
+          }
         }
       },
       onError: (err) {
-        if (!completer.isCompleted) completer.completeError(err);
+        _activeSockets.remove(socket);
+        if (!handshakeCompleter.isCompleted) {
+          handshakeCompleter.completeError(err);
+        }
+        if (!remoteCancelledCompleter.isCompleted) {
+          remoteCancelledCompleter.complete();
+        }
+      },
+      onDone: () {
+        _activeSockets.remove(socket);
+        if (!isCompleted && !isCancelled) {
+          if (!remoteCancelledCompleter.isCompleted) {
+            remoteCancelledCompleter.complete();
+          }
+          if (!handshakeCompleter.isCompleted) {
+            handshakeCompleter.completeError(
+              const ProximityPairingException('Conexão encerrada antes da troca de chaves.'),
+            );
+          }
+        }
       },
     );
 
-    return completer.future;
+    return handshakeCompleter.future;
   }
 
   void _handleIncomingConnection(Socket socket) {
+    _activeSockets.add(socket);
+
+    final remoteConfirmCompleter = Completer<void>();
+    final remoteCancelledCompleter = Completer<void>();
+
+    bool remoteConfirmed = false;
+    bool isCompleted = false;
+    bool isCancelled = false;
+
     final receivedBytes = <int>[];
+    bool handshakeReceived = false;
+    Uint8List? peerPayload;
+    String peerNickname = '';
 
     socket.listen(
       (chunk) async {
-        receivedBytes.addAll(chunk);
+        try {
+          if (!handshakeReceived) {
+            receivedBytes.addAll(chunk);
+            if (receivedBytes.length < 149) return;
 
-        if (receivedBytes.length < 149) return;
+            if (receivedBytes[0] != _magicHeader[0] ||
+                receivedBytes[1] != _magicHeader[1] ||
+                receivedBytes[2] != _magicHeader[2]) {
+              _activeSockets.remove(socket);
+              socket.destroy();
+              return;
+            }
 
-        if (receivedBytes[0] != _magicHeader[0] ||
-            receivedBytes[1] != _magicHeader[1] ||
-            receivedBytes[2] != _magicHeader[2]) {
-          socket.destroy();
-          return;
-        }
+            peerPayload = Uint8List.fromList(receivedBytes.sublist(3, 148));
+            final nameLen = receivedBytes[148];
+            if (receivedBytes.length < 149 + nameLen) return;
 
-        final peerPayload = Uint8List.fromList(receivedBytes.sublist(3, 148));
-        final nameLen = receivedBytes[148];
-        if (receivedBytes.length < 149 + nameLen) return;
+            peerNickname = utf8.decode(
+              receivedBytes.sublist(149, 149 + nameLen),
+              allowMalformed: true,
+            );
 
-        final peerNickname = utf8.decode(receivedBytes.sublist(149, 149 + nameLen));
-        final sasCode = await core.computeSasCode(peerPayload: peerPayload);
+            final remainingBytes = receivedBytes.sublist(149 + nameLen);
+            receivedBytes.clear();
+            handshakeReceived = true;
 
-        // Notifica a interface sobre a solicitação de pareamento recebida
-        _incomingRequestController.add(IncomingProximityPairingRequest(
-          peerName: peerNickname.isNotEmpty ? peerNickname : 'Dispositivo Próximo',
-          channel: _myChannel,
-          sasCode: sasCode,
-          accept: () async {
-            // Responde com nosso payload de volta
+            // 1. Responde IMEDIATAMENTE com nosso próprio Handshake Packet para
+            // que o solicitante também possa computar o código SAS ao mesmo tempo!
             final myPayload = await core.myQrPayload();
-            final myNameBytes = utf8.encode(_myName);
-            final resp = BytesBuilder();
-            resp.add(_magicHeader);
-            resp.add(myPayload);
-            resp.addByte(myNameBytes.length);
-            resp.add(myNameBytes);
-            socket.add(resp.toBytes());
+            socket.add(_buildHandshakePacket(myPayload, _myName));
             await socket.flush();
 
-            // Salva o contato
-            return core.pairFromQr(
-              payload: peerPayload,
-              nickname: peerNickname.isNotEmpty ? peerNickname : null,
-            );
-          },
-          reject: () {
-            socket.destroy();
-          },
-        ));
+            // 2. Computa o código SAS de 6 dígitos
+            final sasCode = await core.computeSasCode(peerPayload: peerPayload!);
+
+            // 3. Notifica a interface sobre a solicitação de pareamento recebida
+            if (!_incomingRequestController.isClosed) {
+              _incomingRequestController.add(
+                IncomingProximityPairingRequest(
+                  peerName: peerNickname.isNotEmpty ? peerNickname : 'Dispositivo Próximo',
+                  channel: _myChannel,
+                  sasCode: sasCode,
+                  whenCancelled: remoteCancelledCompleter.future,
+                  accept: () async {
+                    if (isCancelled) {
+                      throw const ProximityPairingException('O pareamento foi cancelado.');
+                    }
+                    // Envia confirmação (ACK) para o solicitante
+                    try {
+                      socket.add([_cmdConfirm]);
+                      await socket.flush();
+                    } catch (e) {
+                      throw const ProximityPairingException(
+                        'Falha de comunicação ao confirmar pareamento.',
+                      );
+                    }
+
+                    // Se o outro lado ainda não confirmou, aguarda a confirmação mútua
+                    if (!remoteConfirmed) {
+                      await Future.any([
+                        remoteConfirmCompleter.future,
+                        remoteCancelledCompleter.future.then((_) {
+                          throw const ProximityPairingException(
+                            'O outro dispositivo cancelou ou encerrou o pareamento.',
+                          );
+                        }),
+                      ]).timeout(
+                        const Duration(seconds: 45),
+                        onTimeout: () {
+                          throw const ProximityPairingException(
+                            'Tempo esgotado aguardando confirmação do outro dispositivo.',
+                          );
+                        },
+                      );
+                    }
+
+                    // Ambos confirmaram! Salva o contato
+                    final contact = await core.pairFromQr(
+                      payload: peerPayload!,
+                      nickname: peerNickname.isNotEmpty ? peerNickname : null,
+                    );
+
+                    isCompleted = true;
+                    _activeSockets.remove(socket);
+                    try {
+                      await socket.flush();
+                      await socket.close();
+                    } catch (_) {}
+
+                    return contact;
+                  },
+                  reject: () {
+                    if (!isCompleted && !isCancelled) {
+                      isCancelled = true;
+                      try {
+                        socket.add([_cmdCancel]);
+                        socket.flush().ignore();
+                      } catch (_) {}
+                      _activeSockets.remove(socket);
+                      socket.destroy();
+                    }
+                  },
+                ),
+              );
+            }
+
+            // Processa bytes subsequentes recebidos
+            for (final byte in remainingBytes) {
+              _processControlByte(
+                byte,
+                onConfirm: () {
+                  remoteConfirmed = true;
+                  if (!remoteConfirmCompleter.isCompleted) {
+                    remoteConfirmCompleter.complete();
+                  }
+                },
+                onCancel: () {
+                  isCancelled = true;
+                  if (!remoteCancelledCompleter.isCompleted) {
+                    remoteCancelledCompleter.complete();
+                  }
+                },
+              );
+            }
+          } else {
+            // Handshake já concluído; processa bytes de controle
+            for (final byte in chunk) {
+              _processControlByte(
+                byte,
+                onConfirm: () {
+                  remoteConfirmed = true;
+                  if (!remoteConfirmCompleter.isCompleted) {
+                    remoteConfirmCompleter.complete();
+                  }
+                },
+                onCancel: () {
+                  isCancelled = true;
+                  if (!remoteCancelledCompleter.isCompleted) {
+                    remoteCancelledCompleter.complete();
+                  }
+                },
+              );
+            }
+          }
+        } catch (_) {
+          _activeSockets.remove(socket);
+          socket.destroy();
+        }
       },
-      onError: (_) => socket.destroy(),
+      onError: (_) {
+        _activeSockets.remove(socket);
+        if (!remoteCancelledCompleter.isCompleted) {
+          remoteCancelledCompleter.complete();
+        }
+      },
+      onDone: () {
+        _activeSockets.remove(socket);
+        if (!isCompleted && !isCancelled) {
+          if (!remoteCancelledCompleter.isCompleted) {
+            remoteCancelledCompleter.complete();
+          }
+        }
+      },
     );
+  }
+
+  void _processControlByte(
+    int byte, {
+    required VoidCallback onConfirm,
+    required VoidCallback onCancel,
+  }) {
+    if (byte == _cmdConfirm) {
+      onConfirm();
+    } else if (byte == _cmdCancel) {
+      onCancel();
+    }
   }
 
   void dispose() {

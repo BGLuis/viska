@@ -99,8 +99,18 @@ class LanListener {
   /// conectou por outro caminho, e a próxima conexão TCP que chegar por
   /// engano (ou atrasada) deve ser só descartada, não represada para
   /// sempre.
+  ///
+  /// Completa o [Completer] pendente com erro para evitar memory leak: sem
+  /// isso, o `Future` retornado por [waitForConnection] fica pendente em
+  /// memória indefinidamente, mesmo após o `await` que o esperava ter sido
+  /// abandonado pelo `timeout()` da camada acima.
   void cancelWait({required Uint8List deviceId, required LanChannel channel}) {
-    _waiting.remove(_waitKey(deviceId, channel));
+    final completer = _waiting.remove(_waitKey(deviceId, channel));
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(
+        StateError('cancelWait: espera cancelada por fechamento do transporte'),
+      );
+    }
   }
 
   Future<void> close() async {
@@ -112,24 +122,38 @@ class LanListener {
   }
 
   void _acceptConnection(Socket socket) {
-    unawaited(_routeConnection(socket));
+    unawaited(() async {
+      try {
+        await _routeConnection(socket);
+      } catch (_) {
+        try {
+          socket.destroy();
+        } catch (_) {}
+      }
+    }());
   }
 
   Future<void> _routeConnection(Socket socket) async {
-    final peeled = await _peelPreamble(socket);
-    if (peeled == null) {
-      socket.destroy();
-      return;
+    try {
+      final peeled = await _peelPreamble(socket);
+      if (peeled == null) {
+        socket.destroy();
+        return;
+      }
+      final key = _waitKey(peeled.deviceId, peeled.channel);
+      final completer = _waiting.remove(key);
+      if (completer == null) {
+        // Ninguém está esperando essa conexão agora (contato desconhecido, ou
+        // já resolvida por outro caminho) — descarta.
+        socket.destroy();
+        return;
+      }
+      completer.complete(LanConnection(socket: socket, incoming: peeled.rest));
+    } catch (_) {
+      try {
+        socket.destroy();
+      } catch (_) {}
     }
-    final key = _waitKey(peeled.deviceId, peeled.channel);
-    final completer = _waiting.remove(key);
-    if (completer == null) {
-      // Ninguém está esperando essa conexão agora (contato desconhecido, ou
-      // já resolvida por outro caminho) — descarta.
-      socket.destroy();
-      return;
-    }
-    completer.complete(LanConnection(socket: socket, incoming: peeled.rest));
   }
 }
 

@@ -189,7 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encapsulamento_ida_e_volta() {
+    fn encapsulation_roundtrip() {
         let pair = MlKem768::generate().unwrap();
         let (ciphertext, sender_secret) = MlKem768::encapsulate(&pair.public).unwrap();
         let receiver_secret = MlKem768::decapsulate(&pair.secret, &ciphertext).unwrap();
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn tamanhos_conferem_com_o_fips_203() {
+    fn sizes_match_fips_203() {
         let pair = MlKem768::generate().unwrap();
         let (ciphertext, shared) = MlKem768::encapsulate(&pair.public).unwrap();
 
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn pares_distintos_produzem_segredos_distintos() {
+    fn distinct_pairs_produce_distinct_secrets() {
         let first = MlKem768::generate().unwrap();
         let second = MlKem768::generate().unwrap();
         assert_ne!(first.public.as_bytes(), second.public.as_bytes());

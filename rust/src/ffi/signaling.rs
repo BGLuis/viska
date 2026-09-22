@@ -20,11 +20,12 @@ impl Core {
     /// Resolve o contato e a `K_sig` compartilhada com ele — repetido nos
     /// três métodos abaixo, então isolado aqui.
     fn signaling_key_for(&self, device_id: &[u8; DEVICE_ID_LEN]) -> Result<(PublicIdentity, viska_proto::crypto::kdf::Key), FfiError> {
-        let (peer, _, _) = self
+        let (peer, _, _, _) = self
             .store
             .find_contact(device_id)?
             .ok_or(FfiError::ContactNotFound)?;
-        let k_sig = topic::signaling_key(&self.identity, &peer)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let k_sig = topic::signaling_key(&id, &peer)?;
         Ok((peer, k_sig))
     }
 
@@ -35,7 +36,8 @@ impl Core {
         let device_id = to_device_id(peer_device_id)?;
         let (peer, k_sig) = self.signaling_key_for(&device_id)?;
 
-        let my_direction = topic::direction(&self.identity.public(), &peer);
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let my_direction = topic::direction(&id.public(), &peer);
         let publish_topic = topic::topic_hex(
             &k_sig,
             my_direction,
@@ -105,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_topic_de_um_lado_esta_entre_os_tres_topicos_de_assinatura_do_outro() {
+    fn publish_topic_from_one_side_is_in_three_subscription_topics_of_the_other() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let topics_a = core_a.signaling_topics(device_id_b).unwrap();
@@ -123,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn topicos_de_contato_desconhecido_erram() {
+    fn topics_for_unknown_contact_fail() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
         assert_eq!(
@@ -133,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_selado_por_um_lado_abre_do_outro() {
+    fn payload_sealed_by_one_side_opens_on_other() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let sealed = core_a
@@ -146,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_adulterado_e_descartado_como_none() {
+    fn tampered_payload_is_discarded_as_none() {
         let (_dir_a, core_a, device_id_a, _dir_b, core_b, device_id_b) = paired();
 
         let mut sealed = core_a

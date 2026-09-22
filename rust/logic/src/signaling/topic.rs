@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn signaling_key_e_identica_nos_dois_lados() {
+    fn signaling_key_is_identical_on_both_sides() {
         let (alice, bob) = pair();
 
         let k_alice = signaling_key(&alice, &bob.public()).unwrap();
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn direcao_e_concordante_e_nunca_igual_nos_dois_lados() {
+    fn direction_is_agreed_and_never_equal_on_both_sides() {
         let (alice, bob) = pair();
 
         let dir_alice = direction(&alice.public(), &bob.public());
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn topico_e_identico_nos_dois_lados_para_a_mesma_direcao_e_epoca() {
+    fn topic_is_identical_on_both_sides_for_same_direction_and_epoch() {
         let (alice, bob) = pair();
         let k_alice = signaling_key(&alice, &bob.public()).unwrap();
         let k_bob = signaling_key(&bob, &alice.public()).unwrap();
@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn topico_muda_entre_epocas_adjacentes() {
+    fn topic_changes_between_adjacent_epochs() {
         let alice = LocalIdentity::generate().unwrap();
         let bob = LocalIdentity::generate().unwrap();
         let k_sig = signaling_key(&alice, &bob.public()).unwrap();
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn topico_muda_entre_direcoes_na_mesma_epoca() {
+    fn topic_changes_between_directions_in_same_epoch() {
         let alice = LocalIdentity::generate().unwrap();
         let bob = LocalIdentity::generate().unwrap();
         let k_sig = signaling_key(&alice, &bob.public()).unwrap();
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn topics_for_window_cobre_epoca_anterior_atual_e_seguinte() {
+    fn topics_for_window_covers_previous_current_and_next_epoch() {
         let alice = LocalIdentity::generate().unwrap();
         let bob = LocalIdentity::generate().unwrap();
         let k_sig = signaling_key(&alice, &bob.public()).unwrap();

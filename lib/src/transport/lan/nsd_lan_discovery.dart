@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:nsd/nsd.dart' as nsd;
 
 import 'lan_discovery.dart';
@@ -34,7 +35,9 @@ class NsdLanDiscovery implements LanDiscovery {
     final registration = _registration;
     _registration = null;
     if (registration != null) {
-      await nsd.unregister(registration);
+      try {
+        await nsd.unregister(registration);
+      } catch (_) {}
     }
   }
 
@@ -49,13 +52,21 @@ class NsdLanDiscovery implements LanDiscovery {
 
     void listener(nsd.Service service, nsd.ServiceStatus status) {
       if (status != nsd.ServiceStatus.found) return;
+      debugPrint(
+        '[NSD] serviço encontrado: name=${service.name} '
+        'host=${service.host} addresses=${service.addresses} port=${service.port}',
+      );
       final name = service.name;
       final port = service.port;
       final addresses = service.addresses;
       final host = (addresses != null && addresses.isNotEmpty)
           ? addresses.first.address
           : service.host;
-      if (name == null || port == null || host == null) return;
+      if (name == null || port == null || host == null) {
+        debugPrint('[NSD] serviço ignorado (name/port/host null): name=$name port=$port host=$host');
+        return;
+      }
+      debugPrint('[NSD] LanPeer emitido: host=$host port=$port name=$name');
       _discoveredController.add(LanPeer(instanceName: name, host: host, port: port));
     }
 
@@ -70,8 +81,10 @@ class NsdLanDiscovery implements LanDiscovery {
     _discovery = null;
     _serviceListener = null;
     if (discovery != null) {
-      if (listener != null) discovery.removeServiceListener(listener);
-      await nsd.stopDiscovery(discovery);
+      try {
+        if (listener != null) discovery.removeServiceListener(listener);
+        await nsd.stopDiscovery(discovery);
+      } catch (_) {}
     }
   }
 

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/error.dart';
 
@@ -28,9 +29,12 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
   String? _errorMessage;
   PermissionStatus? _cameraPermission;
 
+  bool _isStartingCamera = false;
+
   late final MobileScannerController _scannerController = MobileScannerController(
     formats: const [BarcodeFormat.qrCode],
     facing: CameraFacing.back,
+    autoStart: false,
   );
 
   @override
@@ -41,15 +45,36 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    try {
+      _scannerController.stop().catchError((_) {});
+      _scannerController.dispose().catchError((_) {});
+    } catch (_) {}
     super.dispose();
+  }
+
+  Future<void> _startCamera() async {
+    if (_isStartingCamera || !mounted) return;
+    _isStartingCamera = true;
+    try {
+      await _scannerController.start();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = 'Câmera indisponível: $e');
+    } finally {
+      _isStartingCamera = false;
+    }
   }
 
   Future<void> _requestCameraPermission() async {
     try {
-      final status = await Permission.camera.request();
+      final status = await LockController.guardTransient(
+        () => Permission.camera.request(),
+      );
       if (!mounted) return;
       setState(() => _cameraPermission = status);
+      if (status.isGranted) {
+        await _startCamera();
+      }
     } catch (_) {
       if (!mounted) return;
       // Em plataformas sem suporte a permissões de câmera (ex.: Linux desktop)
@@ -89,6 +114,9 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
 
     try {
       final contact = await widget.core.pairFromQr(payload: bytes);
+      try {
+        await _scannerController.stop();
+      } catch (_) {}
       if (!mounted) return;
       Navigator.of(context).pop(contact);
     } on FfiError catch (error) {

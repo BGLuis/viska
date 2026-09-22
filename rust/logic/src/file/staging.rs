@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn escreve_em_pedacos_desalinhados_e_le_de_volta_igual() {
+    fn writes_in_misaligned_chunks_and_reads_back_identically() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [1u8; FILE_ID_LEN];
         let key = chave_de_teste(1);
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn arquivo_vazio_funciona() {
+    fn empty_file_works() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [2u8; FILE_ID_LEN];
         let key = chave_de_teste(2);
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn tamanho_exatamente_multiplo_de_page_len() {
+    fn size_exactly_multiple_of_page_len() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [3u8; FILE_ID_LEN];
         let key = chave_de_teste(3);
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn chave_diferente_nao_decifra() {
+    fn different_key_fails_to_decrypt() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [4u8; FILE_ID_LEN];
         let key_certa = chave_de_teste(4);
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn pagina_adulterada_e_rejeitada_sem_panico_nem_plaintext_errado() {
+    fn tampered_page_is_rejected_without_panic_or_wrong_plaintext() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [6u8; FILE_ID_LEN];
         let key = chave_de_teste(6);
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn abort_apaga_o_arquivo_de_staging() {
+    fn abort_deletes_staging_file() {
         let dir = tempfile::tempdir().unwrap();
         let file_id = [7u8; FILE_ID_LEN];
         let key = chave_de_teste(7);
@@ -422,21 +422,21 @@ mod tests {
     }
 
     #[test]
-    fn derive_staging_key_e_deterministica() {
+    fn derive_staging_key_is_deterministic() {
         let a = derive_staging_key(b"segredo-de-sessao", &[9u8; FILE_ID_LEN]);
         let b = derive_staging_key(b"segredo-de-sessao", &[9u8; FILE_ID_LEN]);
         assert_eq!(a.as_bytes(), b.as_bytes());
     }
 
     #[test]
-    fn derive_staging_key_muda_com_o_file_id() {
+    fn derive_staging_key_changes_with_file_id() {
         let a = derive_staging_key(b"segredo-de-sessao", &[9u8; FILE_ID_LEN]);
         let b = derive_staging_key(b"segredo-de-sessao", &[10u8; FILE_ID_LEN]);
         assert_ne!(a.as_bytes(), b.as_bytes());
     }
 
     #[test]
-    fn sweep_orphaned_remove_so_o_que_nao_esta_ativo() {
+    fn sweep_orphaned_removes_only_inactive_files() {
         let dir = tempfile::tempdir().unwrap();
         let ativo = [1u8; FILE_ID_LEN];
         let orfao = [2u8; FILE_ID_LEN];
@@ -456,14 +456,14 @@ mod tests {
     }
 
     #[test]
-    fn sweep_orphaned_em_diretorio_inexistente_nao_erra() {
+    fn sweep_orphaned_on_nonexistent_directory_does_not_error() {
         let dir = tempfile::tempdir().unwrap();
         let caminho_inexistente = dir.path().join("nao-existe");
         assert!(sweep_orphaned(&caminho_inexistente, &Default::default()).is_ok());
     }
 
     #[test]
-    fn sweep_orphaned_ignora_arquivos_que_nao_sao_staging_nosso() {
+    fn sweep_orphaned_ignores_non_staging_files() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("nota.txt"), b"nao mexe aqui").unwrap();
 

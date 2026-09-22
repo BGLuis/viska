@@ -3,13 +3,13 @@ import 'package:viska/src/features/pairing/pairing_error_copy.dart';
 import 'package:viska/src/rust/ffi/error.dart';
 
 void main() {
-  test('toda variante de FfiError produz uma mensagem', () {
+  test('every FfiError variant produces a message', () {
     for (final error in FfiError.values) {
       expect(pairingErrorMessage(error), isNotEmpty);
     }
   });
 
-  test('forgedKey e selfPairing tem mensagens distintas de qrMalformed', () {
+  test('forgedKey and selfPairing have distinct messages from qrMalformed', () {
     // A distinção que a UI não pode perder: um QR forjado (ponto de ordem
     // baixa) é sinal de ataque, não de leitura ruim — ver armadilha 4 do
     // relatório da Fase 2.
@@ -22,7 +22,7 @@ void main() {
     expect(forged, isNot(equals(selfPairing)));
   });
 
-  test('mensagens sao unicas por variante', () {
+  test('messages are unique per variant', () {
     final messages = FfiError.values.map(pairingErrorMessage).toSet();
     expect(messages.length, FfiError.values.length);
   });

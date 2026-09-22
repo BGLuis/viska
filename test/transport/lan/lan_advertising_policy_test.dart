@@ -4,19 +4,19 @@ import 'package:viska/src/transport/p2p_transport.dart';
 
 void main() {
   group('AlwaysAdvertisePolicy', () {
-    test('sempre_devolve_true', () {
+    test('always returns true', () {
       const policy = AlwaysAdvertisePolicy();
       expect(policy.shouldAdvertise(ContactId([1, 2, 3])), isTrue);
     });
   });
 
   group('ActiveContactsAdvertisingPolicy', () {
-    test('nao_anuncia_contato_nunca_marcado_ativo', () {
+    test('does not advertise contact never marked active', () {
       final policy = ActiveContactsAdvertisingPolicy();
       expect(policy.shouldAdvertise(ContactId([1])), isFalse);
     });
 
-    test('anuncia_contato_marcado_ativo_dentro_do_ttl', () {
+    test('advertises contact marked active within ttl', () {
       var now = DateTime(2026, 1, 1, 12);
       final policy = ActiveContactsAdvertisingPolicy(
         ttl: const Duration(minutes: 5),
@@ -30,7 +30,7 @@ void main() {
       expect(policy.shouldAdvertise(contact), isTrue);
     });
 
-    test('para_de_anunciar_apos_o_ttl_expirar', () {
+    test('stops advertising after ttl expires', () {
       var now = DateTime(2026, 1, 1, 12);
       final policy = ActiveContactsAdvertisingPolicy(
         ttl: const Duration(minutes: 5),
@@ -44,7 +44,26 @@ void main() {
       expect(policy.shouldAdvertise(contact), isFalse);
     });
 
-    test('markInactive_para_de_anunciar_imediatamente', () {
+    test('respects exact boundary of ttl inclusive and expires at ttl + 1ms', () {
+      var now = DateTime(2026, 1, 1, 12);
+      final policy = ActiveContactsAdvertisingPolicy(
+        ttl: const Duration(minutes: 5),
+        now: () => now,
+      );
+      final contact = ContactId([1]);
+
+      policy.markActive(contact);
+
+      // No exato limite do TTL (5m), ainda deve anunciar (<=)
+      now = now.add(const Duration(minutes: 5));
+      expect(policy.shouldAdvertise(contact), isTrue);
+
+      // 1 milissegundo após o TTL, deixa de anunciar
+      now = now.add(const Duration(milliseconds: 1));
+      expect(policy.shouldAdvertise(contact), isFalse);
+    });
+
+    test('markInactive stops advertising immediately', () {
       final policy = ActiveContactsAdvertisingPolicy();
       final contact = ContactId([1]);
 
@@ -55,7 +74,7 @@ void main() {
       expect(policy.shouldAdvertise(contact), isFalse);
     });
 
-    test('contatos_diferentes_nao_se_afetam', () {
+    test('different contacts do not affect each other', () {
       final policy = ActiveContactsAdvertisingPolicy();
       final alice = ContactId([1]);
       final bob = ContactId([2]);

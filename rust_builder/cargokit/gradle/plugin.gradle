@@ -150,6 +150,26 @@ class CargoKitPlugin implements Plugin<Project> {
                 platforms.add("android-x64")
             }
 
+            // Viska targets modern 64-bit Android (minSdk 29+). Filter out 32-bit ARM (armv7)
+            // which is incompatible with raptorq NEON intrinsics on modern Rust.
+            try {
+                def abiFilters = plugin.project.android.defaultConfig.ndk.abiFilters
+                if (abiFilters != null && !abiFilters.isEmpty()) {
+                    def abiToPlatform = [
+                        'arm64-v8a': 'android-arm64',
+                        'x86_64': 'android-x64',
+                        'armeabi-v7a': 'android-arm',
+                        'x86': 'android-x86'
+                    ]
+                    def allowedPlatforms = abiFilters.collect { abiToPlatform[it] }.findAll { it != null }
+                    platforms.retainAll(allowedPlatforms)
+                } else {
+                    platforms.removeAll { it == "android-arm" || it == "armeabi-v7a" }
+                }
+            } catch (Exception ignored) {
+                platforms.removeAll { it == "android-arm" || it == "armeabi-v7a" }
+            }
+
             // The task name depends on plugin properties, which are not available
             // at this point
             project.getGradle().afterProject {

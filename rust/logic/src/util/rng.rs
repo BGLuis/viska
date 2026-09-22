@@ -79,14 +79,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn below_de_um_sempre_devolve_zero() {
+    fn below_one_always_returns_zero() {
         for _ in 0..100 {
             assert_eq!(below(1).unwrap(), 0);
         }
     }
 
     #[test]
-    fn amostras_sempre_caem_no_intervalo() {
+    fn samples_always_fall_within_interval() {
         for bound in [2u32, 3, 7, 1000, u32::MAX] {
             for _ in 0..2_000 {
                 let v = below(bound).unwrap();
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn below_com_bound_maximo_termina_rapido() {
+    fn below_with_maximum_bound_terminates_quickly() {
         // Este é o teste que teria pego a regressão original: com a fórmula
         // antiga, `bound = u32::MAX` colapsava `limit` para 1, aceitando só
         // ~4,7e-10 dos candidatos — cada amostra precisava, em média, de mais
@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn distribui_uniformemente_para_bound_pequeno() {
+    fn distributes_uniformly_for_small_bound() {
         let bound = 6u32;
         let amostras = 60_000u32;
         let p = 1.0 / bound as f64;
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn contagem_de_aceitos_e_sempre_multipla_do_bound() {
+    fn accepted_count_is_always_multiple_of_bound() {
         // Este é o invariante que define "sem viés de módulo": se a
         // quantidade de candidatos aceitos não for múltiplo exato de
         // `bound`, o `% bound` final favorece os restos menores.

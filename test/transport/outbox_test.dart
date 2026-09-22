@@ -6,7 +6,7 @@ import 'package:viska/src/transport/outbox.dart';
 
 void main() {
   group('JitteredOutbox', () {
-    test('envia uma mensagem aplicando o jitter antes do envio', () async {
+    test('sends a message applying jitter before sending', () async {
       final sent = <Uint8List>[];
       var jitterCalls = 0;
 
@@ -26,7 +26,7 @@ void main() {
       expect(jitterCalls, 1);
     });
 
-    test('envia em ordem, uma de cada vez', () async {
+    test('sends in order, one at a time', () async {
       final order = <int>[];
       final outbox = JitteredOutbox(
         rawSend: (bytes) async {
@@ -48,7 +48,7 @@ void main() {
       expect(order, [0, 1, 2]);
     });
 
-    test('cada enqueue resolve só quando aquela mensagem específica termina', () async {
+    test('each enqueue resolves only when that specific message completes', () async {
       final completedOrder = <int>[];
       final outbox = JitteredOutbox(
         rawSend: (bytes) async {},
@@ -64,7 +64,7 @@ void main() {
       expect(completedOrder, [1, 2]);
     });
 
-    test('uma falha de envio rejeita só aquela mensagem, não as seguintes', () async {
+    test('a send failure rejects only that message, not subsequent ones', () async {
       var attempt = 0;
       final sent = <Uint8List>[];
       final outbox = JitteredOutbox(
@@ -87,7 +87,7 @@ void main() {
       expect(sent, [Uint8List.fromList([2])]);
     });
 
-    test('pendingCount reflete a fila enquanto drena', () async {
+    test('pendingCount reflects queue while draining', () async {
       final gate = Completer<void>();
       final outbox = JitteredOutbox(
         rawSend: (bytes) => gate.future,
@@ -114,7 +114,7 @@ void main() {
       expect(outbox.pendingCount, 0);
     });
 
-    test('enqueue depois de close() rejeita imediatamente', () async {
+    test('enqueue after close() rejects immediately', () async {
       final outbox = JitteredOutbox(
         rawSend: (bytes) async {},
         sampleJitter: () async => Duration.zero,

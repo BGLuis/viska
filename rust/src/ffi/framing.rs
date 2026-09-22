@@ -45,7 +45,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quadro_enquadrado_e_extraido_de_volta_intacto() {
+    fn framed_frame_is_extracted_back_intact() {
         let envelope = b"envelope de teste".to_vec();
         let framed = frame_for_local_socket(envelope.clone()).unwrap();
 
@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_parcial_nao_extrai_nada_e_preserva_os_bytes() {
+    fn partial_buffer_extracts_nothing_and_preserves_bytes() {
         let mut framed = frame_for_local_socket(b"abc".to_vec()).unwrap();
         framed.truncate(framed.len() - 1);
         let original = framed.clone();
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn comprimento_absurdo_e_rejeitado() {
+    fn absurd_length_is_rejected() {
         let mut buffer = vec![0xff, 0xff, 0xff, 0xff];
         buffer.extend_from_slice(b"nao importa");
 

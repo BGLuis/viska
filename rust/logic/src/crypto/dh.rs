@@ -99,7 +99,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acordo_e_simetrico() {
+    fn agreement_is_symmetric() {
         let a = DhSecret::generate().unwrap();
         let b = DhSecret::generate().unwrap();
 
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_pontos_de_ordem_baixa() {
+    fn rejects_low_order_points() {
         let secret = DhSecret::generate().unwrap();
 
         // Os pontos de ordem baixa canônicos da Curve25519. Todos forçam o

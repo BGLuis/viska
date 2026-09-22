@@ -6,10 +6,14 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:typed_data/typed_data.dart' as typed;
 
+import 'proxy_config.dart';
 import 'signaling_backend.dart';
+import 'socks5_client.dart';
 
 /// `MqttSignalingBackend` — `docs/protocol.md` §8.2/§8.3, primeiro backend
 /// da interface plugável.
+///
+/// Suporta tunelamento opcional por Proxy SOCKS5 (ex.: Orbot / Tor na porta 9050).
 ///
 /// `retain: false` e `MqttQos.atMostOnce` (QoS 0) em toda publicação — §8.2
 /// exige os dois; travado aqui como argumento explícito em vez de confiar
@@ -26,17 +30,27 @@ import 'signaling_backend.dart';
 /// via [subscribeTopics].
 class MqttSignalingBackend implements SignalingBackend {
   MqttSignalingBackend({
-    String host = 'broker.emqx.io',
+    this.host = 'broker.emqx.io',
+    this.port = 1883,
     String? clientIdentifier,
     MqttClient? client,
-  }) : _client = client ??
+    ProxyConfig? proxyConfig,
+  })  : _proxyConfig = proxyConfig,
+        _client = client ??
             MqttServerClient(host, clientIdentifier ?? _randomClientIdentifier());
 
+  final String host;
+  final int port;
+  final ProxyConfig? _proxyConfig;
   final MqttClient _client;
+  Socks5LocalForwarder? _forwarder;
   final _incoming = StreamController<SignalingMessage>.broadcast();
   StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _updatesSubscription;
   Set<String> _subscribedTopics = {};
   bool _connected = false;
+
+  /// Configuração de proxy ativa para este backend.
+  ProxyConfig get proxyConfig => _proxyConfig ?? ProxyConfigStore.current;
 
   @override
   Stream<SignalingMessage> get incoming => _incoming.stream;
@@ -44,6 +58,17 @@ class MqttSignalingBackend implements SignalingBackend {
   @override
   Future<void> connect() async {
     if (_connected) return;
+    final proxy = proxyConfig;
+    if (proxy.enabled && _client is MqttServerClient) {
+      final serverClient = _client;
+      _forwarder = await Socks5LocalForwarder.start(
+        config: proxy,
+        targetHost: host,
+        targetPort: port,
+      );
+      serverClient.server = '127.0.0.1';
+      serverClient.port = _forwarder!.port;
+    }
 
     _client.autoReconnect = false;
     await _client.connect();
@@ -78,6 +103,8 @@ class MqttSignalingBackend implements SignalingBackend {
     _subscribedTopics = {};
     _connected = false;
     _client.disconnect();
+    await _forwarder?.close();
+    _forwarder = null;
   }
 
   void _handleUpdates(List<MqttReceivedMessage<MqttMessage>> messages) {

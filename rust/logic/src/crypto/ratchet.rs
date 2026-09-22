@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta_simples_alternando_direcao() {
+    fn simple_roundtrip_alternating_direction() {
         let (mut alice, mut bob) = established_pair();
 
         // O respondedor não pode enviar nada antes de receber a primeira
@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn conversa_longa_alternando_todas_as_chaves_batem() {
+    fn long_conversation_alternating_all_keys_match() {
         let (mut alice, mut bob) = established_pair();
 
         for i in 0..1000 {
@@ -810,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagens_fora_de_ordem_resolvem_para_a_chave_certa() {
+    fn out_of_order_messages_resolve_to_correct_key() {
         let (mut alice, mut bob) = established_pair();
 
         // Alice manda 5 mensagens seguidas sem que Bob responda nenhuma —
@@ -836,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_perdida_nao_impede_as_seguintes() {
+    fn lost_message_does_not_block_subsequent_messages() {
         let (mut alice, mut bob) = established_pair();
 
         let mut headers = Vec::new();
@@ -853,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_secrecy_chave_antiga_nao_e_mais_derivavel() {
+    fn forward_secrecy_old_key_is_no_longer_derivable() {
         let (mut alice, mut bob) = established_pair();
 
         let (first_header, first_key) = alice.next_sending_key().unwrap();
@@ -888,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn passo_dh_ocorre_ao_trocar_dhr_e_propaga_pn() {
+    fn dh_step_occurs_on_dhr_change_and_propagates_pn() {
         let (mut alice, mut bob) = established_pair();
 
         // Alice manda 1 mensagem; Bob recebe (isso já é o primeiro passo DH
@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn rekem_converge_a_mesma_raiz_apos_ciclo_completo() {
+    fn rekem_converges_to_same_root_after_full_cycle() {
         // Nota sobre o que "convergir" significa aqui: `RK` das duas pontas
         // NÃO é igual, byte a byte, em nenhum instante congelado de uma
         // conversa alternada normal (sem re-KEM nenhum) — cada lado está
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn teto_de_chaves_puladas_nao_cresce_sem_limite() {
+    fn skipped_keys_cap_does_not_grow_unbounded() {
         let (mut alice, mut bob) = established_pair();
 
         // Bob só recebe 1 a cada 4 mensagens de Alice, pulando 3 de cada vez
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn cabecalho_com_dh_pub_de_ordem_baixa_e_rejeitado_sem_panico() {
+    fn header_with_low_order_dh_pub_is_rejected_without_panic() {
         let (_alice, mut bob) = established_pair();
 
         let header = RatchetHeader {
@@ -1074,7 +1074,7 @@ mod tests {
     }
 
     #[test]
-    fn estouro_do_contador_de_envio_rejeitado_com_erro() {
+    fn sending_counter_overflow_rejected_with_error() {
         let (mut alice, _bob) = established_pair();
         alice.force_ns_for_test(u32::MAX);
         assert!(matches!(
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn estouro_do_contador_de_recepcao_rejeitado_com_erro() {
+    fn receiving_counter_overflow_rejected_with_error() {
         let (_alice, mut bob) = established_pair();
         let header = RatchetHeader {
             dh_pub: DhPublic::from_bytes([0x42u8; dh::KEY_LEN]),
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn convergencia_exata_de_rk_em_passo_dh() {
+    fn exact_convergence_of_rk_in_dh_step() {
         let (mut alice, mut bob) = established_pair();
 
         // Alice envia msg 0 (já estabelecida na inicialização dela).
@@ -1138,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn conversa_profunda_10000_mensagens_alternando() {
+    fn deep_conversation_10000_messages_alternating() {
         let (mut alice, mut bob) = established_pair();
 
         for i in 0..10_000 {

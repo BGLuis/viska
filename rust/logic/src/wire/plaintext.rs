@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta_para_cada_tipo_de_pacote_nos_dois_transportes() {
+    fn roundtrip_for_each_packet_type_in_both_transports() {
         for &tipo in &PacketType::ALL {
             for transport in [Transport::DataChannel, Transport::LocalSocket] {
                 for (has_ek, has_ct) in [(false, false), (true, false), (false, true), (true, true)]
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn corpo_grande_demais_e_rejeitado_com_payload_too_large() {
+    fn too_large_body_is_rejected_with_payload_too_large() {
         let grande = vec![0u8; Transport::DataChannel.max_bucket() + 1];
         let pacote = amostra(PacketType::MsgText, false, false, grande);
 
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn duas_codificacoes_tem_padding_diferente_mas_decodificam_igual() {
+    fn two_encodings_have_different_padding_but_decode_identically() {
         let pacote = amostra(PacketType::MsgTyping, false, false, b"oi".to_vec());
 
         let a = pacote.encode(Transport::DataChannel).unwrap();
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_bits_reservados_de_flags() {
+    fn rejects_reserved_flags_bits() {
         let pacote = amostra(PacketType::MsgText, false, false, b"x".to_vec());
         let mut encoded = pacote.encode(Transport::DataChannel).unwrap();
         encoded[FLAGS_AT] |= 0b0000_0100;
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_body_len_maior_que_o_buffer_sem_panico() {
+    fn rejects_body_len_larger_than_buffer_without_panic() {
         let pacote = amostra(PacketType::MsgText, false, false, b"pequeno".to_vec());
         let mut encoded = pacote.encode(Transport::DataChannel).unwrap();
         encoded[BODY_LEN_AT..FLAGS_AT].copy_from_slice(&u16::MAX.to_be_bytes());
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_comprimento_que_nao_e_bucket() {
+    fn rejects_length_that_is_not_bucket() {
         let pacote = amostra(PacketType::MsgText, false, false, b"x".to_vec());
         let mut encoded = pacote.encode(Transport::DataChannel).unwrap();
         encoded.push(0);
@@ -341,7 +341,7 @@ mod tests {
         /// transporte, `decode(encode(x)) == x` — e o resultado codificado tem
         /// exatamente um tamanho de bucket do DataChannel.
         #[test]
-        fn ida_e_volta_property_datachannel(
+        fn roundtrip_property_datachannel(
             tipo in estrategia_packet_type(),
             pn in any::<u32>(),
             has_ek in any::<bool>(),
@@ -368,7 +368,7 @@ mod tests {
 
         /// Mesma propriedade, para o socket TCP local (bucket bem maior).
         #[test]
-        fn ida_e_volta_property_local_socket(
+        fn roundtrip_property_local_socket(
             tipo in estrategia_packet_type(),
             pn in any::<u32>(),
             has_ek in any::<bool>(),
@@ -398,7 +398,7 @@ mod tests {
         /// ponta seja honesta ou fale a mesma versão do protocolo). Para
         /// qualquer entrada, o resultado é sempre `Ok` ou `Err` — nunca panic.
         #[test]
-        fn decode_nunca_entra_em_panico(
+        fn decode_never_panics(
             bytes in proptest::collection::vec(any::<u8>(), 0..=70_000),
             transport_e_data_channel in any::<bool>(),
         ) {

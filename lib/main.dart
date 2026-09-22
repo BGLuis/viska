@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
@@ -8,16 +10,73 @@ import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/features/onboarding/profile_setup_dialog.dart';
 import 'package:viska/src/features/pairing/pairing_hub_screen.dart';
-import 'package:viska/src/features/pairing/widgets/safety_number_view.dart';
+import 'package:viska/src/features/pairing/widgets/safety_number_qr_dialog.dart';
 import 'package:viska/src/features/settings/settings_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/rust/frb_generated.dart';
+import 'package:viska/src/theme/dark_tech_theme.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Barreira defensiva contra exceções assíncronas não capturadas (MethodChannels, Streams, Sockets).
+  // Retornar true confirma o tratamento e impede que a máquina virtual encerre o processo do app.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    if (kDebugMode) {
+      debugPrint('[Viska CrashBarrier] Erro assíncrono interceptado: $error');
+    }
+    return true;
+  };
+
+  // Intercepta erros de framework do Flutter de forma graciosa sem vazar material de chave.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    if (kDebugMode) {
+      FlutterError.presentError(details);
+    }
+  };
+
+  // Substitui a tela vermelha/amarela padrão do Flutter por um contêiner escuro seguro e contido.
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF0B0F14),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.warning_amber_rounded, size: 48, color: Color(0xFFFFB800)),
+              const SizedBox(height: 16),
+              const Text(
+                'Falha temporária de interface',
+                style: TextStyle(
+                  color: Color(0xFFEDEDED),
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                kDebugMode ? details.exceptionAsString() : 'Ocorreu um erro transitório na renderização deste elemento.',
+                style: const TextStyle(
+                  color: Color(0xFF8B949E),
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
   await RustLib.init();
 
   String? profile;
@@ -72,19 +131,29 @@ class MainApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: profileName != null ? 'Viska ($profileName)' : 'Viska',
-      home: ValueListenableBuilder<bool>(
-        valueListenable: lockController.isLocked,
-        builder: (context, isLocked, _) {
+      theme: DarkTechTheme.theme,
+      home: AnimatedBuilder(
+        animation: Listenable.merge([lockController.isLocked, lockController.isDecoyVault]),
+        builder: (context, _) {
+          if (lockController.isLocked.value) {
+            return InactivityDetector(
+              controller: lockController,
+              child: LockScreen(controller: lockController),
+            );
+          }
+
+          final currentCore = lockController.activeCore;
+          final currentRouter = currentCore == core ? router : P2PTransportRouter(core: currentCore);
+
           return InactivityDetector(
             controller: lockController,
-            child: isLocked
-                ? LockScreen(controller: lockController)
-                : PairingHomeScreen(
-                    core: core,
-                    router: router,
-                    lockController: lockController,
-                    profileName: profileName,
-                  ),
+            child: PairingHomeScreen(
+              key: ValueKey(currentCore),
+              core: currentCore,
+              router: currentRouter,
+              lockController: lockController,
+              profileName: profileName,
+            ),
           );
         },
       ),
@@ -144,7 +213,10 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
   }
 
   void _refreshContacts() {
-    setState(() => _contacts = widget.core.listContacts());
+    final next = widget.core.listContacts();
+    setState(() {
+      _contacts = next;
+    });
   }
 
   Future<void> _editMyNickname() async {
@@ -208,39 +280,88 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
     await _showSafetyNumber(contact);
   }
 
-  void _openChat(ContactDto contact) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          core: widget.core,
-          router: widget.router,
-          contactId: ContactId(contact.deviceId),
-          contactLabel: contact.nickname,
+  bool _isOpeningChat = false;
+
+  Future<void> _openChat(ContactDto contact) async {
+    if (_isOpeningChat) return;
+    _isOpeningChat = true;
+
+    try {
+      if (widget.lockController.isLocked.value) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Aplicativo bloqueado. Desbloqueie para abrir conversas.'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            core: widget.core,
+            router: widget.router,
+            contactId: ContactId(contact.deviceId),
+            contactLabel: contact.nickname,
+          ),
         ),
-      ),
-    );
+      );
+      _refreshContacts();
+    } catch (e, stack) {
+      debugPrint('[PairingHomeScreen] Erro ao abrir conversa: $e\n$stack');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível abrir a conversa: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      _isOpeningChat = false;
+    }
   }
 
-  Future<void> _showSafetyNumber(ContactDto contact) async {
-    final safetyNumber = await widget.core.safetyNumber(
-      contactDeviceId: contact.deviceId,
-    );
-    if (!mounted) return;
+  bool _isOpeningSafetyNumber = false;
 
-    await showDialog<void>(
-      context: context,
-      builder:
-          (_) => AlertDialog(
-            title: const Text('Contato pareado'),
-            content: SafetyNumberView(safetyNumber: safetyNumber),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Fechar'),
-              ),
-            ],
+  Future<void> _showSafetyNumber(ContactDto contact) async {
+    if (_isOpeningSafetyNumber) return;
+    _isOpeningSafetyNumber = true;
+
+    try {
+      final safetyNumber = await widget.core.safetyNumber(
+        contactDeviceId: contact.deviceId,
+      );
+      if (!mounted) return;
+
+      await showDialog<bool>(
+        context: context,
+        builder:
+            (_) => SafetyNumberQrDialog(
+              contact: contact,
+              safetyNumber: safetyNumber,
+              core: widget.core,
+              onVerified: _refreshContacts,
+            ),
+      );
+      _refreshContacts();
+    } catch (e, stack) {
+      debugPrint('[PairingHomeScreen] Erro ao carregar Safety Number: $e\n$stack');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().contains('Locked')
+                ? 'Aplicativo bloqueado. Desbloqueie para verificar contatos.'
+                : 'Não foi possível carregar o número de segurança: $e',
           ),
-    );
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      _isOpeningSafetyNumber = false;
+    }
   }
 
   @override
@@ -348,12 +469,32 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
                       leading: CircleAvatar(
                         child: Text(initial),
                       ),
-                      title: Text(
-                        displayName,
-                        style: TextStyle(
-                          fontStyle: hasNickname ? FontStyle.normal : FontStyle.italic,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      title: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              displayName,
+                              style: TextStyle(
+                                fontStyle: hasNickname ? FontStyle.normal : FontStyle.italic,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (contact.isVerified) ...[
+                            const SizedBox(width: 6),
+                            const Tooltip(
+                              message: 'Contato Verificado',
+                              child: Icon(
+                                Icons.verified,
+                                size: 16,
+                                color: Color(0xFF00E599),
+                                key: Key('verified_badge'),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       subtitle: Text(
                         'ID: $shortId…',

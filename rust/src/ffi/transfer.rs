@@ -597,8 +597,10 @@ mod tests {
         if !pair
             .core_a
             .identity
+            .read()
+            .unwrap()
             .public()
-            .is_before(&pair.core_b.identity.public())
+            .is_before(&pair.core_b.identity.read().unwrap().public())
         {
             std::mem::swap(&mut pair.core_a, &mut pair.core_b);
             std::mem::swap(&mut pair.device_id_a, &mut pair.device_id_b);
@@ -640,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn start_send_file_sem_sessao_estabelecida_erra() {
+    fn start_send_file_without_established_session_fails() {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_src = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
@@ -658,7 +660,7 @@ mod tests {
     /// verdade (envelopes/bytes selados passando de um `Core` para o
     /// outro), e o arquivo decifrado em B bate byte a byte com o original.
     #[test]
-    fn transferencia_de_arquivo_ponta_a_ponta_pela_fronteira_ffi() {
+    fn end_to_end_file_transfer_across_ffi_boundary() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let dir_dst = tempfile::tempdir().unwrap();
@@ -815,7 +817,7 @@ mod tests {
     /// decodificando para WAV do lado do receptor (D18), e confere que a
     /// nota aparece na timeline única dos dois lados (Fase 5).
     #[test]
-    fn transferencia_de_nota_de_voz_ponta_a_ponta_pela_fronteira_ffi() {
+    fn end_to_end_voice_note_transfer_across_ffi_boundary() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let dir_dst = tempfile::tempdir().unwrap();
@@ -958,7 +960,7 @@ mod tests {
     /// qual. Antes de D17 isto exigia rastrear "a" transferência ativa;
     /// agora as duas terminam certas e sem contaminação cruzada.
     #[test]
-    fn duas_transferencias_concorrentes_nao_se_contaminam() {
+    fn two_concurrent_transfers_do_not_contaminate_each_other() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let dir_dst = tempfile::tempdir().unwrap();
@@ -1061,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_transfer_remove_estado_e_nao_erra_para_file_id_desconhecido() {
+    fn cancel_transfer_removes_state_and_does_not_error_for_unknown_file_id() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let src_path = write_temp_file(&dir_src, "x.bin", b"conteudo pequeno");

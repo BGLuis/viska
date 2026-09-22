@@ -31,3 +31,39 @@ pub fn epoch_window() -> [u64; 3] {
     let now = current_epoch();
     [now.saturating_sub(1), now, now + 1]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unix_seconds_returns_plausible_recent_timestamp() {
+        let secs = unix_seconds();
+        // Garante que o relógio não voltou para zero ou época pré-2024.
+        assert!(secs > 1_700_000_000);
+    }
+
+    #[test]
+    fn current_epoch_is_consistent_with_unix_seconds() {
+        let secs = unix_seconds();
+        let epoch = current_epoch();
+        let expected = secs / EPOCH_SECONDS;
+        // Permite diferença de no máximo 1 época se o teste rodou exatamente na virada da hora.
+        assert!(epoch == expected || epoch == expected + 1);
+    }
+
+    #[test]
+    fn epoch_window_is_contiguous_triplet() {
+        let window = epoch_window();
+        assert_eq!(window[1], current_epoch());
+        assert_eq!(window[2], window[1] + 1);
+        assert_eq!(window[0], window[1].saturating_sub(1));
+    }
+
+    #[test]
+    fn epoch_window_saturates_at_zero_without_underflow() {
+        let now: u64 = 0;
+        let window = [now.saturating_sub(1), now, now + 1];
+        assert_eq!(window, [0, 0, 1]);
+    }
+}

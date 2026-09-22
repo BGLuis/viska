@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:viska/src/features/pairing/pairing_error_copy.dart';
 import 'package:viska/src/rust/ffi/core.dart';
@@ -12,10 +14,12 @@ class ProximityPairingView extends StatefulWidget {
     super.key,
     required this.core,
     required this.onContactPaired,
+    this.service,
   });
 
   final Core core;
   final ValueChanged<ContactDto> onContactPaired;
+  final ProximityPairingService? service;
 
   @override
   State<ProximityPairingView> createState() => _ProximityPairingViewState();
@@ -23,13 +27,16 @@ class ProximityPairingView extends StatefulWidget {
 
 class _ProximityPairingViewState extends State<ProximityPairingView>
     with SingleTickerProviderStateMixin {
-  late final ProximityPairingService _service = ProximityPairingService(core: widget.core);
+  late final ProximityPairingService _service =
+      widget.service ?? ProximityPairingService(core: widget.core);
   late final AnimationController _pulseController = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 2),
   )..repeat(reverse: true);
 
+  StreamSubscription<IncomingProximityPairingRequest>? _incomingSub;
   bool _isConnecting = false;
+  bool _isDialogOpen = false;
   String? _errorMessage;
 
   @override
@@ -42,93 +49,48 @@ class _ProximityPairingViewState extends State<ProximityPairingView>
   Future<void> _startService() async {
     try {
       await _service.start();
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() => _errorMessage = 'Não foi possível iniciar a descoberta local.');
     }
   }
 
   void _listenIncomingRequests() {
-    _service.incomingRequests.listen((request) async {
+    _incomingSub = _service.incomingRequests.listen((request) async {
       if (!mounted) {
         request.reject();
         return;
       }
 
-      final accepted = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          icon: const Icon(Icons.security, size: 36, color: Colors.teal),
-          title: const Text('Solicitação de Pareamento'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${request.peerName} deseja parear com seu aparelho (Canal ${request.channel}).',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Código de Segurança Presencial (SAS):',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '${request.sasCode.substring(0, 3)} ${request.sasCode.substring(3)}',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 28,
-                    letterSpacing: 4,
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Confirme verbalmente ou visualmente se o número acima é IDÊNTICO no aparelho do seu amigo.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Recusar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Confirmar Código'),
-            ),
-          ],
-        ),
-      );
-
-      if (accepted == true) {
-        try {
-          final contact = await request.accept();
-          if (!mounted) return;
-          widget.onContactPaired(contact);
-        } catch (e) {
-          if (!mounted) return;
-          setState(() => _errorMessage = 'Erro ao concluir pareamento.');
-        }
-      } else {
+      if (_isDialogOpen) {
         request.reject();
+        return;
+      }
+
+      _isDialogOpen = true;
+      try {
+        final contact = await _showPairingDialog(
+          context: context,
+          peerName: request.peerName,
+          channel: request.channel,
+          sasCode: request.sasCode,
+          isInitiator: false,
+          onConfirm: request.accept,
+          onCancel: request.reject,
+          whenCancelled: request.whenCancelled,
+        );
+
+        if (contact != null && mounted) {
+          widget.onContactPaired(contact);
+        }
+      } finally {
+        _isDialogOpen = false;
       }
     });
   }
 
   Future<void> _pairWithPeer(DiscoveredProximityPeer peer) async {
-    if (_isConnecting) return;
+    if (_isConnecting || _isDialogOpen) return;
 
     setState(() {
       _isConnecting = true;
@@ -139,73 +101,31 @@ class _ProximityPairingViewState extends State<ProximityPairingView>
       final confirmation = await _service.connectAndPair(peer);
       if (!mounted) return;
 
-      final confirmed = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          icon: const Icon(Icons.verified_user_outlined, size: 36, color: Colors.teal),
-          title: Text('Parear com ${peer.name}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Canal ${peer.channel}',
-                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Código de Segurança Presencial (SAS):',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '${confirmation.sasCode.substring(0, 3)} ${confirmation.sasCode.substring(3)}',
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 28,
-                    letterSpacing: 4,
-                    fontWeight: FontWeight.bold,
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Confirme verbalmente ou visualmente se o número acima é IDÊNTICO no aparelho do seu amigo.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Confirmar e Adicionar'),
-            ),
-          ],
-        ),
-      );
+      _isDialogOpen = true;
+      try {
+        final contact = await _showPairingDialog(
+          context: context,
+          peerName: confirmation.peerName,
+          channel: confirmation.channel,
+          sasCode: confirmation.sasCode,
+          isInitiator: true,
+          onConfirm: confirmation.confirm,
+          onCancel: confirmation.cancel,
+          whenCancelled: confirmation.whenCancelled,
+        );
 
-      if (confirmed == true) {
-        final contact = await confirmation.confirm();
-        if (!mounted) return;
-        widget.onContactPaired(contact);
-      } else {
-        confirmation.cancel();
+        if (contact != null && mounted) {
+          widget.onContactPaired(contact);
+        }
+      } finally {
+        _isDialogOpen = false;
       }
     } on FfiError catch (e) {
       if (!mounted) return;
       setState(() => _errorMessage = pairingErrorMessage(e));
+    } on ProximityPairingException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
     } catch (_) {
       if (!mounted) return;
       setState(() => _errorMessage = 'Não foi possível conectar ao dispositivo selecionado.');
@@ -214,9 +134,35 @@ class _ProximityPairingViewState extends State<ProximityPairingView>
     }
   }
 
+  Future<ContactDto?> _showPairingDialog({
+    required BuildContext context,
+    required String peerName,
+    required int channel,
+    required String sasCode,
+    required bool isInitiator,
+    required Future<ContactDto> Function() onConfirm,
+    required void Function() onCancel,
+    Future<void>? whenCancelled,
+  }) {
+    return showDialog<ContactDto>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _ProximityPairingDialog(
+        peerName: peerName,
+        channel: channel,
+        sasCode: sasCode,
+        isInitiator: isInitiator,
+        onConfirm: onConfirm,
+        onCancel: onCancel,
+        whenCancelled: whenCancelled,
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _pulseController.dispose();
+    _incomingSub?.cancel();
     _service.dispose();
     super.dispose();
   }
@@ -326,6 +272,206 @@ class _ProximityPairingViewState extends State<ProximityPairingView>
               );
             },
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProximityPairingDialog extends StatefulWidget {
+  const _ProximityPairingDialog({
+    required this.peerName,
+    required this.channel,
+    required this.sasCode,
+    required this.isInitiator,
+    required this.onConfirm,
+    required this.onCancel,
+    this.whenCancelled,
+  });
+
+  final String peerName;
+  final int channel;
+  final String sasCode;
+  final bool isInitiator;
+  final Future<ContactDto> Function() onConfirm;
+  final void Function() onCancel;
+  final Future<void>? whenCancelled;
+
+  @override
+  State<_ProximityPairingDialog> createState() => _ProximityPairingDialogState();
+}
+
+class _ProximityPairingDialogState extends State<_ProximityPairingDialog> {
+  bool _isWaitingRemote = false;
+  String? _errorMessage;
+
+  Timer? _dismissTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.whenCancelled?.then((_) {
+      if (!mounted) return;
+      setState(() {
+        _isWaitingRemote = false;
+        _errorMessage = 'Pareamento cancelado pelo outro dispositivo.';
+      });
+      _dismissTimer = Timer(const Duration(milliseconds: 1800), () {
+        if (mounted) {
+          Navigator.of(context).pop(null);
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _handleConfirm() async {
+    setState(() {
+      _isWaitingRemote = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final contact = await widget.onConfirm();
+      if (!mounted) return;
+      Navigator.of(context).pop(contact);
+    } on FfiError catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isWaitingRemote = false;
+        _errorMessage = pairingErrorMessage(e);
+      });
+    } on ProximityPairingException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isWaitingRemote = false;
+        _errorMessage = e.message;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isWaitingRemote = false;
+        _errorMessage = 'Falha ao concluir pareamento.';
+      });
+    }
+  }
+
+  void _handleCancel() {
+    widget.onCancel();
+    Navigator.of(context).pop(null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final titleText = widget.isInitiator
+        ? 'Conectar com ${widget.peerName}'
+        : 'Solicitação de Conexão';
+
+    final contextText = widget.isInitiator
+        ? 'Solicitando conexão com ${widget.peerName} (Canal ${widget.channel}).'
+        : '${widget.peerName} deseja se conectar com você (Canal ${widget.channel}).';
+
+    final sasDisplay = widget.sasCode.length >= 6
+        ? '${widget.sasCode.substring(0, 3)} ${widget.sasCode.substring(3)}'
+        : widget.sasCode;
+
+    return AlertDialog(
+      icon: Icon(
+        widget.isInitiator ? Icons.verified_user_outlined : Icons.security,
+        size: 36,
+        color: Colors.teal,
+      ),
+      title: Text(titleText),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            contextText,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Confirme se o código abaixo é IDÊNTICO no aparelho de ${widget.peerName}:',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              sasDisplay,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 28,
+                letterSpacing: 4,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Confirme verbalmente ou visualmente antes de aceitar.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          if (_errorMessage != null) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                _errorMessage!,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onErrorContainer,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _handleCancel,
+          child: Text(widget.isInitiator ? 'Cancelar' : 'Recusar'),
+        ),
+        FilledButton(
+          onPressed: _isWaitingRemote ? null : _handleConfirm,
+          child: _isWaitingRemote
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Aguardando ${widget.peerName}...',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                )
+              : const Text('Confirmar Pareamento'),
         ),
       ],
     );

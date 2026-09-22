@@ -1,5 +1,6 @@
 package app.viska.viska
 
+import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -18,6 +19,10 @@ import android.net.wifi.aware.WifiAwareManager
 import android.net.wifi.aware.WifiAwareNetworkInfo
 import android.net.wifi.aware.WifiAwareNetworkSpecifier
 import android.net.wifi.aware.WifiAwareSession
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -88,45 +93,74 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
     // ---- MethodChannel ----------------------------------------------------
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "isSupported" -> result.success(isSupported())
-            "publish" -> {
-                val serviceName = call.argument<String>("serviceName")
-                if (serviceName == null) {
-                    result.error("bad_args", "serviceName ausente", null)
-                    return
+        try {
+            when (call.method) {
+                "isSupported" -> result.success(isSupported())
+                "publish" -> {
+                    val serviceName = call.argument<String>("serviceName")
+                    if (serviceName == null) {
+                        result.error("bad_args", "serviceName ausente", null)
+                        return
+                    }
+                    publish(serviceName, result)
                 }
-                publish(serviceName, result)
-            }
-            "subscribe" -> {
-                val serviceName = call.argument<String>("serviceName")
-                if (serviceName == null) {
-                    result.error("bad_args", "serviceName ausente", null)
-                    return
+                "subscribe" -> {
+                    val serviceName = call.argument<String>("serviceName")
+                    if (serviceName == null) {
+                        result.error("bad_args", "serviceName ausente", null)
+                        return
+                    }
+                    subscribe(serviceName, result)
                 }
-                subscribe(serviceName, result)
-            }
-            "send" -> {
-                val bytes = call.argument<ByteArray>("bytes")
-                if (bytes == null) {
-                    result.error("bad_args", "bytes ausente", null)
-                    return
+                "send" -> {
+                    val bytes = call.argument<ByteArray>("bytes")
+                    if (bytes == null) {
+                        result.error("bad_args", "bytes ausente", null)
+                        return
+                    }
+                    send(bytes, result)
                 }
-                send(bytes, result)
+                "close" -> {
+                    closeAll()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
-            "close" -> {
-                closeAll()
-                result.success(null)
-            }
-            else -> result.notImplemented()
+        } catch (e: Exception) {
+            result.error("plugin_exception", e.message, null)
+        }
+    }
+
+    private fun sendEvent(event: Map<String, Any?>) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                eventSink?.success(event)
+            } catch (_: Exception) {}
         }
     }
 
     private fun isSupported(): Boolean {
-        val hasFeature =
-            context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
-        val manager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? WifiAwareManager
-        return hasFeature && manager != null && manager.isAvailable
+        return try {
+            val hasFeature =
+                context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
+            val manager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? WifiAwareManager
+            if (!hasFeature || manager == null || !manager.isAvailable) {
+                return false
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.NEARBY_WIFI_DEVICES,
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ---- Publicador (passivo) ----------------------------------------------
@@ -150,46 +184,51 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
 
         val portBytes = ByteBuffer.allocate(2).putShort(socket.localPort.toShort()).array()
 
-        manager.attach(
-            object : AttachCallback() {
-                override fun onAttached(session: WifiAwareSession) {
-                    awareSession = session
-                    val config =
-                        PublishConfig.Builder()
-                            .setServiceName(serviceName)
-                            .setServiceSpecificInfo(portBytes)
-                            .build()
-                    session.publish(
-                        config,
-                        object : DiscoverySessionCallback() {
-                            override fun onPublishStarted(session: PublishDiscoverySession) {
-                                discoverySession = session
-                                result.success(null)
-                            }
+        try {
+            manager.attach(
+                object : AttachCallback() {
+                    override fun onAttached(session: WifiAwareSession) {
+                        awareSession = session
+                        val config =
+                            PublishConfig.Builder()
+                                .setServiceName(serviceName)
+                                .setServiceSpecificInfo(portBytes)
+                                .build()
+                        try {
+                            session.publish(
+                                config,
+                                object : DiscoverySessionCallback() {
+                                    override fun onPublishStarted(session: PublishDiscoverySession) {
+                                        discoverySession = session
+                                        result.success(null)
+                                    }
 
-                            override fun onMessageReceived(peer: PeerHandle, message: ByteArray?) {
-                                // É assim que o publicador aprende o `PeerHandle` de
-                                // quem quer se conectar — `publish` sozinho nunca
-                                // devolve isso.
-                                peerHandle = peer
-                                requestNetwork(peer, isResponder = true)
-                                eventSink?.success(mapOf("event" to "serviceDiscovered"))
-                            }
+                                    override fun onMessageReceived(peer: PeerHandle, message: ByteArray?) {
+                                        peerHandle = peer
+                                        requestNetwork(peer, isResponder = true)
+                                        sendEvent(mapOf("event" to "serviceDiscovered"))
+                                    }
 
-                            override fun onSessionConfigFailed() {
-                                result.error("publish_failed", "Falha ao publicar o serviço", null)
-                            }
-                        },
-                        null,
-                    )
-                }
+                                    override fun onSessionConfigFailed() {
+                                        result.error("publish_failed", "Falha ao publicar o serviço", null)
+                                    }
+                                },
+                                null,
+                            )
+                        } catch (e: Exception) {
+                            result.error("publish_failed", e.message, null)
+                        }
+                    }
 
-                override fun onAttachFailed() {
-                    result.error("attach_failed", "Falha ao anexar à sessão Wi-Fi Aware", null)
-                }
-            },
-            null,
-        )
+                    override fun onAttachFailed() {
+                        result.error("attach_failed", "Falha ao anexar à sessão Wi-Fi Aware", null)
+                    }
+                },
+                null,
+            )
+        } catch (e: Exception) {
+            result.error("attach_exception", e.message, null)
+        }
     }
 
     // ---- Assinante (ativo) --------------------------------------------------
@@ -201,65 +240,75 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
             return
         }
 
-        manager.attach(
-            object : AttachCallback() {
-                override fun onAttached(session: WifiAwareSession) {
-                    awareSession = session
-                    val config = SubscribeConfig.Builder().setServiceName(serviceName).build()
-                    session.subscribe(
-                        config,
-                        object : DiscoverySessionCallback() {
-                            override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
-                                discoverySession = session
-                                result.success(null)
-                            }
-
-                            override fun onServiceDiscovered(
-                                peer: PeerHandle,
-                                serviceSpecificInfo: ByteArray?,
-                                matchFilter: MutableList<ByteArray>?,
-                            ) {
-                                peerHandle = peer
-                                val port =
-                                    if (serviceSpecificInfo != null && serviceSpecificInfo.size >= 2) {
-                                        ByteBuffer.wrap(serviceSpecificInfo).short.toInt() and 0xffff
-                                    } else {
-                                        null
+        try {
+            manager.attach(
+                object : AttachCallback() {
+                    override fun onAttached(session: WifiAwareSession) {
+                        awareSession = session
+                        val config = SubscribeConfig.Builder().setServiceName(serviceName).build()
+                        try {
+                            session.subscribe(
+                                config,
+                                object : DiscoverySessionCallback() {
+                                    override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
+                                        discoverySession = session
+                                        result.success(null)
                                     }
-                                eventSink?.success(mapOf("event" to "serviceDiscovered"))
 
-                                val session2 = discoverySession
-                                if (session2 != null && port != null) {
-                                    pendingPort = port
-                                    // Avisa o publicador para que ele aprenda nosso
-                                    // `PeerHandle` (ver `onMessageReceived` acima) —
-                                    // só depois disso os dois lados conseguem pedir
-                                    // a mesma rede.
-                                    session2.sendMessage(peer, messageIdSeq.getAndIncrement(), ByteArray(0))
-                                }
-                            }
+                                    override fun onServiceDiscovered(
+                                        peer: PeerHandle,
+                                        serviceSpecificInfo: ByteArray?,
+                                        matchFilter: MutableList<ByteArray>?,
+                                    ) {
+                                        peerHandle = peer
+                                        val port =
+                                            if (serviceSpecificInfo != null && serviceSpecificInfo.size >= 2) {
+                                                ByteBuffer.wrap(serviceSpecificInfo).short.toInt() and 0xffff
+                                            } else {
+                                                null
+                                            }
+                                        sendEvent(mapOf("event" to "serviceDiscovered"))
 
-                            override fun onMessageSendSucceeded(messageId: Int) {
-                                val peer = peerHandle
-                                if (peer != null) {
-                                    requestNetwork(peer, isResponder = false)
-                                }
-                            }
+                                        val session2 = discoverySession
+                                        if (session2 != null && port != null) {
+                                            pendingPort = port
+                                            // Avisa o publicador para que ele aprenda nosso
+                                            // `PeerHandle` (ver `onMessageReceived` acima) —
+                                            // só depois disso os dois lados conseguem pedir
+                                            // a mesma rede.
+                                            try {
+                                                session2.sendMessage(peer, messageIdSeq.getAndIncrement(), ByteArray(0))
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
 
-                            override fun onSessionConfigFailed() {
-                                result.error("subscribe_failed", "Falha ao assinar o serviço", null)
-                            }
-                        },
-                        null,
-                    )
-                }
+                                    override fun onMessageSendSucceeded(messageId: Int) {
+                                        val peer = peerHandle
+                                        if (peer != null) {
+                                            requestNetwork(peer, isResponder = false)
+                                        }
+                                    }
 
-                override fun onAttachFailed() {
-                    result.error("attach_failed", "Falha ao anexar à sessão Wi-Fi Aware", null)
-                }
-            },
-            null,
-        )
+                                    override fun onSessionConfigFailed() {
+                                        result.error("subscribe_failed", "Falha ao assinar o serviço", null)
+                                    }
+                                },
+                                null,
+                            )
+                        } catch (e: Exception) {
+                            result.error("subscribe_failed", e.message, null)
+                        }
+                    }
+
+                    override fun onAttachFailed() {
+                        result.error("attach_failed", "Falha ao anexar à sessão Wi-Fi Aware", null)
+                    }
+                },
+                null,
+            )
+        } catch (e: Exception) {
+            result.error("attach_exception", e.message, null)
+        }
     }
 
     private var pendingPort: Int? = null
@@ -285,7 +334,7 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
                     if (isResponder) {
                         // O `ServerSocket` já está ligado (`publish`); só falta
                         // esperar `accept()` — feito em `acceptIncoming`.
-                        eventSink?.success(mapOf("event" to "sessionEstablished"))
+                        sendEvent(mapOf("event" to "sessionEstablished"))
                         return
                     }
                     val capabilities = connectivityManager.getNetworkCapabilities(network)
@@ -293,7 +342,7 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
                     val address = info?.peerIpv6Addr
                     val port = pendingPort
                     if (address == null || port == null) {
-                        eventSink?.success(
+                        sendEvent(
                             mapOf("event" to "connectionLost", "reason" to "sem endereço do par"),
                         )
                         return
@@ -302,26 +351,30 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
                         val socket = network.socketFactory.createSocket(address, port)
                         dataSocket = socket
                         readIncoming(socket.getInputStream())
-                        eventSink?.success(mapOf("event" to "sessionEstablished"))
+                        sendEvent(mapOf("event" to "sessionEstablished"))
                     } catch (e: Exception) {
-                        eventSink?.success(
+                        sendEvent(
                             mapOf("event" to "connectionLost", "reason" to (e.message ?: "falha ao conectar")),
                         )
                     }
                 }
 
                 override fun onLost(network: Network) {
-                    eventSink?.success(mapOf("event" to "connectionLost", "reason" to "rede perdida"))
+                    sendEvent(mapOf("event" to "connectionLost", "reason" to "rede perdida"))
                 }
 
                 override fun onUnavailable() {
-                    eventSink?.success(
+                    sendEvent(
                         mapOf("event" to "connectionLost", "reason" to "caminho de dados indisponível"),
                     )
                 }
             }
         networkCallback = callback
-        connectivityManager.requestNetwork(request, callback)
+        try {
+            connectivityManager.requestNetwork(request, callback)
+        } catch (e: Exception) {
+            sendEvent(mapOf("event" to "connectionLost", "reason" to (e.message ?: "falha ao requisitar rede")))
+        }
     }
 
     private fun acceptIncoming(socket: ServerSocket) {
@@ -345,7 +398,7 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
                 while (true) {
                     val n = input.read(buffer)
                     if (n < 0) break
-                    eventSink?.success(
+                    sendEvent(
                         mapOf("event" to "dataReceived", "bytes" to buffer.copyOf(n)),
                     )
                 }

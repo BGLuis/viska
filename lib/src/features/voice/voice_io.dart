@@ -32,10 +32,12 @@ abstract class VoiceRecorder {
 }
 
 class RecordVoiceRecorder implements VoiceRecorder {
-  final AudioRecorder _inner = AudioRecorder();
+  AudioRecorder? _inner;
+
+  AudioRecorder _getOrInitRecorder() => _inner ??= AudioRecorder();
 
   @override
-  Future<void> start(String path) => _inner.start(
+  Future<void> start(String path) => _getOrInitRecorder().start(
         const RecordConfig(
           encoder: AudioEncoder.opus,
           sampleRate: kVoiceSampleRate,
@@ -45,10 +47,15 @@ class RecordVoiceRecorder implements VoiceRecorder {
       );
 
   @override
-  Future<String?> stop() => _inner.stop();
+  Future<String?> stop() async => _inner?.stop();
 
   @override
-  Future<void> dispose() => _inner.dispose();
+  Future<void> dispose() async {
+    try {
+      await _inner?.dispose();
+    } catch (_) {}
+    _inner = null;
+  }
 }
 
 /// Toca bytes de áudio já em memória — extraída como interface pelo mesmo
@@ -61,26 +68,38 @@ abstract class VoicePlayer {
 }
 
 class JustAudioVoicePlayer implements VoicePlayer {
-  final AudioPlayer _inner = AudioPlayer();
+  AudioPlayer? _inner;
+
+  AudioPlayer _getOrInitPlayer() => _inner ??= AudioPlayer();
 
   @override
   Future<void> playBytes(Uint8List wavBytes) async {
-    await _inner.setAudioSource(_BytesAudioSource(wavBytes));
-    await _inner.play();
+    final player = _getOrInitPlayer();
+    await player.setAudioSource(BytesAudioSource(wavBytes));
+    await player.play();
   }
 
   @override
-  Future<void> stop() => _inner.stop();
+  Future<void> stop() async {
+    try {
+      await _inner?.stop();
+    } catch (_) {}
+  }
 
   @override
-  Future<void> dispose() => _inner.dispose();
+  Future<void> dispose() async {
+    try {
+      await _inner?.dispose();
+    } catch (_) {}
+    _inner = null;
+  }
 }
 
 /// Fonte de áudio do `just_audio` a partir de bytes já em memória — nunca
 /// toca disco. `audioplayers`/`BytesSource` foi descartado para isto: não
 /// tem suporte em iOS/macOS (`hasBytesSource: false` no Darwin).
-class _BytesAudioSource extends StreamAudioSource {
-  _BytesAudioSource(this._bytes) : super(tag: 'nota-de-voz');
+class BytesAudioSource extends StreamAudioSource {
+  BytesAudioSource(this._bytes) : super(tag: 'nota-de-voz');
 
   final Uint8List _bytes;
 

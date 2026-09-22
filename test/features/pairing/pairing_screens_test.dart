@@ -28,6 +28,7 @@ class _FakeCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234567890,
       nickname: nickname ?? 'Amigo Teste',
+      isVerified: false,
     );
   }
 
@@ -80,7 +81,7 @@ void main() {
         .setMockMethodCallHandler(SystemChannels.platform, null);
   });
 
-  testWidgets('PairingShowScreen exibe QR e copia codigo Base64 ao clicar', (
+  testWidgets('PairingShowScreen displays QR and copies Base64 code on click', (
     WidgetTester tester,
   ) async {
     final payload = Uint8List.fromList(List.generate(145, (i) => i + 1));
@@ -104,7 +105,7 @@ void main() {
     expect(find.text('Código de pareamento copiado.'), findsOneWidget);
   });
 
-  testWidgets('PairingScanScreen nao cracha sem camera e suporta colar codigo', (
+  testWidgets('PairingScanScreen does not crash without camera and supports pasting code', (
     WidgetTester tester,
   ) async {
     final payload = Uint8List.fromList(List.generate(145, (i) => 42));

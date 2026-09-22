@@ -81,7 +81,7 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn ida_e_volta_um_quadro_completo() {
+    fn roundtrip_single_complete_frame() {
         let envelope = b"envelope de teste".to_vec();
         let mut buffer = frame(&envelope).unwrap();
 
@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn buffer_incompleto_devolve_none_sem_consumir() {
+    fn incomplete_buffer_returns_none_without_consuming() {
         let envelope = b"envelope maior que o prefixo".to_vec();
         let completo = frame(&envelope).unwrap();
 
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn varios_quadros_concatenados_sao_remontados_em_ordem() {
+    fn multiple_concatenated_frames_are_reassembled_in_order() {
         let envelopes: Vec<Vec<u8>> = vec![
             b"primeiro".to_vec(),
             b"segundo, um pouco maior".to_vec(),
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_comprimento_absurdo_sem_alocar_o_corpo() {
+    fn rejects_absurd_length_without_allocating_body() {
         let mut buffer = (MAX_FRAME_LEN as u32 + 1).to_be_bytes().to_vec();
         // Deliberadamente sem anexar nenhum byte de corpo: se `extract_frame`
         // tentasse alocar `len` bytes antes de checar o teto, isto já teria
@@ -148,7 +148,7 @@ mod tests {
         /// posição possível, é sempre remontado corretamente assim que os
         /// bytes que faltam chegam — nunca perde, duplica ou embaralha quadros.
         #[test]
-        fn remontagem_e_correta_para_qualquer_corte(
+        fn reassembly_is_correct_for_any_slice(
             envelopes in proptest::collection::vec(
                 proptest::collection::vec(any::<u8>(), 0..200),
                 0..8,

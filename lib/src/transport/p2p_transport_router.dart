@@ -57,6 +57,9 @@ class P2PTransportRouter {
   Stream<TransportConnectionEvent> connectionEventsFor(ContactId contact) =>
       _ensure(contact).transport.connectionEvents;
 
+  /// Retorna o [P2PTransport] atualmente instanciado para o contato, se houver.
+  P2PTransport? transportFor(ContactId contact) => _routed[contact]?.transport;
+
   /// Fecha e esquece o transporte de um contato — a próxima chamada de
   /// qualquer método para ele cria um transporte novo do zero.
   Future<void> closeContact(ContactId contact) async {
@@ -75,7 +78,10 @@ class P2PTransportRouter {
   _RoutedTransport _ensure(ContactId contact) {
     return _routed.putIfAbsent(contact, () {
       final transport = _transportFactory(_core, contact);
-      return _RoutedTransport(transport, transport.connect());
+      final connectFuture = transport.connect();
+      // Evita exceção não tratada na zona se connect() falhar antes de um envio explícito
+      connectFuture.ignore();
+      return _RoutedTransport(transport, connectFuture);
     });
   }
 

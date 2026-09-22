@@ -6,7 +6,7 @@ import 'package:viska/src/discovery/beacon_id.dart';
 void main() {
   final beacon = Uint8List.fromList(List<int>.generate(16, (i) => i * 17 % 256));
 
-  test('formata_16_bytes_como_hex_minusculo', () {
+  test('formats 16 bytes as lowercase hex', () {
     final hex = toHexInstanceName(beacon);
 
     expect(hex.length, 32);
@@ -14,7 +14,7 @@ void main() {
     expect(RegExp(r'^[0-9a-f]{32}$').hasMatch(hex), isTrue);
   });
 
-  test('formata_16_bytes_como_uuid_com_tracos_no_lugar_certo', () {
+  test('formats 16 bytes as UUID with dashes in correct positions', () {
     final uuid = toBleServiceUuid(beacon);
 
     expect(uuid.length, 36);
@@ -25,7 +25,9 @@ void main() {
     expect(uuid.replaceAll('-', ''), toHexInstanceName(beacon));
   });
 
-  test('rejeita_beacon_com_tamanho_diferente_de_16_bytes', () {
+  test('rejects beacon with length different from 16 bytes', () {
+    expect(() => toBleServiceUuid(Uint8List(0)), throwsArgumentError);
     expect(() => toBleServiceUuid(Uint8List(15)), throwsArgumentError);
+    expect(() => toBleServiceUuid(Uint8List(17)), throwsArgumentError);
   });
 }

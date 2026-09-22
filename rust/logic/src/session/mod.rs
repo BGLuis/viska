@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_outgoing_handshake_e_estavel_ate_a_resp_chegar_e_some_depois() {
+    fn pending_outgoing_handshake_is_stable_until_resp_arrives_and_disappears_after() {
         let (alice, bob) = pair();
         let (mut alice_session, init) = Session::open(&alice, bob.public()).unwrap();
         let init = init.unwrap();
@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn dois_pares_completam_handshake_e_trocam_mil_mensagens_alternadas() {
+    fn two_peers_complete_handshake_and_exchange_thousand_alternating_messages() {
         let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
 
         for i in 0..1000 {
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn sessoes_abertas_ao_mesmo_tempo_convergem_para_uma_unica_raiz() {
+    fn concurrently_opened_sessions_converge_to_single_root() {
         // "Ao mesmo tempo" aqui significa: os dois lados chamam `Session::open`
         // antes de qualquer um ver o byte do outro — não há negociação
         // nenhuma, `is_before` já decide os dois papéis de forma determinística
@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn mensagem_de_tipo_inesperado_como_respondedor_nao_corrompe_o_estado() {
+    fn unexpected_message_type_as_responder_does_not_corrupt_state() {
         let (alice, bob) = pair();
         let (_alice_session, init) = Session::open(&alice, bob.public()).unwrap();
         let init = init.unwrap();
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn resp_invalida_leva_a_sessao_para_failed_sem_panico() {
+    fn invalid_resp_moves_session_to_failed_without_panic() {
         // Uma RESP com um bit trocado no material de chave não é o teste
         // certo aqui: por desenho (D1, §4.4), adulterar `EK_R` não produz erro
         // explícito nenhum — as duas raízes só divergem em silêncio, e é
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn falha_de_aead_isolada_nao_impede_mensagens_seguintes() {
+    fn isolated_aead_failure_does_not_block_subsequent_messages() {
         let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
 
         let mut tampered = alice_session
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn falhas_de_aead_consecutivas_acima_do_limiar_levam_a_failed() {
+    fn consecutive_aead_failures_above_threshold_move_to_failed() {
         let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
 
         for _ in 0..MAX_CONSECUTIVE_AEAD_FAILURES {
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn contador_proximo_do_limiar_sinaliza_needs_rehandshake_sem_quebrar_a_mensagem_atual() {
+    fn counter_near_threshold_signals_needs_rehandshake_without_breaking_current_message() {
         let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
 
         // O limiar de teste (`COUNTER_REHANDSHAKE_THRESHOLD`) fica bem antes
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_incoming_de_sessao_nao_estabelecida_erra_sem_panico() {
+    fn decrypt_incoming_on_unestablished_session_fails_without_panic() {
         let (alice, bob) = pair();
         let (mut alice_session, _init) = Session::open(&alice, bob.public()).unwrap();
 
@@ -692,7 +692,7 @@ mod tests {
     /// transporte real perder pacotes — o mesmo espírito dos property tests
     /// de `wire::plaintext`, adaptado ao nível de sessão.
     #[test]
-    fn conversa_longa_com_perdas_ocasionais_nunca_panica_e_decifra_o_que_chega() {
+    fn long_conversation_with_occasional_losses_never_panics_and_decrypts_arriving_messages() {
         let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
 
         for i in 0..300u32 {

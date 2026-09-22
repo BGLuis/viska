@@ -54,7 +54,7 @@ class _UnreachableFakeTransport extends _FakeTransport implements TransportReadi
 
 void main() {
   group('SelectingP2PTransport', () {
-    test('escolhe_o_primeiro_candidato_que_conecta_com_sucesso', () async {
+    test('chooses first candidate that connects successfully', () async {
       final first = _FakeTransport();
       final second = _FakeTransport();
       final selecting = SelectingP2PTransport(candidates: [first, second]);
@@ -66,7 +66,7 @@ void main() {
       expect(second.connectCalls, 0);
     });
 
-    test('pula_candidato_marcado_como_indisponivel_sem_chamar_connect', () async {
+    test('skips candidate marked as unavailable without calling connect', () async {
       final unreachable = _UnreachableFakeTransport();
       final reachable = _FakeTransport();
       final selecting = SelectingP2PTransport(candidates: [unreachable, reachable]);
@@ -77,7 +77,7 @@ void main() {
       expect(selecting.chosen, same(reachable));
     });
 
-    test('cai_para_o_proximo_candidato_quando_o_primeiro_falha_ou_expira', () async {
+    test('falls back to next candidate when first fails or times out', () async {
       final failing = _FakeTransport(connectError: StateError('não conectou'));
       final slow = _FakeTransport(connectDelay: const Duration(seconds: 30));
       final working = _FakeTransport();
@@ -93,7 +93,7 @@ void main() {
       expect(slow.closeCalls, 1, reason: 'candidato que expirou deve ser fechado');
     });
 
-    test('send_espera_a_selecao_terminar_antes_de_delegar', () async {
+    test('send waits for selection to finish before delegating', () async {
       final slow = _FakeTransport(connectDelay: const Duration(milliseconds: 100));
       final selecting = SelectingP2PTransport(candidates: [slow]);
 
@@ -105,7 +105,7 @@ void main() {
       expect(slow.sendCalls, [Uint8List.fromList([1, 2, 3])]);
     });
 
-    test('close_fecha_todos_os_candidatos_construidos_nao_so_o_escolhido', () async {
+    test('close closes all constructed candidates, not just chosen one', () async {
       final chosen = _FakeTransport();
       final loser = _FakeTransport(connectError: StateError('perdeu'));
       final selecting = SelectingP2PTransport(candidates: [loser, chosen]);
@@ -117,7 +117,7 @@ void main() {
       expect(loser.closeCalls, 1, reason: 'já fechado pelo catch, mas close() não pode pular ninguém');
     });
 
-    test('com_um_unico_candidato_o_comportamento_e_identico_ao_atual', () async {
+    test('with a single candidate behavior is identical to existing', () async {
       final only = _FakeTransport();
       final selecting = SelectingP2PTransport(candidates: [only]);
 
@@ -134,7 +134,7 @@ void main() {
       expect(received, [Uint8List.fromList([7])]);
     });
 
-    test('todos_os_candidatos_falhando_faz_connect_e_send_rejeitarem', () async {
+    test('all candidates failing causes connect and send to reject', () async {
       final a = _FakeTransport(connectError: StateError('a'));
       final b = _FakeTransport(connectError: StateError('b'));
       final selecting = SelectingP2PTransport(candidates: [a, b]);

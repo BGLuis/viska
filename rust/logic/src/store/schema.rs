@@ -60,6 +60,24 @@ const MIGRATIONS: &[&str] = &[
         key    TEXT PRIMARY KEY,
         value  TEXT NOT NULL
     );",
+    "\
+    ALTER TABLE contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE contacts ADD COLUMN verified_safety_number TEXT;
+    ALTER TABLE messages ADD COLUMN reply_to_id INTEGER;
+    ALTER TABLE messages ADD COLUMN view_once INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE message_reactions (
+        message_id           INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        contact_device_id    BLOB NOT NULL REFERENCES contacts(device_id),
+        emoji                TEXT NOT NULL,
+        created_at_unix_secs INTEGER NOT NULL,
+        PRIMARY KEY (message_id, contact_device_id)
+    );
+    CREATE TABLE decoy_vault_config (
+        id            INTEGER PRIMARY KEY CHECK (id = 0),
+        is_enabled    INTEGER NOT NULL DEFAULT 0,
+        duress_pin    TEXT,
+        action_mode   INTEGER NOT NULL DEFAULT 0
+    );",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -80,7 +98,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrar_duas_vezes_e_idempotente() {
+    fn migrating_twice_is_idempotent() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
@@ -92,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn cria_as_tabelas_esperadas() {
+    fn creates_expected_tables() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
 
@@ -103,6 +121,8 @@ mod tests {
             "file_transfers",
             "ephemeral_message_keys",
             "app_config",
+            "message_reactions",
+            "decoy_vault_config",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -116,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn banco_so_com_a_primeira_migracao_ganha_messages_sem_perder_dado_existente() {
+    fn db_with_only_first_migration_adds_messages_without_losing_existing_data() {
         // Simula um banco criado antes desta migração: só a primeira
         // instrução do array, `user_version = 1`. A migração de `messages`
         // precisa rodar sem tocar `local_identity`/`contacts` já existentes.
@@ -153,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn banco_so_ate_file_transfers_ganha_coluna_kind_com_default_sem_perder_dado_existente() {
+    fn db_up_to_file_transfers_adds_kind_column_with_default_without_losing_existing_data() {
         // Simula um banco criado antes da Fase 5: as três primeiras
         // migrações, sem a coluna `kind` — uma transferência de arquivo já
         // persistida (Fase 4) precisa sobreviver com `kind = 0` (File).
@@ -191,5 +211,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kind, 0, "transferência pré-Fase-5 deveria ganhar kind=File por default");
+    }
+
+    #[test]
+    fn db_up_to_app_config_adds_verified_columns_without_losing_existing_contacts() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..6] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6i64).unwrap();
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, 'Amigo')",
+            rusqlite::params![[9u8; 16], [1u8; 32], [2u8; 32]],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (is_verified, verified_sn): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT is_verified, verified_safety_number FROM contacts WHERE device_id = ?1",
+                [[9u8; 16].as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_verified, 0);
+        assert!(verified_sn.is_none());
+
+        // Valida que messages agora possui reply_to_id e view_once
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once)
+             VALUES (?1, 0, 0x10, 'teste', 0, 1000, 0, NULL, 0)",
+            [[9u8; 16].as_slice()],
+        )
+        .unwrap();
+
+        let msg_id = conn.last_insert_rowid();
+
+        // Valida message_reactions
+        conn.execute(
+            "INSERT INTO message_reactions (message_id, contact_device_id, emoji, created_at_unix_secs)
+             VALUES (?1, ?2, '👍', 1001)",
+            rusqlite::params![msg_id, [9u8; 16].as_slice()],
+        )
+        .unwrap();
+
+        // Valida decoy_vault_config
+        conn.execute(
+            "INSERT INTO decoy_vault_config (id, is_enabled, duress_pin, action_mode)
+             VALUES (0, 1, '1234', 1)",
+            [],
+        )
+        .unwrap();
     }
 }

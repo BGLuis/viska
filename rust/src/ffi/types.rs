@@ -15,6 +15,7 @@ pub struct ContactDto {
     pub dh_pubkey: Vec<u8>,
     pub paired_at_unix_secs: i64,
     pub nickname: Option<String>,
+    pub is_verified: bool,
 }
 
 impl ContactDto {
@@ -22,6 +23,7 @@ impl ContactDto {
         identity: &PublicIdentity,
         paired_at_unix_secs: i64,
         nickname: Option<String>,
+        is_verified: bool,
     ) -> Self {
         Self {
             device_id: identity.device_id.to_vec(),
@@ -29,6 +31,7 @@ impl ContactDto {
             dh_pubkey: identity.dh.as_bytes().to_vec(),
             paired_at_unix_secs,
             nickname,
+            is_verified,
         }
     }
 }
@@ -147,6 +150,9 @@ pub struct MessageDto {
     pub delivery_state: DeliveryStateDto,
     pub created_at_unix_secs: i64,
     pub is_ephemeral: bool,
+    pub reply_to_id: Option<i64>,
+    pub view_once: bool,
+    pub reactions: Vec<String>,
 }
 
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
@@ -221,3 +227,4 @@ pub struct DiscoveryBeaconsDto {
     /// anterior/atual/seguinte.
     pub scan_beacons: Vec<Vec<u8>>,
 }
+

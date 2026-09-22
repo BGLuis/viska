@@ -50,6 +50,12 @@ enum FfiError {
   /// autenticação prévia para executar operações.
   locked,
 
+  /// Falha de autenticação ou decifragem AEAD.
+  aeadFailure,
+
+  /// Formato inválido ou corrompido.
+  malformed,
+
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,
 }

@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta_so_com_simbolos_fonte() {
+    fn roundtrip_with_source_symbols_only() {
         let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
         let encoder = BlockEncoder::new(512, &data).unwrap();
         let mut decoder = simple_block_decoder(512, data.len());
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn repara_com_30_por_cento_dos_simbolos_fonte_descartados() {
+    fn repairs_with_30_percent_of_source_symbols_dropped() {
         let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 256) as u8).collect();
         let symbol_size = 1024u16;
         let encoder = BlockEncoder::new(symbol_size, &data).unwrap();
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn bloco_cujo_tamanho_nao_e_multiplo_do_simbolo_reconstroi_exato() {
+    fn block_size_not_multiple_of_symbol_reconstructs_exactly() {
         let data = vec![0x5Au8; 10_007]; // não é múltiplo de 1024.
         let symbol_size = 1024u16;
         let encoder = BlockEncoder::new(symbol_size, &data).unwrap();
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_e_idempotente_para_o_mesmo_simbolo_repetido() {
+    fn ingest_is_idempotent_for_repeated_symbol() {
         let data = vec![0xABu8; 5_000];
         let symbol_size = 512u16;
         let encoder = BlockEncoder::new(symbol_size, &data).unwrap();
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_rejeita_simbolo_de_tamanho_errado_sem_panico() {
+    fn ingest_rejects_wrong_size_symbol_without_panic() {
         let mut decoder = simple_block_decoder(512, 5_000);
         assert!(matches!(
             decoder.ingest_symbol(0, vec![0u8; 511]),
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_rejeita_symbol_id_acima_de_24_bits_sem_panico() {
+    fn ingest_rejects_symbol_id_above_24_bits_without_panic() {
         let mut decoder = simple_block_decoder(512, 5_000);
         assert!(matches!(
             decoder.ingest_symbol(1 << 24, vec![0u8; 512]),
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn novo_rejeita_bloco_vazio() {
+    fn new_rejects_empty_block() {
         assert!(matches!(
             BlockEncoder::new(512, &[]),
             Err(Error::Malformed(_))
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn novo_rejeita_symbol_size_zero() {
+    fn new_rejects_symbol_size_zero() {
         assert!(matches!(
             BlockEncoder::new(0, &[1, 2, 3]),
             Err(Error::Malformed(_))
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn novo_rejeita_bloco_acima_do_teto_de_simbolos_do_raptorq() {
+    fn new_rejects_block_above_raptorq_symbol_ceiling() {
         // symbol_size = 1 força um símbolo por byte — barato de montar em
         // teste e força o teto de 56.403 símbolos-fonte a estourar.
         let tamanho = 56_404usize;
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn novo_aceita_bloco_exatamente_no_teto_de_simbolos_do_raptorq() {
+    fn new_accepts_block_exactly_at_raptorq_symbol_ceiling() {
         // Prova que o teto espelhado em `RAPTORQ_MAX_SOURCE_SYMBOLS_PER_BLOCK`
         // não está conservador demais: o valor exato ainda passa na
         // validação — só `+1` (teste acima) deveria falhar.

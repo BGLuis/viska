@@ -291,7 +291,7 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn encrypt_name_ida_e_volta() {
+    fn encrypt_name_roundtrip() {
         let secret = b"segredo-de-transferencia";
         let file_id = [3u8; FILE_ID_LEN];
         let encrypted = encrypt_name(secret, &file_id, "relatorio-final.pdf").unwrap();
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_name_com_segredo_errado_falha() {
+    fn decrypt_name_with_wrong_secret_fails() {
         let file_id = [4u8; FILE_ID_LEN];
         let encrypted = encrypt_name(b"segredo-certo", &file_id, "nome.txt").unwrap();
         assert!(matches!(
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta_preserva_todos_os_campos() {
+    fn roundtrip_preserves_all_fields() {
         let original = amostra();
         let encoded = original.encode().unwrap();
         let decoded = Manifest::decode(&encoded).unwrap();
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn campos_binarios_viram_byte_string_cbor_e_nao_array_de_inteiros() {
+    fn binary_fields_become_cbor_byte_strings_not_integer_arrays() {
         // Um byte string CBOR de 16 bytes começa com o major type 2
         // (0b010) e o comprimento 16 no próprio byte inicial: 0x50. Se
         // `file_id` tivesse virado um array de inteiros (o padrão do
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_mime_diferente_do_fixo() {
+    fn decode_rejects_mime_different_from_fixed() {
         let mut manifesto = amostra();
         // Contorna `encode()` para forjar um mime diferente — `encode` nunca
         // produziria isto sozinho, então o teste precisa montar o CBOR à mão.
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_block_symbols_zero_ou_acima_do_teto_de_d6() {
+    fn decode_rejects_block_symbols_zero_or_above_d6_ceiling() {
         // `validate` checa `block_symbols` antes de checar a consistência de
         // `source_blocks` — então o valor de `source_blocks` no CBOR
         // adulterado é irrelevante aqui, mesmo deixando o da amostra válida
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_symbol_size_fora_dos_buckets_conhecidos() {
+    fn decode_rejects_symbol_size_outside_known_buckets() {
         let encoded_valido = amostra().encode().unwrap();
         let mut value: Value = ciborium::from_reader(&encoded_valido[..]).unwrap();
         if let Value::Map(entries) = &mut value {
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_source_blocks_inconsistente() {
+    fn decode_rejects_inconsistent_source_blocks() {
         let mut manifesto = amostra();
         manifesto.source_blocks += 1; // não bate mais com file_size/symbol_size/block_symbols.
         let encoded_valido = amostra().encode().unwrap();
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_file_id_com_tamanho_errado() {
+    fn decode_rejects_file_id_with_wrong_size() {
         let value = Value::Map(vec![
             (text(KEY_FILE_ID), Value::Bytes(vec![1u8; 15])),
             (text(KEY_FILE_SIZE), integer(0u64)),
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejeita_campo_obrigatorio_ausente() {
+    fn decode_rejects_missing_mandatory_field() {
         let value = Value::Map(vec![
             (text(KEY_FILE_ID), Value::Bytes(vec![1u8; FILE_ID_LEN])),
             (text(KEY_FILE_SIZE), integer(0u64)),
@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejeita_block_symbols_invalido_antes_de_serializar() {
+    fn encode_rejects_invalid_block_symbols_before_serializing() {
         let mut manifesto = amostra();
         manifesto.block_symbols = 0;
         assert!(matches!(manifesto.encode(), Err(Error::Malformed(_))));
@@ -499,14 +499,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_rejeita_source_blocks_acima_do_teto_de_sanidade() {
+    fn encode_rejects_source_blocks_above_sanity_ceiling() {
         let mut manifesto = amostra();
         manifesto.source_blocks = MAX_SOURCE_BLOCKS + 1;
         assert!(matches!(manifesto.encode(), Err(Error::Malformed(_))));
     }
 
     #[test]
-    fn decode_rejeita_source_blocks_acima_do_teto_de_sanidade() {
+    fn decode_rejects_source_blocks_above_sanity_ceiling() {
         // Prova a defesa contra o vetor real: um manifesto declarando um
         // `source_blocks` na casa dos bilhões (o que faria
         // `ReceiveTransfer::start` alocar um `Vec<bool>` de gigabytes) é
@@ -537,7 +537,7 @@ mod tests {
         /// de um par em potencial mal-intencionado. Para qualquer entrada, o
         /// resultado é sempre `Ok` ou `Err` — nunca panic.
         #[test]
-        fn decode_nunca_entra_em_panico(bytes in proptest::collection::vec(any::<u8>(), 0..=4096)) {
+        fn decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..=4096)) {
             let _ = Manifest::decode(&bytes);
         }
 
@@ -545,7 +545,7 @@ mod tests {
         /// começou válido — mais provável de passar da checagem de "é CBOR
         /// bem formado" e exercitar as validações de campo.
         #[test]
-        fn decode_nunca_entra_em_panico_a_partir_de_manifesto_valido_adulterado(
+        fn decode_never_panics_from_tampered_valid_manifest(
             indices_e_bits in proptest::collection::vec((any::<usize>(), any::<u8>()), 0..=20),
         ) {
             let mut bytes = amostra().encode().unwrap();

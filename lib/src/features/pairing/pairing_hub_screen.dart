@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/pairing/pairing_error_copy.dart';
 import 'package:viska/src/features/pairing/proximity/proximity_pairing_view.dart';
 import 'package:viska/src/rust/ffi/core.dart';
@@ -105,9 +106,12 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
   String? _errorMessage;
   PermissionStatus? _cameraPermission;
 
+  bool _isStartingCamera = false;
+
   late final MobileScannerController _scannerController = MobileScannerController(
     formats: const [BarcodeFormat.qrCode],
     facing: CameraFacing.back,
+    autoStart: false,
   );
 
   late final Future<Uint8List> _myPayload = widget.core.myQrPayload();
@@ -120,15 +124,36 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    try {
+      _scannerController.stop().catchError((_) {});
+      _scannerController.dispose().catchError((_) {});
+    } catch (_) {}
     super.dispose();
+  }
+
+  Future<void> _startCamera() async {
+    if (_isStartingCamera || !mounted) return;
+    _isStartingCamera = true;
+    try {
+      await _scannerController.start();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = 'Câmera indisponível: $e');
+    } finally {
+      _isStartingCamera = false;
+    }
   }
 
   Future<void> _requestCameraPermission() async {
     try {
-      final status = await Permission.camera.request();
+      final status = await LockController.guardTransient(
+        () => Permission.camera.request(),
+      );
       if (!mounted) return;
       setState(() => _cameraPermission = status);
+      if (status.isGranted && _selectedView == 0) {
+        await _startCamera();
+      }
     } catch (_) {
       if (!mounted) return;
       setState(() => _cameraPermission = PermissionStatus.denied);
@@ -161,6 +186,9 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
 
     try {
       final contact = await widget.core.pairFromQr(payload: bytes);
+      try {
+        await _scannerController.stop();
+      } catch (_) {}
       if (!mounted) return;
       widget.onContactPaired(contact);
     } on FfiError catch (error) {
@@ -196,7 +224,17 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
               ),
             ],
             selected: {_selectedView},
-            onSelectionChanged: (set) => setState(() => _selectedView = set.first),
+            onSelectionChanged: (set) async {
+              final newView = set.first;
+              setState(() => _selectedView = newView);
+              if (newView == 0 && _cameraPermission?.isGranted == true) {
+                await _startCamera();
+              } else if (newView == 1) {
+                try {
+                  await _scannerController.stop();
+                } catch (_) {}
+              }
+            },
           ),
         ),
         if (_errorMessage != null)

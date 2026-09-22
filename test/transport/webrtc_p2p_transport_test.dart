@@ -238,6 +238,54 @@ class _FakeCore implements Core {
 
   @override
   Future<void> unlock() => throw UnimplementedError();
+
+  @override
+  Future<void> addReaction({
+    required U8Array16 contactDeviceId,
+    required PlatformInt64 targetMsgId,
+    required String emoji,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> configureDuressPin({
+    required String duressPin,
+    required int actionMode,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String> exportEncryptedBackup({required String destPath}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> restoreEncryptedBackup({
+    required String mnemonic,
+    required String srcPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String?> getConfig({required String key}) => throw UnimplementedError();
+
+  @override
+  Future<void> setConfig({required String key, required String value}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> verifyContact({
+    required List<int> contactDeviceId,
+    required bool verified,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) =>
+      throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {
@@ -375,7 +423,7 @@ void main() {
       );
     });
 
-    test('como iniciador: conecta a sinalização, assina, cria oferta e publica', () async {
+    test('as initiator: connects signaling, subscribes, creates offer and publishes', () async {
       // `outgoingHandshake` não-nulo é o sinal de que somos o iniciador —
       // reaproveitado de `Core.ensureSession` para também decidir quem
       // oferta o SDP (ver o doc-comment de `WebrtcP2PTransport`).
@@ -412,7 +460,7 @@ void main() {
       expect(channel.answerCalls, isEmpty);
     });
 
-    test('como respondedor: não cria oferta; oferta recebida vira resposta publicada', () async {
+    test('as responder: does not create offer; received offer becomes published answer', () async {
       final responderStatus = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -443,7 +491,7 @@ void main() {
       expect(decoded['sdp'], channel.answerSdpToReturn);
     });
 
-    test('resposta remota recebida chama applyRemoteAnswer', () async {
+    test('received remote answer calls applyRemoteAnswer', () async {
       final initiatorStatus = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -468,7 +516,7 @@ void main() {
       expect(channel.remoteAnswerCalls, ['v=0 RESPOSTA REMOTA']);
     });
 
-    test('candidato ICE local é publicado; candidato remoto recebido é aplicado', () async {
+    test('local ICE candidate is published; received remote candidate is applied', () async {
       final initiatorStatus = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -513,7 +561,7 @@ void main() {
       ]);
     });
 
-    test('desconecta a sinalização assim que o transporte fica connected', () async {
+    test('disconnects signaling as soon as transport becomes connected', () async {
       final status = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -538,7 +586,7 @@ void main() {
       expect(signaling.disconnectCalls, 1);
     });
 
-    test('payload de sinalização não decifrável (Ok(None)) é ignorado sem erro', () async {
+    test('undecryptable signaling payload (Ok(None)) is ignored without error', () async {
       final status = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -565,7 +613,7 @@ void main() {
       expect(channel.remoteCandidateCalls, isEmpty);
     });
 
-    test('send/sendFile/incoming/incomingFile/connectionEvents proxeiam direto para o canal', () async {
+    test('send/sendFile/incoming/incomingFile/connectionEvents proxy directly to channel', () async {
       final status = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,
@@ -605,7 +653,7 @@ void main() {
       expect(events, [const TransportConnectionEvent(TransportConnectionState.failed)]);
     });
 
-    test('close() fecha sinalização e canal', () async {
+    test('close() closes signaling and channel', () async {
       final status = SessionStatusDto(
         state: SessionStateKind.handshaking,
         needsRehandshake: false,

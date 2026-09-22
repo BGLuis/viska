@@ -56,7 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bucket_for_escolhe_o_menor_bucket_suficiente() {
+    fn bucket_for_chooses_smallest_sufficient_bucket() {
         assert_eq!(Transport::DataChannel.bucket_for(1).unwrap(), 1024);
         assert_eq!(Transport::DataChannel.bucket_for(1024).unwrap(), 1024);
         assert_eq!(Transport::DataChannel.bucket_for(1025).unwrap(), 16384);
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn bucket_for_rejeita_alem_do_maior_bucket() {
+    fn bucket_for_rejects_beyond_largest_bucket() {
         assert!(matches!(
             Transport::DataChannel.bucket_for(16385),
             Err(Error::PayloadTooLarge { max: 16384 })

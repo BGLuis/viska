@@ -27,7 +27,9 @@ class SelectingP2PTransport implements P2PTransport {
     required List<P2PTransport> candidates,
     Duration candidateTimeout = const Duration(seconds: 8),
   })  : _candidates = candidates,
-        _candidateTimeout = candidateTimeout;
+        _candidateTimeout = candidateTimeout {
+    _selectionDone.future.ignore();
+  }
 
   final List<P2PTransport> _candidates;
   final Duration _candidateTimeout;
@@ -82,7 +84,9 @@ class SelectingP2PTransport implements P2PTransport {
     }
 
     final error = StateError('Nenhum transporte candidato conseguiu conectar');
-    _selectionDone.completeError(error);
+    if (!_selectionDone.isCompleted) {
+      _selectionDone.completeError(error);
+    }
     _connectionEventsController.add(
       const TransportConnectionEvent(
         TransportConnectionState.failed,

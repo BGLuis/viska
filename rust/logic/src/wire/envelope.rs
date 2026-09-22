@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn ida_e_volta() {
+    fn roundtrip() {
         let sealed = vec![0xAAu8; 100 + TAG_LEN];
         let dh_pub = dh_pub_de_teste(0x11);
         let envelope = encode(42, &dh_pub, &sealed);
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn aad_e_o_contador_seguido_do_dh_pub() {
+    fn aad_is_counter_followed_by_dh_pub() {
         let dh_pub = dh_pub_de_teste(0xAB);
         let bytes = aad(0x0102_0304, &dh_pub);
 
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn rejeita_envelope_curto_demais_sem_panico() {
+    fn rejects_too_short_envelope_without_panic() {
         for len in 0..(HEADER_LEN + TAG_LEN) {
             let curto = vec![0u8; len];
             assert!(matches!(decode(&curto), Err(Error::Malformed(_))));
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_nunca_panica_em_bytes_arbitrarios() {
+    fn decode_never_panics_on_arbitrary_bytes() {
         // Não é o property test formal do módulo (esse vive em plaintext.rs),
         // mas o envelope também processa bytes de um par não confiável antes
         // de qualquer verificação criptográfica, e merece a mesma garantia.

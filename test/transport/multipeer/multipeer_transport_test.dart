@@ -66,7 +66,7 @@ class _FakeMultipeerChannel implements MultipeerChannel {
 }
 
 void main() {
-  test('lado_ativo_procura_e_lado_passivo_anuncia_o_mesmo_beacon', () async {
+  test('active side searches and passive side advertises the same beacon', () async {
     final activeChannel = _FakeMultipeerChannel();
     final passiveChannel = _FakeMultipeerChannel();
 
@@ -96,7 +96,7 @@ void main() {
     await Future.wait([activeConnect, passiveConnect]).timeout(const Duration(seconds: 5));
   });
 
-  test('dados_no_canal_control_e_file_sao_roteados_pelo_marcador', () async {
+  test('data on control and file channels are routed by tag', () async {
     final channel = _FakeMultipeerChannel();
     final transport = MultipeerTransport(
       core: _FakeCore(weAreActive: true),
@@ -128,7 +128,7 @@ void main() {
     expect(receivedFile, [Uint8List.fromList([9, 9])]);
   });
 
-  test('isLikelyReachable_reflete_isSupported_do_canal', () async {
+  test('isLikelyReachable reflects channel isSupported', () async {
     final channel = _FakeMultipeerChannel()..supported = false;
     final transport = MultipeerTransport(
       core: _FakeCore(weAreActive: true),
@@ -142,7 +142,7 @@ void main() {
     expect(transport.isLikelyReachable, isFalse);
   });
 
-  test('connect_falha_quando_nao_suportado', () async {
+  test('connect fails when not supported', () async {
     final channel = _FakeMultipeerChannel()..supported = false;
     final transport = MultipeerTransport(
       core: _FakeCore(weAreActive: true),
@@ -155,7 +155,7 @@ void main() {
     expect(channel.browsedBeaconHex, isNull);
   });
 
-  test('connectionLost_antes_de_estabelecer_falha_o_connect', () async {
+  test('connectionLost before establishing causes connect to fail', () async {
     final channel = _FakeMultipeerChannel();
     final transport = MultipeerTransport(
       core: _FakeCore(weAreActive: true),

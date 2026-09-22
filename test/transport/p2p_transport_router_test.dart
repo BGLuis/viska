@@ -60,7 +60,7 @@ void main() {
       );
     });
 
-    test('sendToContact cria e conecta o transporte na primeira chamada', () async {
+    test('sendToContact creates and connects transport on first call', () async {
       final contact = ContactId([1, 2, 3]);
       await router.sendToContact(contact, Uint8List.fromList([9]));
 
@@ -68,7 +68,7 @@ void main() {
       expect(created[contact]!.sendCalls, [Uint8List.fromList([9])]);
     });
 
-    test('sendFileToContact usa o canal file, separado de sendToContact', () async {
+    test('sendFileToContact uses file channel, separate from sendToContact', () async {
       final contact = ContactId([1, 2, 3]);
       await router.sendFileToContact(contact, Uint8List.fromList([9]));
 
@@ -77,7 +77,7 @@ void main() {
       expect(created[contact]!.sendCalls, isEmpty);
     });
 
-    test('incomingFileFor recebe só o que o canal file emite', () async {
+    test('incomingFileFor receives only what file channel emits', () async {
       final contact = ContactId([4, 5, 6]);
       final received = <Uint8List>[];
       router.incomingFileFor(contact).listen(received.add);
@@ -90,7 +90,7 @@ void main() {
       expect(received, [Uint8List.fromList([1])]);
     });
 
-    test('chamadas seguintes para o mesmo contato reusam o mesmo transporte', () async {
+    test('subsequent calls for same contact reuse same transport', () async {
       final contact = ContactId([1, 2, 3]);
       await router.sendToContact(contact, Uint8List.fromList([1]));
       await router.sendToContact(contact, Uint8List.fromList([2]));
@@ -100,7 +100,7 @@ void main() {
       expect(created[contact]!.sendCalls, hasLength(2));
     });
 
-    test('contatos diferentes recebem transportes diferentes', () async {
+    test('different contacts receive different transports', () async {
       final alice = ContactId([1]);
       final bob = ContactId([2]);
 
@@ -111,7 +111,7 @@ void main() {
       expect(created[alice], isNot(same(created[bob])));
     });
 
-    test('incomingFor cria o transporte (e conecta) mesmo sem enviar nada antes', () async {
+    test('incomingFor creates transport (and connects) even without sending anything beforehand', () async {
       final contact = ContactId([4, 5, 6]);
       final received = <Uint8List>[];
       router.incomingFor(contact).listen(received.add);
@@ -125,13 +125,13 @@ void main() {
       expect(received, [Uint8List.fromList([1, 2])]);
     });
 
-    test('connectionEventsFor cria o transporte mesmo sem enviar nada antes', () async {
+    test('connectionEventsFor creates transport even without sending anything beforehand', () async {
       final contact = ContactId([7, 8, 9]);
       router.connectionEventsFor(contact);
       expect(created, contains(contact));
     });
 
-    test('closeContact fecha e esquece o transporte — próxima chamada cria um novo', () async {
+    test('closeContact closes and forgets transport - next call creates a new one', () async {
       final contact = ContactId([1, 2, 3]);
       await router.sendToContact(contact, Uint8List.fromList([1]));
       final first = created[contact]!;
@@ -143,11 +143,11 @@ void main() {
       expect(created[contact], isNot(same(first)), reason: 'deveria ser um transporte novo');
     });
 
-    test('closeContact de um contato sem transporte não erra', () async {
+    test('closeContact on contact without transport does not error', () async {
       await router.closeContact(ContactId([0, 0, 0]));
     });
 
-    test('closeAll fecha todos os transportes registrados', () async {
+    test('closeAll closes all registered transports', () async {
       final alice = ContactId([1]);
       final bob = ContactId([2]);
       await router.sendToContact(alice, Uint8List.fromList([1]));

@@ -35,6 +35,7 @@ class _FakeHubCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234567890,
       nickname: nickname ?? 'Par Teste',
+      isVerified: false,
     );
   }
 
@@ -71,7 +72,7 @@ void main() {
   });
 
   group('ProfileSetupDialog', () {
-    testWidgets('valida campo vazio e salva apelido válido', (tester) async {
+    testWidgets('validates empty field and saves valid nickname', (tester) async {
       final core = _FakeHubCore();
       String? result;
 
@@ -119,7 +120,7 @@ void main() {
   });
 
   group('PairingHubScreen', () {
-    testWidgets('exibe as 3 abas e permite alternar entre elas', (tester) async {
+    testWidgets('displays all 3 tabs and allows switching between them', (tester) async {
       final core = _FakeHubCore();
 
       await tester.pumpWidget(
@@ -146,9 +147,16 @@ void main() {
 
       expect(find.text('Escanear amigo'), findsOneWidget);
       expect(find.text('Meu código'), findsOneWidget);
+
+      // Alterna para Proximidade
+      await tester.tap(find.text('Proximidade'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Procurando aparelhos próximos na rede local...'), findsOneWidget);
     });
 
-    testWidgets('aba Manual valida código Base64 e executa pareamento', (tester) async {
+    testWidgets('Manual tab validates Base64 code and executes pairing', (tester) async {
       final core = _FakeHubCore();
       final validPayload = Uint8List.fromList(List.generate(145, (i) => i));
       final b64 = base64Encode(validPayload);

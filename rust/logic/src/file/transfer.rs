@@ -765,7 +765,7 @@ mod tests {
     /// bloco, o receptor decodifica direto (sem perda), feedback fecha cada
     /// bloco, e o arquivo final bate byte a byte com o original.
     #[test]
-    fn transferencia_completa_sem_perda_de_simbolos() {
+    fn complete_transfer_without_symbol_loss() {
         let (manifest, original) = manifesto_de_teste(3 * 4096, 512, 8); // 3 blocos de 4096 B.
         let transfer_secret = b"segredo-de-transferencia-de-teste";
         let staging_dir = tempfile::tempdir().unwrap();
@@ -809,7 +809,7 @@ mod tests {
     /// (`next_sealed_symbol`/`ingest_sealed_symbol`) — o caminho que de fato
     /// atravessaria o canal `file` do WebRTC, com `K_symbol` de verdade.
     #[test]
-    fn transferencia_completa_por_simbolos_selados() {
+    fn complete_transfer_via_sealed_symbols() {
         let (manifest, original) = manifesto_de_teste(3 * 4096, 512, 8);
         let transfer_secret = b"segredo-para-simbolos-selados";
         let staging_dir = tempfile::tempdir().unwrap();
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_sealed_symbol_com_segredo_errado_falha() {
+    fn ingest_sealed_symbol_with_wrong_secret_fails() {
         let (manifest, original) = manifesto_de_teste(4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
 
@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn peek_wire_file_id_le_o_prefixo_sem_decifrar() {
+    fn peek_wire_file_id_reads_prefix_without_decrypting() {
         let (manifest, original) = manifesto_de_teste(4096, 512, 8);
         let mut sender = SendTransfer::new(
             manifest.clone(),
@@ -877,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn peek_wire_file_id_rejeita_pacote_curto_demais_sem_panico() {
+    fn peek_wire_file_id_rejects_too_short_packet_without_panic() {
         assert!(matches!(
             peek_wire_file_id(&[0u8; FILE_ID_LEN - 1]),
             Err(Error::Malformed(_))
@@ -886,13 +886,13 @@ mod tests {
 
     proptest::proptest! {
         #[test]
-        fn peek_wire_file_id_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=64)) {
+        fn peek_wire_file_id_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=64)) {
             let _ = peek_wire_file_id(&bytes);
         }
     }
 
     #[test]
-    fn metadata_body_ida_e_volta() {
+    fn metadata_body_roundtrip() {
         let (manifest, _original) = manifesto_de_teste(2 * 65536, 16384, 4);
         let secret = [42u8; TRANSFER_SECRET_LEN];
 
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_body_rejeita_corpo_curto_demais_sem_panico() {
+    fn metadata_body_rejects_too_short_body_without_panic() {
         assert!(matches!(
             decode_metadata_body(&[0u8; TRANSFER_SECRET_LEN - 1]),
             Err(Error::Malformed(_))
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_body_rejeita_kind_desconhecido() {
+    fn metadata_body_rejects_unknown_kind() {
         let (manifest, _original) = manifesto_de_teste(2 * 65536, 16384, 4);
         let mut body = encode_metadata_body(TransferKind::File, &[7u8; TRANSFER_SECRET_LEN], &manifest).unwrap();
         body[METADATA_KIND_AT] = 0xff;
@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn file_complete_ida_e_volta() {
+    fn file_complete_roundtrip() {
         let original = FileComplete {
             file_id: [11u8; FILE_ID_LEN],
         };
@@ -932,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn file_complete_decode_rejeita_corpo_curto_sem_panico() {
+    fn file_complete_decode_rejects_short_body_without_panic() {
         assert!(matches!(
             FileComplete::decode(&[0u8; FILE_ID_LEN - 1]),
             Err(Error::Malformed(_))
@@ -943,7 +943,7 @@ mod tests {
     /// reparo — prova que o RaptorQ (F2) e o resto da camada de
     /// transferência (F4) se encaixam de verdade, não só em isolamento.
     #[test]
-    fn transferencia_completa_com_perda_de_simbolos_e_reparo() {
+    fn complete_transfer_with_symbol_loss_and_repair() {
         let (manifest, original) = manifesto_de_teste(2 * 65536 + 1000, 1024, 64); // 2 blocos cheios + resto.
         let transfer_secret = b"outro-segredo-de-transferencia";
         let staging_dir = tempfile::tempdir().unwrap();
@@ -982,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_antes_de_completo_e_rejeitado() {
+    fn finish_before_complete_is_rejected() {
         let (manifest, _original) = manifesto_de_teste(4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
         let receiver =
@@ -996,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_symbol_de_bloco_que_nao_e_o_corrente_e_ignorado() {
+    fn ingest_symbol_from_non_current_block_is_ignored() {
         let (manifest, _original) = manifesto_de_teste(2 * 4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
         let mut receiver =
@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn file_symbol_ida_e_volta() {
+    fn file_symbol_roundtrip() {
         let original = FileSymbol {
             block_index: 7,
             symbol_id: 99,
@@ -1025,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn file_symbol_decode_aceita_dados_vazios() {
+    fn file_symbol_decode_accepts_empty_data() {
         let original = FileSymbol {
             block_index: 1,
             symbol_id: 2,
@@ -1036,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn file_symbol_decode_rejeita_cabecalho_incompleto_sem_panico() {
+    fn file_symbol_decode_rejects_incomplete_header_without_panic() {
         for tamanho in 0..SYMBOL_DATA_AT {
             assert!(matches!(
                 FileSymbol::decode(&vec![0u8; tamanho]),
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn file_feedback_ida_e_volta() {
+    fn file_feedback_roundtrip() {
         let original = FileFeedback {
             file_id: [3u8; FILE_ID_LEN],
             block_index: 5,
@@ -1059,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn file_feedback_rejeita_bitmap_de_tamanho_errado() {
+    fn file_feedback_rejects_bitmap_with_wrong_size() {
         let feedback = FileFeedback {
             file_id: [1u8; FILE_ID_LEN],
             block_index: 0,
@@ -1077,12 +1077,12 @@ mod tests {
 
     proptest::proptest! {
         #[test]
-        fn file_symbol_decode_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=2048)) {
+        fn file_symbol_decode_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=2048)) {
             let _ = FileSymbol::decode(&bytes);
         }
 
         #[test]
-        fn file_feedback_decode_nunca_entra_em_panico(
+        fn file_feedback_decode_never_panics(
             bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=2048),
             source_blocks in 0u32..2048,
         ) {
@@ -1090,12 +1090,12 @@ mod tests {
         }
 
         #[test]
-        fn file_complete_decode_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=64)) {
+        fn file_complete_decode_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=64)) {
             let _ = FileComplete::decode(&bytes);
         }
 
         #[test]
-        fn decode_metadata_body_nunca_entra_em_panico(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
+        fn decode_metadata_body_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
             let _ = decode_metadata_body(&bytes);
         }
     }

@@ -31,7 +31,7 @@ pub const WORD_COUNT: usize = 6;
 /// bits cabem em 66 bits, arredondados para cima a bytes inteiros.
 const WORD_XOF_LEN: usize = 9;
 
-fn wordlist() -> Vec<&'static str> {
+pub fn wordlist() -> Vec<&'static str> {
     let words: Vec<&'static str> = WORDLIST.lines().collect();
     debug_assert_eq!(words.len(), 2048, "wordlist_pt_br.txt não tem 2048 linhas");
     words
@@ -154,7 +154,7 @@ mod tests {
     use crate::crypto::identity::LocalIdentity;
 
     #[test]
-    fn independe_da_ordem_dos_argumentos() {
+    fn independent_of_argument_order() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
 
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn muda_quando_uma_identidade_muda() {
+    fn changes_when_identity_changes() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
         let c = LocalIdentity::generate().unwrap().public();
@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn formato_exibido_tem_60_digitos() {
+    fn displayed_format_has_60_digits() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
         let rendered = SafetyNumber::compute(&a, &b).to_display_string();
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn grupos_ficam_na_faixa_de_cinco_digitos() {
+    fn groups_are_in_five_digit_range() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
 
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn wordlist_tem_exatamente_2048_palavras_unicas() {
+    fn wordlist_has_exactly_2048_unique_words() {
         let list = wordlist();
         assert_eq!(list.len(), 2048);
 
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn palavras_independem_da_ordem_dos_argumentos() {
+    fn words_independent_of_argument_order() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
 
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn palavras_mudam_quando_uma_identidade_muda() {
+    fn words_change_when_identity_changes() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
         let c = LocalIdentity::generate().unwrap().public();
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn representacao_em_palavras_tem_seis_palavras_separadas_por_espaco() {
+    fn words_representation_has_six_space_separated_words() {
         let a = LocalIdentity::generate().unwrap().public();
         let b = LocalIdentity::generate().unwrap().public();
         let rendered = SafetyNumber::compute(&a, &b).to_words_display_string();
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn indices_de_palavra_sempre_na_faixa_0_2047() {
+    fn word_indices_always_in_range_0_2047() {
         // Vetor determinístico: byte 0 = 0xFF força o primeiro índice a 2047
         // (o maior valor de 11 bits); o resto em zero mantém os outros em 0.
         // Confere as duas bordas da faixa em um único caso, sem depender do
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn empacotamento_de_11_bits_e_msb_first() {
+    fn eleven_bit_packing_is_msb_first() {
         // byte0 = 0b1011_0000, resto zero. Os 11 bits do primeiro grupo são os
         // 8 bits do byte0 seguidos pelos 3 bits mais significativos do
         // byte1 (aqui, zero): 1011_0000_000 = 1408. Os grupos seguintes caem
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn todos_bits_um_produz_maior_indice_em_todos_os_grupos() {
+    fn all_ones_produces_highest_index_in_all_groups() {
         let bytes = [0xFFu8; WORD_XOF_LEN];
         let indices = pack_11_bit_groups(&bytes);
         assert_eq!(indices, [2047; WORD_COUNT]);
