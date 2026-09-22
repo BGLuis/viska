@@ -37,8 +37,17 @@ class _MockSmokeCore implements Core {
   Future<Uint8List> myQrPayload() async =>
       Uint8List.fromList(List.generate(145, (i) => (i + 1) % 256));
 
+  bool throwOnSafetyNumber = false;
+
+  @override
+  Future<Uint8List> myDeviceId() async =>
+      Uint8List.fromList(List.generate(16, (i) => i));
+
   @override
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId}) async {
+    if (throwOnSafetyNumber) {
+      throw Exception('FfiError::Locked');
+    }
     return const SafetyNumberDto(
       digits: '1234567890123456789012345678901234567890123456789012',
       words: 'apple banana cherry dog elephant fox grape horse igloo jaguar kite lion',
@@ -182,6 +191,108 @@ void main() {
         expect(find.byKey(const Key('verified_badge')), findsOneWidget);
         expect(find.byIcon(Icons.edit_outlined), findsWidgets);
         expect(find.byIcon(Icons.verified_user_outlined), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        controller.dispose();
+      }
+    });
+
+    testWidgets(
+        'MainApp tapping contact verifier opens SafetyNumberQrDialog and closes cleanly without freeze or crash', (
+      WidgetTester tester,
+    ) async {
+      final sampleContact = ContactDto(
+        deviceId: Uint8List.fromList(List.generate(16, (i) => i + 10)),
+        signingPubkey: Uint8List(32),
+        dhPubkey: Uint8List(32),
+        pairedAtUnixSecs: 1700000000,
+        nickname: 'Alice Segura',
+        isVerified: true,
+      );
+
+      final coreWithContacts = _MockSmokeCore(contacts: [sampleContact]);
+      final controller = LockController(
+        core: coreWithContacts,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+        autoLockTimeout: null,
+      );
+
+      try {
+        await tester.pumpWidget(
+          MainApp(
+            core: coreWithContacts,
+            router: P2PTransportRouter(core: coreWithContacts),
+            lockController: controller,
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        final verifierButton = find.byIcon(Icons.verified_user_outlined);
+        expect(verifierButton, findsOneWidget);
+
+        // Tap the verifier button
+        await tester.tap(verifierButton);
+        await tester.pumpAndSettle();
+
+        // SafetyNumberQrDialog is displayed with QR Code and numbers
+        expect(find.text('Número de Segurança (Alice Segura)'), findsOneWidget);
+        expect(find.byKey(const Key('scan_partner_qr_button')), findsOneWidget);
+        expect(find.text('Fechar'), findsOneWidget);
+
+        // Close dialog cleanly
+        await tester.tap(find.text('Fechar'));
+        await tester.pumpAndSettle();
+
+        // Screen is still intact and responsive
+        expect(find.text('Alice Segura'), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        controller.dispose();
+      }
+    });
+
+    testWidgets(
+        'Tapping verifier when safetyNumber throws shows error SnackBar without crashing or freezing', (
+      WidgetTester tester,
+    ) async {
+      final sampleContact = ContactDto(
+        deviceId: Uint8List.fromList(List.generate(16, (i) => i + 10)),
+        signingPubkey: Uint8List(32),
+        dhPubkey: Uint8List(32),
+        pairedAtUnixSecs: 1700000000,
+        nickname: 'Alice Segura',
+        isVerified: false,
+      );
+
+      final failingCore = _MockSmokeCore(contacts: [sampleContact])..throwOnSafetyNumber = true;
+      final controller = LockController(
+        core: failingCore,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+        autoLockTimeout: null,
+      );
+
+      try {
+        await tester.pumpWidget(
+          MainApp(
+            core: failingCore,
+            router: P2PTransportRouter(core: failingCore),
+            lockController: controller,
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        final verifierButton = find.byIcon(Icons.verified_user_outlined);
+        await tester.tap(verifierButton);
+        await tester.pumpAndSettle();
+
+        expect(find.byType(SnackBar), findsOneWidget);
+        expect(find.textContaining('Aplicativo bloqueado'), findsOneWidget);
 
         await tester.pumpWidget(const SizedBox.shrink());
       } finally {

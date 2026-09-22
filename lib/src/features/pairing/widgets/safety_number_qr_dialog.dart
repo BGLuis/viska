@@ -78,24 +78,34 @@ class _SafetyNumberQrDialogState extends State<SafetyNumberQrDialog> {
   }
 
   Future<void> _openScanner() async {
-    final verified = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => SafetyNumberScanner(
-          contact: widget.contact,
-          expectedSafetyNumber: widget.safetyNumber,
-          core: widget.core,
+    try {
+      final verified = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => SafetyNumberScanner(
+            contact: widget.contact,
+            expectedSafetyNumber: widget.safetyNumber,
+            core: widget.core,
+          ),
         ),
-      ),
-    );
+      );
 
-    if (verified == true) {
-      if (mounted) {
-        setState(() => _isVerified = true);
+      if (verified == true) {
+        if (mounted) {
+          setState(() => _isVerified = true);
+        }
+        widget.onVerified?.call();
+        if (mounted) {
+          Navigator.of(context).pop(true);
+        }
       }
-      widget.onVerified?.call();
-      if (mounted) {
-        Navigator.of(context).pop(true);
-      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível inicializar a câmera: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
     }
   }
 
@@ -150,6 +160,18 @@ class _SafetyNumberQrDialogState extends State<SafetyNumberQrDialog> {
                   version: QrVersions.auto,
                   size: 200.0,
                   backgroundColor: Colors.white,
+                  errorStateBuilder: (cxt, err) {
+                    return const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                          'QR Code indisponível',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey, fontSize: 12),
+                        ),
+                      ),
+                    );
+                  },
                   eyeStyle: const QrEyeStyle(
                     eyeShape: QrEyeShape.square,
                     color: Colors.black,

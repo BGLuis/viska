@@ -343,6 +343,32 @@ void main() {
       expect(core.lockCalls, 0);
     });
 
+    test('paused does not lock during transient platform dialogs (isTransientOperationActive)', () async {
+      final controller = LockController(
+        core: core,
+        appDirPath: '/tmp/viska_test',
+        localAuth: localAuth,
+        autoLockOnBackground: true,
+      );
+      addTearDown(controller.dispose);
+
+      controller.beginTransientOperation();
+      controller.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await pumpEventQueue();
+
+      expect(controller.isLocked.value, isFalse);
+      expect(core.lockCalls, 0);
+
+      controller.endTransientOperation();
+
+      // Now without transient guard, paused locks
+      controller.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await pumpEventQueue();
+
+      expect(controller.isLocked.value, isTrue);
+      expect(core.lockCalls, 1);
+    });
+
     test('resumed sweeps expired messages when app is unlocked', () {
       final controller = LockController(
         core: core,

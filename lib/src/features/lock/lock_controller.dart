@@ -29,10 +29,24 @@ class LockController with WidgetsBindingObserver {
     this.autoLockOnBackground = true,
     this.exitFn,
   }) : _localAuth = localAuth ?? LocalAuthentication() {
+    instance = this;
     WidgetsBinding.instance.addObserver(this);
     _resetInactivityTimer();
     _startEphemeralSweepTimer();
     _loadSecurityConfig();
+  }
+
+  /// Instância singleton ativa para facilitação de guards de ciclo de vida.
+  static LockController? instance;
+
+  /// Executa uma ação de plataforma transiente (como permissões de câmera ou biometria)
+  /// impedindo que transições temporárias para `paused` bloqueiem indevidamente o app.
+  static Future<T> guardTransient<T>(Future<T> Function() action) async {
+    final active = instance;
+    if (active != null) {
+      return active.runWithTransientGuard(action);
+    }
+    return action();
   }
 
   final Core core;
@@ -70,6 +84,30 @@ class LockController with WidgetsBindingObserver {
 
   Timer? _inactivityTimer;
   Timer? _ephemeralSweepTimer;
+
+  int _transientOperationsCount = 0;
+
+  /// Indica se uma operação de plataforma transiente (diálogo de permissão, prompt de biometria) está em andamento.
+  bool get isTransientOperationActive => _transientOperationsCount > 0;
+
+  void beginTransientOperation() {
+    _transientOperationsCount++;
+  }
+
+  void endTransientOperation() {
+    if (_transientOperationsCount > 0) {
+      _transientOperationsCount--;
+    }
+  }
+
+  Future<T> runWithTransientGuard<T>(Future<T> Function() action) async {
+    beginTransientOperation();
+    try {
+      return await action();
+    } finally {
+      endTransientOperation();
+    }
+  }
 
   String get _encryptedMasterKeyPath => '$appDirPath/master_wrapped.bin';
   String get _securityConfigPath => '$appDirPath/security_config.json';
@@ -194,11 +232,13 @@ class LockController with WidgetsBindingObserver {
       final isDeviceSupported = await _localAuth.isDeviceSupported();
 
       if (canCheckBiometrics || isDeviceSupported) {
-        final authenticated = await _localAuth.authenticate(
-          localizedReason: 'Autentique-se para desbloquear o Viska',
-          options: const AuthenticationOptions(
-            stickyAuth: true,
-            biometricOnly: false,
+        final authenticated = await runWithTransientGuard(
+          () => _localAuth.authenticate(
+            localizedReason: 'Autentique-se para desbloquear o Viska',
+            options: const AuthenticationOptions(
+              stickyAuth: true,
+              biometricOnly: false,
+            ),
           ),
         );
         if (!authenticated) return false;
@@ -345,6 +385,11 @@ class LockController with WidgetsBindingObserver {
     // do sistema (câmera, microfone), biometria ou painel de notificações.
     // Trancar em 'inactive' fecharia o banco enquanto o usuário ainda está interagindo.
     if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      if (isTransientOperationActive) {
+        // Ignora transições 'paused' disparadas por diálogos nativos do sistema
+        // (como solicitações de permissão de câmera, microfone ou prompts biométricos).
+        return;
+      }
       if (autoLockOnBackground) {
         lock();
       }
@@ -357,6 +402,9 @@ class LockController with WidgetsBindingObserver {
   }
 
   void dispose() {
+    if (identical(instance, this)) {
+      instance = null;
+    }
     WidgetsBinding.instance.removeObserver(this);
     _inactivityTimer?.cancel();
     _ephemeralSweepTimer?.cancel();

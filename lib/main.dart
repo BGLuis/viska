@@ -213,7 +213,10 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
   }
 
   void _refreshContacts() {
-    setState(() => _contacts = widget.core.listContacts());
+    final next = widget.core.listContacts();
+    setState(() {
+      _contacts = next;
+    });
   }
 
   Future<void> _editMyNickname() async {
@@ -290,23 +293,45 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
     );
   }
 
-  Future<void> _showSafetyNumber(ContactDto contact) async {
-    final safetyNumber = await widget.core.safetyNumber(
-      contactDeviceId: contact.deviceId,
-    );
-    if (!mounted) return;
+  bool _isOpeningSafetyNumber = false;
 
-    await showDialog<bool>(
-      context: context,
-      builder:
-          (_) => SafetyNumberQrDialog(
-            contact: contact,
-            safetyNumber: safetyNumber,
-            core: widget.core,
-            onVerified: _refreshContacts,
+  Future<void> _showSafetyNumber(ContactDto contact) async {
+    if (_isOpeningSafetyNumber) return;
+    _isOpeningSafetyNumber = true;
+
+    try {
+      final safetyNumber = await widget.core.safetyNumber(
+        contactDeviceId: contact.deviceId,
+      );
+      if (!mounted) return;
+
+      await showDialog<bool>(
+        context: context,
+        builder:
+            (_) => SafetyNumberQrDialog(
+              contact: contact,
+              safetyNumber: safetyNumber,
+              core: widget.core,
+              onVerified: _refreshContacts,
+            ),
+      );
+      _refreshContacts();
+    } catch (e, stack) {
+      debugPrint('[PairingHomeScreen] Erro ao carregar Safety Number: $e\n$stack');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().contains('Locked')
+                ? 'Aplicativo bloqueado. Desbloqueie para verificar contatos.'
+                : 'Não foi possível carregar o número de segurança: $e',
           ),
-    );
-    _refreshContacts();
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      _isOpeningSafetyNumber = false;
+    }
   }
 
   @override

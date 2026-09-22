@@ -58,6 +58,7 @@ class _ChatScreenState extends State<ChatScreen> {
   double _micDragAccumulatedY = 0.0;
   Timer? _recordTimer;
   int _recordSeconds = 0;
+  bool _isOpeningSafetyNumber = false;
 
   @override
   void initState() {
@@ -141,31 +142,68 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showSafetyNumberDialog() async {
-    final contact = await _resolveContact();
-    final safetyNumber = await widget.core.safetyNumber(
-      contactDeviceId: widget.contactId.deviceId,
-    );
-    if (!mounted) return;
+    if (_isOpeningSafetyNumber) return;
+    _isOpeningSafetyNumber = true;
 
-    await showDialog<bool>(
-      context: context,
-      builder: (_) => SafetyNumberQrDialog(
-        contact: contact,
-        safetyNumber: safetyNumber,
-        core: widget.core,
-        onVerified: () {
-          _controller.refreshTrustState();
-        },
-      ),
-    );
-    await _controller.refreshTrustState();
+    try {
+      final contact = await _resolveContact();
+      final safetyNumber = await widget.core.safetyNumber(
+        contactDeviceId: widget.contactId.deviceId,
+      );
+      if (!mounted) return;
+
+      await showDialog<bool>(
+        context: context,
+        builder: (_) => SafetyNumberQrDialog(
+          contact: contact,
+          safetyNumber: safetyNumber,
+          core: widget.core,
+          onVerified: () {
+            _controller.refreshTrustState();
+          },
+        ),
+      );
+      await _controller.refreshTrustState();
+    } catch (e, stack) {
+      debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().contains('Locked')
+                ? 'Aplicativo bloqueado. Desbloqueie para verificar contatos.'
+                : 'Não foi possível carregar o número de segurança: $e',
+          ),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      _isOpeningSafetyNumber = false;
+    }
   }
 
   Future<void> _showContactDetails() async {
-    final safetyNumber = await widget.core.safetyNumber(
-      contactDeviceId: widget.contactId.deviceId,
-    );
+    SafetyNumberDto? safetyNumber;
+    try {
+      safetyNumber = await widget.core.safetyNumber(
+        contactDeviceId: widget.contactId.deviceId,
+      );
+    } catch (e, stack) {
+      debugPrint('[ChatScreen] Erro ao calcular Safety Number para detalhes: $e\n$stack');
+    }
     if (!mounted) return;
+
+    if (safetyNumber == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Não foi possível carregar o número de segurança do contato.'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
+    final resolvedSafetyNumber = safetyNumber;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -304,7 +342,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  SafetyNumberView(safetyNumber: safetyNumber),
+                  SafetyNumberView(safetyNumber: resolvedSafetyNumber),
                   const SizedBox(height: 12),
                   FilledButton.icon(
                     key: const Key('verify_by_qr_button'),
