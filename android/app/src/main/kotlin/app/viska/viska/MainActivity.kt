@@ -24,5 +24,9 @@ class MainActivity : FlutterFragmentActivity() {
         WifiAwarePlugin.register(messenger, applicationContext)
         // Canal de segurança de plataforma — Fase 7, F0/F1/F2.
         SecurityPlugin.register(messenger, this)
+        // MulticastLock — necessário para mDNS funcionar no Android
+        // (docs/protocol.md §9.2); declarar CHANGE_WIFI_MULTICAST_STATE no
+        // AndroidManifest não é suficiente sem acquire() em runtime.
+        MulticastLockPlugin.register(messenger, applicationContext)
     }
 }

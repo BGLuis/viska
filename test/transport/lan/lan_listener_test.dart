@@ -119,14 +119,37 @@ void main() {
     final deviceId = _deviceId(0x2);
 
     final waitFuture = listener.waitForConnection(deviceId: deviceId, channel: LanChannel.control);
+
+    // Registrar o expectLater ANTES de cancelWait: cancelWait completa o
+    // Completer de forma síncrona, então o listener de erro precisa existir
+    // antes da chamada para evitar StateError unhandled.
+    final expectation = expectLater(waitFuture, throwsA(isA<StateError>()));
     listener.cancelWait(deviceId: deviceId, channel: LanChannel.control);
 
+    // A conexão TCP que chega depois do cancelWait deve ser descartada pelo
+    // listener (ninguém está esperando por ela).
     final socket = await _dial(port, deviceId: deviceId, channel: LanChannel.control);
     addTearDown(socket.destroy);
     await _expectClosedByPeer(socket);
 
-    // O `Future` da espera cancelada nunca completa — não há mais ninguém
-    // interessado nele.
-    expect(waitFuture.timeout(const Duration(milliseconds: 200)), throwsA(isA<TimeoutException>()));
+    await expectation;
+  });
+
+  test('cancelWait completes the pending Future immediately without memory leak', () async {
+    await listener.ensureListening();
+    final deviceId = _deviceId(0x3);
+
+    // Registrar a espera — sem discar nenhuma conexão.
+    final waitFuture = listener.waitForConnection(
+      deviceId: deviceId,
+      channel: LanChannel.control,
+    );
+
+    // Registrar o expectLater ANTES de cancelWait pelo mesmo motivo do teste
+    // anterior: cancelWait completa o Completer de forma síncrona.
+    final expectation = expectLater(waitFuture, throwsA(isA<StateError>()));
+    listener.cancelWait(deviceId: deviceId, channel: LanChannel.control);
+
+    await expectation;
   });
 }

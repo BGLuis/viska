@@ -99,8 +99,18 @@ class LanListener {
   /// conectou por outro caminho, e a próxima conexão TCP que chegar por
   /// engano (ou atrasada) deve ser só descartada, não represada para
   /// sempre.
+  ///
+  /// Completa o [Completer] pendente com erro para evitar memory leak: sem
+  /// isso, o `Future` retornado por [waitForConnection] fica pendente em
+  /// memória indefinidamente, mesmo após o `await` que o esperava ter sido
+  /// abandonado pelo `timeout()` da camada acima.
   void cancelWait({required Uint8List deviceId, required LanChannel channel}) {
-    _waiting.remove(_waitKey(deviceId, channel));
+    final completer = _waiting.remove(_waitKey(deviceId, channel));
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(
+        StateError('cancelWait: espera cancelada por fechamento do transporte'),
+      );
+    }
   }
 
   Future<void> close() async {

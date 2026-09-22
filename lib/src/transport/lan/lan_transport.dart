@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/framing.dart' as ffi_framing;
 
@@ -12,6 +12,7 @@ import '../webrtc_transport.dart' show TransportConnectionEvent, TransportConnec
 import 'lan_advertising_policy.dart';
 import 'lan_discovery.dart';
 import 'lan_listener.dart';
+import 'multicast_lock.dart';
 
 /// Assinatura de `NetworkInterface.list` — extraída para que os testes
 /// possam simular "sem rede local nenhuma" sem depender de que a máquina
@@ -124,44 +125,62 @@ class LanTransport implements P2PTransport, TransportReadiness {
     );
 
     try {
-      final beacons = await _core.discoveryBeacons(peerDeviceId: _contactId.deviceId);
-      final myDeviceId = await _core.myDeviceId();
-      final port = await _listener.ensureListening();
+      // Lock adquirido antes de qualquer operação mDNS — sem ele, o driver
+      // Wi-Fi do Android filtra os pacotes multicast e o NsdManager nunca
+      // recebe anúncios nem queries (docs/protocol.md §9.2).
+      await MulticastLock.acquire();
+      try {
+        final beacons = await _core.discoveryBeacons(peerDeviceId: _contactId.deviceId);
+        final myDeviceId = await _core.myDeviceId();
+        final port = await _listener.ensureListening();
 
-      final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-      final weAreActive = status.outgoingHandshake != null;
+        final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+        final weAreActive = status.outgoingHandshake != null;
+        debugPrint(
+          '[LanTransport] connect(): porta=$port weAreActive=$weAreActive '
+          'peer=${_hex(_contactId.deviceId)}',
+        );
 
-      if (weAreActive) {
-        final peer = await _findPeer(beacons.scanBeacons);
-        _control = await _dial(peer, LanChannel.control, myDeviceId);
-        _file = await _dial(peer, LanChannel.file, myDeviceId);
-      } else {
-        if (!_policy.shouldAdvertise(_contactId)) {
-          // Sem anúncio, o lado ativo nunca vai nos achar por mDNS — falha
-          // rápido em vez de esperar o timeout inteiro de
-          // `SelectingP2PTransport` para nada.
-          throw StateError(
-            'LanAdvertisingPolicy decidiu não anunciar este contato agora',
+        if (weAreActive) {
+          final peer = await _findPeer(beacons.scanBeacons);
+          debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
+          _control = await _dial(peer, LanChannel.control, myDeviceId);
+          _file = await _dial(peer, LanChannel.file, myDeviceId);
+        } else {
+          if (!_policy.shouldAdvertise(_contactId)) {
+            // Sem anúncio, o lado ativo nunca vai nos achar por mDNS — falha
+            // rápido em vez de esperar o timeout inteiro de
+            // `SelectingP2PTransport` para nada.
+            throw StateError(
+              'LanAdvertisingPolicy decidiu não anunciar este contato agora',
+            );
+          }
+          final instanceName = toHexInstanceName(beacons.advertiseBeacon);
+          await _discovery.advertise(instanceName: instanceName, port: port);
+          debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
+          _control = await _listener.waitForConnection(
+            deviceId: _contactId.deviceId,
+            channel: LanChannel.control,
+          );
+          _file = await _listener.waitForConnection(
+            deviceId: _contactId.deviceId,
+            channel: LanChannel.file,
           );
         }
-        final instanceName = toHexInstanceName(beacons.advertiseBeacon);
-        await _discovery.advertise(instanceName: instanceName, port: port);
-        _control = await _listener.waitForConnection(
-          deviceId: _contactId.deviceId,
-          channel: LanChannel.control,
-        );
-        _file = await _listener.waitForConnection(
-          deviceId: _contactId.deviceId,
-          channel: LanChannel.file,
-        );
+      } finally {
+        // Sockets TCP já abertos (sucesso) ou primeira exceção (falha) —
+        // mDNS não é mais necessário em nenhum dos dois casos.
+        await MulticastLock.release();
       }
 
       _pump(_control!, _incomingController);
       _pump(_file!, _incomingFileController);
+      debugPrint('[LanTransport] conexão TCP estabelecida com ${_hex(_contactId.deviceId)}');
       _connectionEventsController.add(
         const TransportConnectionEvent(TransportConnectionState.connected),
       );
     } catch (e) {
+      debugPrint('[LanTransport] FALHA em connect(): $e');
       if (!_connectionEventsController.isClosed) {
         _connectionEventsController.add(
           TransportConnectionEvent(TransportConnectionState.failed, reason: e.toString()),
@@ -172,6 +191,7 @@ class LanTransport implements P2PTransport, TransportReadiness {
       }
     }
   }
+
 
   /// Procura, entre os peers anunciados na LAN agora, o primeiro cujo nome
   /// de instância bate com algum dos beacons da janela de três épocas.
@@ -259,3 +279,8 @@ class LanTransport implements P2PTransport, TransportReadiness {
     if (!_connectionEventsController.isClosed) await _connectionEventsController.close();
   }
 }
+
+/// Formata bytes como string hexadecimal — usado exclusivamente em logs de
+/// diagnóstico (debugPrint), nunca em lógica de protocolo.
+String _hex(List<int> bytes) =>
+    bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
