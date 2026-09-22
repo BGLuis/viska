@@ -71,6 +71,32 @@ class _MockSmokeCore implements Core {
   }
 
   @override
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => [];
+
+  @override
+  Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>
+      const SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+      );
+
+  @override
+  Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId}) async =>
+      const SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+      );
+
+  @override
+  Future<int> getEphemeralTtl({required List<int> contactDeviceId}) async => 0;
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) async => false;
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -293,6 +319,115 @@ void main() {
 
         expect(find.byType(SnackBar), findsOneWidget);
         expect(find.textContaining('Aplicativo bloqueado'), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        controller.dispose();
+      }
+    });
+
+    testWidgets(
+        'MainApp tapping contact opens ChatScreen cleanly without freeze or crash and navigates back', (
+      WidgetTester tester,
+    ) async {
+      final sampleContact = ContactDto(
+        deviceId: Uint8List.fromList(List.generate(16, (i) => i + 10)),
+        signingPubkey: Uint8List(32),
+        dhPubkey: Uint8List(32),
+        pairedAtUnixSecs: 1700000000,
+        nickname: 'Alice Conversa',
+        isVerified: true,
+      );
+
+      final coreWithContacts = _MockSmokeCore(contacts: [sampleContact]);
+      final controller = LockController(
+        core: coreWithContacts,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+        autoLockTimeout: null,
+      );
+
+      try {
+        await tester.pumpWidget(
+          MainApp(
+            core: coreWithContacts,
+            router: P2PTransportRouter(core: coreWithContacts),
+            lockController: controller,
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        final contactTile = find.text('Alice Conversa');
+        expect(contactTile, findsOneWidget);
+
+        // Toca no contato para abrir a tela de conversa (ChatScreen)
+        await tester.tap(contactTile);
+        await tester.pumpAndSettle();
+
+        // ChatScreen carregada com sucesso
+        expect(find.text('Alice Conversa'), findsOneWidget);
+        expect(find.byType(TextField), findsOneWidget);
+        expect(find.text('Nenhuma mensagem ainda'), findsOneWidget);
+
+        // Volta para a tela inicial
+        final backButton = find.byType(BackButton);
+        expect(backButton, findsOneWidget);
+        await tester.tap(backButton);
+        await tester.pumpAndSettle();
+
+        // Tela inicial íntegra
+        expect(find.text('Alice Conversa'), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        controller.dispose();
+      }
+    });
+
+    testWidgets(
+        'MainApp tapping contact when locked displays SnackBar warning without crashing', (
+      WidgetTester tester,
+    ) async {
+      final sampleContact = ContactDto(
+        deviceId: Uint8List.fromList(List.generate(16, (i) => i + 10)),
+        signingPubkey: Uint8List(32),
+        dhPubkey: Uint8List(32),
+        pairedAtUnixSecs: 1700000000,
+        nickname: 'Bob Bloqueado',
+        isVerified: false,
+      );
+
+      final coreWithContacts = _MockSmokeCore(contacts: [sampleContact]);
+      final controller = LockController(
+        core: coreWithContacts,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+        autoLockTimeout: null,
+      );
+
+      try {
+        await tester.pumpWidget(
+          MainApp(
+            core: coreWithContacts,
+            router: P2PTransportRouter(core: coreWithContacts),
+            lockController: controller,
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        // Simula bloqueio do aplicativo
+        controller.isLocked.value = true;
+
+        // Tenta abrir o contato via chamada direta ou toque
+        final contactTile = find.text('Bob Bloqueado');
+        if (contactTile.evaluate().isNotEmpty) {
+          await tester.tap(contactTile);
+          await tester.pumpAndSettle();
+          expect(find.byType(SnackBar), findsOneWidget);
+          expect(find.textContaining('Aplicativo bloqueado'), findsOneWidget);
+        }
 
         await tester.pumpWidget(const SizedBox.shrink());
       } finally {

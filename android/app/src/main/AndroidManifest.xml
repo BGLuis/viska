@@ -32,6 +32,11 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"/>
     <uses-feature android:name="android.hardware.wifi.aware" android:required="false"/>
+    <!-- Conectividade de rede P2P (WebRTC, sinalização MQTT e sockets TCP na LAN) -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Descoberta mDNS / DNS-SD na rede local (NSD) -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
     <application
         android:label="viska"
         android:name="${applicationName}"

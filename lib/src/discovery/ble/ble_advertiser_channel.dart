@@ -15,8 +15,12 @@ class BleAdvertiserChannel implements BleAdvertiser {
 
   @override
   Future<bool> isSupported() async {
-    final supported = await _channel.invokeMethod<bool>('isSupported');
-    return supported ?? false;
+    try {
+      final supported = await _channel.invokeMethod<bool>('isSupported');
+      return supported ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override

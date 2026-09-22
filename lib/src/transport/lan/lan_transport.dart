@@ -94,6 +94,7 @@ class LanTransport implements P2PTransport, TransportReadiness {
   LanConnection? _control;
   LanConnection? _file;
   bool _connectStarted = false;
+  bool _closed = false;
 
   @override
   Stream<Uint8List> get incoming => _incomingController.stream;
@@ -161,10 +162,14 @@ class LanTransport implements P2PTransport, TransportReadiness {
         const TransportConnectionEvent(TransportConnectionState.connected),
       );
     } catch (e) {
-      _connectionEventsController.add(
-        TransportConnectionEvent(TransportConnectionState.failed, reason: e.toString()),
-      );
-      rethrow;
+      if (!_connectionEventsController.isClosed) {
+        _connectionEventsController.add(
+          TransportConnectionEvent(TransportConnectionState.failed, reason: e.toString()),
+        );
+      }
+      if (!_closed) {
+        rethrow;
+      }
     }
   }
 
@@ -176,7 +181,9 @@ class LanTransport implements P2PTransport, TransportReadiness {
     try {
       return await _discovery.discovered.firstWhere((peer) => wanted.contains(peer.instanceName));
     } finally {
-      await _discovery.stopBrowsing();
+      try {
+        await _discovery.stopBrowsing();
+      } catch (_) {}
     }
   }
 
@@ -234,12 +241,19 @@ class LanTransport implements P2PTransport, TransportReadiness {
 
   @override
   Future<void> close() async {
+    _closed = true;
     _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.control);
     _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.file);
-    await _discovery.stopAdvertising();
-    await _discovery.stopBrowsing();
-    _control?.destroy();
-    _file?.destroy();
+    try {
+      await _discovery.stopAdvertising();
+    } catch (_) {}
+    try {
+      await _discovery.stopBrowsing();
+    } catch (_) {}
+    try {
+      _control?.destroy();
+      _file?.destroy();
+    } catch (_) {}
     if (!_incomingController.isClosed) await _incomingController.close();
     if (!_incomingFileController.isClosed) await _incomingFileController.close();
     if (!_connectionEventsController.isClosed) await _connectionEventsController.close();

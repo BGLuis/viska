@@ -48,21 +48,25 @@ class BleAdvertiserPlugin(private val context: Context) : MethodChannel.MethodCa
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "isSupported" -> result.success(isSupported())
-            "startAdvertising" -> {
-                val serviceUuid = call.argument<String>("serviceUuid")
-                if (serviceUuid == null) {
-                    result.error("bad_args", "serviceUuid ausente", null)
-                    return
+        try {
+            when (call.method) {
+                "isSupported" -> result.success(isSupported())
+                "startAdvertising" -> {
+                    val serviceUuid = call.argument<String>("serviceUuid")
+                    if (serviceUuid == null) {
+                        result.error("bad_args", "serviceUuid ausente", null)
+                        return
+                    }
+                    startAdvertising(serviceUuid, result)
                 }
-                startAdvertising(serviceUuid, result)
+                "stopAdvertising" -> {
+                    stopAdvertisingInternal()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
-            "stopAdvertising" -> {
-                stopAdvertisingInternal()
-                result.success(null)
-            }
-            else -> result.notImplemented()
+        } catch (e: Exception) {
+            result.error("plugin_exception", e.message, null)
         }
     }
 
@@ -70,8 +74,12 @@ class BleAdvertiserPlugin(private val context: Context) : MethodChannel.MethodCa
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 
     private fun isSupported(): Boolean {
-        val adapter = bluetoothManager()?.adapter ?: return false
-        return adapter.isEnabled && adapter.isMultipleAdvertisementSupported
+        return try {
+            val adapter = bluetoothManager()?.adapter ?: return false
+            adapter.isEnabled && adapter.isMultipleAdvertisementSupported
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun startAdvertising(serviceUuid: String, result: MethodChannel.Result) {

@@ -47,6 +47,7 @@ class WifiAwareTransport implements P2PTransport, TransportReadiness {
         _channel = channel ?? MethodChannelWifiAwareChannel(),
         _frame = frame ?? ffi_framing.frameForLocalSocket,
         _extractFrame = extractFrame ?? ffi_framing.extractFrameFromLocalSocketBuffer {
+    _sessionEstablished.future.ignore();
     unawaited(_refreshReachability());
   }
 
@@ -70,7 +71,11 @@ class WifiAwareTransport implements P2PTransport, TransportReadiness {
   bool get isLikelyReachable => _isLikelyReachable;
 
   Future<void> _refreshReachability() async {
-    _isLikelyReachable = await _channel.isSupported();
+    try {
+      _isLikelyReachable = await _channel.isSupported();
+    } catch (_) {
+      _isLikelyReachable = false;
+    }
   }
 
   @override

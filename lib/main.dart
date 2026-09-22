@@ -280,17 +280,47 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
     await _showSafetyNumber(contact);
   }
 
-  void _openChat(ContactDto contact) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          core: widget.core,
-          router: widget.router,
-          contactId: ContactId(contact.deviceId),
-          contactLabel: contact.nickname,
+  bool _isOpeningChat = false;
+
+  Future<void> _openChat(ContactDto contact) async {
+    if (_isOpeningChat) return;
+    _isOpeningChat = true;
+
+    try {
+      if (widget.lockController.isLocked.value) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Aplicativo bloqueado. Desbloqueie para abrir conversas.'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+        return;
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            core: widget.core,
+            router: widget.router,
+            contactId: ContactId(contact.deviceId),
+            contactLabel: contact.nickname,
+          ),
         ),
-      ),
-    );
+      );
+      _refreshContacts();
+    } catch (e, stack) {
+      debugPrint('[PairingHomeScreen] Erro ao abrir conversa: $e\n$stack');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível abrir a conversa: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      _isOpeningChat = false;
+    }
   }
 
   bool _isOpeningSafetyNumber = false;

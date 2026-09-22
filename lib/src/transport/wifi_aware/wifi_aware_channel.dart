@@ -66,7 +66,7 @@ class MethodChannelWifiAwareChannel implements WifiAwareChannel {
     try {
       final supported = await _method.invokeMethod<bool>('isSupported');
       return supported ?? false;
-    } on MissingPluginException {
+    } catch (_) {
       return false;
     }
   }

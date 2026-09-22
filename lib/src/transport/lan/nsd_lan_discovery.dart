@@ -34,7 +34,9 @@ class NsdLanDiscovery implements LanDiscovery {
     final registration = _registration;
     _registration = null;
     if (registration != null) {
-      await nsd.unregister(registration);
+      try {
+        await nsd.unregister(registration);
+      } catch (_) {}
     }
   }
 
@@ -70,8 +72,10 @@ class NsdLanDiscovery implements LanDiscovery {
     _discovery = null;
     _serviceListener = null;
     if (discovery != null) {
-      if (listener != null) discovery.removeServiceListener(listener);
-      await nsd.stopDiscovery(discovery);
+      try {
+        if (listener != null) discovery.removeServiceListener(listener);
+        await nsd.stopDiscovery(discovery);
+      } catch (_) {}
     }
   }
 

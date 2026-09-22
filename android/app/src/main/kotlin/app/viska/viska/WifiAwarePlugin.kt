@@ -88,45 +88,53 @@ class WifiAwarePlugin(private val context: Context) : MethodChannel.MethodCallHa
     // ---- MethodChannel ----------------------------------------------------
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "isSupported" -> result.success(isSupported())
-            "publish" -> {
-                val serviceName = call.argument<String>("serviceName")
-                if (serviceName == null) {
-                    result.error("bad_args", "serviceName ausente", null)
-                    return
+        try {
+            when (call.method) {
+                "isSupported" -> result.success(isSupported())
+                "publish" -> {
+                    val serviceName = call.argument<String>("serviceName")
+                    if (serviceName == null) {
+                        result.error("bad_args", "serviceName ausente", null)
+                        return
+                    }
+                    publish(serviceName, result)
                 }
-                publish(serviceName, result)
-            }
-            "subscribe" -> {
-                val serviceName = call.argument<String>("serviceName")
-                if (serviceName == null) {
-                    result.error("bad_args", "serviceName ausente", null)
-                    return
+                "subscribe" -> {
+                    val serviceName = call.argument<String>("serviceName")
+                    if (serviceName == null) {
+                        result.error("bad_args", "serviceName ausente", null)
+                        return
+                    }
+                    subscribe(serviceName, result)
                 }
-                subscribe(serviceName, result)
-            }
-            "send" -> {
-                val bytes = call.argument<ByteArray>("bytes")
-                if (bytes == null) {
-                    result.error("bad_args", "bytes ausente", null)
-                    return
+                "send" -> {
+                    val bytes = call.argument<ByteArray>("bytes")
+                    if (bytes == null) {
+                        result.error("bad_args", "bytes ausente", null)
+                        return
+                    }
+                    send(bytes, result)
                 }
-                send(bytes, result)
+                "close" -> {
+                    closeAll()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
-            "close" -> {
-                closeAll()
-                result.success(null)
-            }
-            else -> result.notImplemented()
+        } catch (e: Exception) {
+            result.error("plugin_exception", e.message, null)
         }
     }
 
     private fun isSupported(): Boolean {
-        val hasFeature =
-            context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
-        val manager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? WifiAwareManager
-        return hasFeature && manager != null && manager.isAvailable
+        return try {
+            val hasFeature =
+                context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
+            val manager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? WifiAwareManager
+            hasFeature && manager != null && manager.isAvailable
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ---- Publicador (passivo) ----------------------------------------------

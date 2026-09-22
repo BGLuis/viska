@@ -220,15 +220,23 @@ class ChatController extends ChangeNotifier {
   /// que faz isso sob demanda) e tenta publicar a mensagem de handshake se
   /// formos iniciador. Chamar uma vez, normalmente em `initState`.
   Future<void> initialize() async {
-    await _refreshMessages();
+    try {
+      await _refreshMessages();
 
-    _incomingSub = _router.incomingFor(_contactId).listen(_handleIncomingRaw);
-    _incomingFileSub = _router.incomingFileFor(_contactId).listen(_handleIncomingFileBytes);
-    _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
+      _incomingSub = _router.incomingFor(_contactId).listen(_handleIncomingRaw);
+      _incomingFileSub = _router.incomingFileFor(_contactId).listen(_handleIncomingFileBytes);
+      _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
-    final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-    unawaited(_tryPublishOutgoingHandshake(status));
-    await refreshTrustState();
+      final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      unawaited(_tryPublishOutgoingHandshake(status));
+      await refreshTrustState();
+    } catch (e, stack) {
+      debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
+      _connectionError = e.toString().contains('Locked')
+          ? 'Aplicativo bloqueado. Desbloqueie para conversar.'
+          : 'Falha ao inicializar transporte: $e';
+      notifyListeners();
+    }
   }
 
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
@@ -503,18 +511,22 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _tryPublishOutgoingHandshake([SessionStatusDto? currentStatus]) async {
-    final status = currentStatus ?? await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-    if (status.state == SessionStateKind.established) {
-      await _refreshEstablishedStateAndFlushIfNeeded();
-      return;
-    }
+    try {
+      final status = currentStatus ?? await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      if (status.state == SessionStateKind.established) {
+        await _refreshEstablishedStateAndFlushIfNeeded();
+        return;
+      }
 
-    final outgoing = status.outgoingHandshake;
-    if (outgoing != null) {
-      // `P2PTransportRouter.sendToContact` espera o canal `control` abrir de
-      // verdade antes de mandar (ver `WebrtcTransport.send`, Fase 3 F3) —
-      // então isto não manda a INIT cedo demais, só fica pendurado até dar.
-      await _router.sendToContact(_contactId, outgoing);
+      final outgoing = status.outgoingHandshake;
+      if (outgoing != null) {
+        // `P2PTransportRouter.sendToContact` espera o canal `control` abrir de
+        // verdade antes de mandar (ver `WebrtcTransport.send`, Fase 3 F3) —
+        // então isto não manda a INIT cedo demais, só fica pendurado até dar.
+        await _router.sendToContact(_contactId, outgoing);
+      }
+    } catch (e) {
+      debugPrint('[ChatController] Aviso: Falha ao enviar handshake inicial: $e');
     }
   }
 
