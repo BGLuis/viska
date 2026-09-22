@@ -36,6 +36,7 @@ class _FakeViewCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1000,
       nickname: nickname ?? 'Peer',
+      isVerified: false,
     );
   }
 
@@ -195,6 +196,7 @@ void main() {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234,
       nickname: 'Bob',
+      isVerified: false,
     );
     completerConfirm.complete(fakeContact);
     await tester.pump();

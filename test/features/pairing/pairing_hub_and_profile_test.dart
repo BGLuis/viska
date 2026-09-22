@@ -35,6 +35,7 @@ class _FakeHubCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234567890,
       nickname: nickname ?? 'Par Teste',
+      isVerified: false,
     );
   }
 

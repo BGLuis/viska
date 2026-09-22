@@ -8,11 +8,12 @@ import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/features/onboarding/profile_setup_dialog.dart';
 import 'package:viska/src/features/pairing/pairing_hub_screen.dart';
-import 'package:viska/src/features/pairing/widgets/safety_number_view.dart';
+import 'package:viska/src/features/pairing/widgets/safety_number_qr_dialog.dart';
 import 'package:viska/src/features/settings/settings_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/rust/frb_generated.dart';
+import 'package:viska/src/theme/dark_tech_theme.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 
@@ -72,19 +73,29 @@ class MainApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: profileName != null ? 'Viska ($profileName)' : 'Viska',
-      home: ValueListenableBuilder<bool>(
-        valueListenable: lockController.isLocked,
-        builder: (context, isLocked, _) {
+      theme: DarkTechTheme.theme,
+      home: AnimatedBuilder(
+        animation: Listenable.merge([lockController.isLocked, lockController.isDecoyVault]),
+        builder: (context, _) {
+          if (lockController.isLocked.value) {
+            return InactivityDetector(
+              controller: lockController,
+              child: LockScreen(controller: lockController),
+            );
+          }
+
+          final currentCore = lockController.activeCore;
+          final currentRouter = currentCore == core ? router : P2PTransportRouter(core: currentCore);
+
           return InactivityDetector(
             controller: lockController,
-            child: isLocked
-                ? LockScreen(controller: lockController)
-                : PairingHomeScreen(
-                    core: core,
-                    router: router,
-                    lockController: lockController,
-                    profileName: profileName,
-                  ),
+            child: PairingHomeScreen(
+              key: ValueKey(currentCore),
+              core: currentCore,
+              router: currentRouter,
+              lockController: lockController,
+              profileName: profileName,
+            ),
           );
         },
       ),
@@ -227,20 +238,17 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
     );
     if (!mounted) return;
 
-    await showDialog<void>(
+    await showDialog<bool>(
       context: context,
       builder:
-          (_) => AlertDialog(
-            title: const Text('Contato pareado'),
-            content: SafetyNumberView(safetyNumber: safetyNumber),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Fechar'),
-              ),
-            ],
+          (_) => SafetyNumberQrDialog(
+            contact: contact,
+            safetyNumber: safetyNumber,
+            core: widget.core,
+            onVerified: _refreshContacts,
           ),
     );
+    _refreshContacts();
   }
 
   @override
@@ -348,12 +356,32 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
                       leading: CircleAvatar(
                         child: Text(initial),
                       ),
-                      title: Text(
-                        displayName,
-                        style: TextStyle(
-                          fontStyle: hasNickname ? FontStyle.normal : FontStyle.italic,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      title: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              displayName,
+                              style: TextStyle(
+                                fontStyle: hasNickname ? FontStyle.normal : FontStyle.italic,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (contact.isVerified) ...[
+                            const SizedBox(width: 6),
+                            const Tooltip(
+                              message: 'Contato Verificado',
+                              child: Icon(
+                                Icons.verified,
+                                size: 16,
+                                color: Color(0xFF00E599),
+                                key: Key('verified_badge'),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       subtitle: Text(
                         'ID: $shortId…',

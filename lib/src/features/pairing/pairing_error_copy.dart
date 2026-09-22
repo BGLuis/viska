@@ -32,6 +32,10 @@ String pairingErrorMessage(FfiError error) {
       return 'O arquivo recebido está corrompido ou foi adulterado.';
     case FfiError.locked:
       return 'O aplicativo está bloqueado. Desbloqueie para continuar.';
+    case FfiError.aeadFailure:
+      return 'Falha de decifragem ou autenticação dos dados.';
+    case FfiError.malformed:
+      return 'Dados recebidos em formato inválido ou corrompido.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

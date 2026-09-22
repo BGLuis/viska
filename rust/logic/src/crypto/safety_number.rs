@@ -31,7 +31,7 @@ pub const WORD_COUNT: usize = 6;
 /// bits cabem em 66 bits, arredondados para cima a bytes inteiros.
 const WORD_XOF_LEN: usize = 9;
 
-fn wordlist() -> Vec<&'static str> {
+pub fn wordlist() -> Vec<&'static str> {
     let words: Vec<&'static str> = WORDLIST.lines().collect();
     debug_assert_eq!(words.len(), 2048, "wordlist_pt_br.txt não tem 2048 linhas");
     words

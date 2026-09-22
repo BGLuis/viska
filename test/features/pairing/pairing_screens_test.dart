@@ -28,6 +28,7 @@ class _FakeCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1234567890,
       nickname: nickname ?? 'Amigo Teste',
+      isVerified: false,
     );
   }
 

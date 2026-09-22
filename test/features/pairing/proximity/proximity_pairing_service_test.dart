@@ -44,6 +44,7 @@ class _FakeProximityCore implements Core {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 1000,
       nickname: nickname ?? 'Peer',
+      isVerified: false,
     );
   }
 
