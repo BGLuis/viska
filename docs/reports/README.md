@@ -21,6 +21,7 @@ Dois modos, conforme o estado da fase:
 | 6 | [Rádios locais](FASE-6-RADIOS-LOCAIS.md) | A | ❌ Não iniciada | 11–14,5 d |
 | 7 | [Endurecimento](FASE-7-ENDURECIMENTO.md) | A | ❌ Não iniciada | 6,25–7,75 d |
 | 8 | [Habilitação do iOS](FASE-8-HABILITACAO-IOS.md) | C | ✅ Concluída | — |
+| 9 | [Evolução de UX e Segurança Avançada](FASE-9-EVOLUCAO-UX-E-SEGURANCA-AVANCADA.md) | A | 📋 Especificada | 12–16 d |
 
 Todos os esforços das fases 2 a 8 são `[modelado]`. Total do escopo completo: **47–60 dias-dev**.
 
