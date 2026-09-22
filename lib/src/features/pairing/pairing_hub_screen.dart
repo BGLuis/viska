@@ -120,7 +120,9 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    try {
+      _scannerController.dispose();
+    } catch (_) {}
     super.dispose();
   }
 

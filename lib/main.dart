@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
@@ -19,6 +21,62 @@ import 'package:viska/src/transport/p2p_transport_router.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Barreira defensiva contra exceções assíncronas não capturadas (MethodChannels, Streams, Sockets).
+  // Retornar true confirma o tratamento e impede que a máquina virtual encerre o processo do app.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    if (kDebugMode) {
+      debugPrint('[Viska CrashBarrier] Erro assíncrono interceptado: $error');
+    }
+    return true;
+  };
+
+  // Intercepta erros de framework do Flutter de forma graciosa sem vazar material de chave.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    if (kDebugMode) {
+      FlutterError.presentError(details);
+    }
+  };
+
+  // Substitui a tela vermelha/amarela padrão do Flutter por um contêiner escuro seguro e contido.
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    return Material(
+      color: const Color(0xFF0B0F14),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.warning_amber_rounded, size: 48, color: Color(0xFFFFB800)),
+              const SizedBox(height: 16),
+              const Text(
+                'Falha temporária de interface',
+                style: TextStyle(
+                  color: Color(0xFFEDEDED),
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                kDebugMode ? details.exceptionAsString() : 'Ocorreu um erro transitório na renderização deste elemento.',
+                style: const TextStyle(
+                  color: Color(0xFF8B949E),
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
   await RustLib.init();
 
   String? profile;

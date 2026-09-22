@@ -21,6 +21,7 @@ class BuildGradle {
 
   Future<void> build() async {
     final targets = Environment.targetPlatforms
+        .where((arch) => arch != 'android-arm' && arch != 'armeabi-v7a')
         .map((arch) {
           final target = Target.forFlutterName(arch);
           if (target == null) {

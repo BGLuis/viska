@@ -41,7 +41,9 @@ class _PairingScanScreenState extends State<PairingScanScreen> {
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    try {
+      _scannerController.dispose();
+    } catch (_) {}
     super.dispose();
   }
 

@@ -340,7 +340,11 @@ class LockController with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    // Apenas paused (app em segundo plano) ou detached devem trancar o app.
+    // 'inactive' é um estado transitório disparado durante diálogos de permissão
+    // do sistema (câmera, microfone), biometria ou painel de notificações.
+    // Trancar em 'inactive' fecharia o banco enquanto o usuário ainda está interagindo.
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       if (autoLockOnBackground) {
         lock();
       }

@@ -44,7 +44,9 @@ class _SafetyNumberScannerState extends State<SafetyNumberScanner> {
 
   @override
   void dispose() {
-    _scannerController.dispose();
+    try {
+      _scannerController.dispose();
+    } catch (_) {}
     super.dispose();
   }
 

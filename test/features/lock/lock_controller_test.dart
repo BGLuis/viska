@@ -328,6 +328,21 @@ void main() {
       expect(core.lockCalls, 0);
     });
 
+    test('inactive does not lock app during system dialogs or permission prompts', () {
+      final controller = LockController(
+        core: core,
+        appDirPath: '/tmp/viska_test',
+        localAuth: localAuth,
+        autoLockOnBackground: true,
+      );
+      addTearDown(controller.dispose);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.inactive);
+
+      expect(controller.isLocked.value, isFalse);
+      expect(core.lockCalls, 0);
+    });
+
     test('resumed sweeps expired messages when app is unlocked', () {
       final controller = LockController(
         core: core,
