@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,10 +8,39 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 
+import '../../transport/lan/lan_transport.dart';
+import '../../transport/multipeer/multipeer_transport.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
+import '../../transport/selecting_p2p_transport.dart';
+import '../../transport/webrtc_p2p_transport.dart';
 import '../../transport/webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
+import '../../transport/wifi_aware/wifi_aware_transport.dart';
 import '../voice/voice_io.dart';
+import 'widgets/reply_preview.dart';
+
+/// Tipos de transporte P2P ativos para indicador visual na conversa.
+enum ActiveTransportType {
+  lanDirect,
+  proximity,
+  webRtc,
+  offline,
+}
+
+extension ActiveTransportTypeExtension on ActiveTransportType {
+  String get label {
+    switch (this) {
+      case ActiveTransportType.lanDirect:
+        return '[⚡ P2P LAN Direta]';
+      case ActiveTransportType.proximity:
+        return '[📶 BLE Proximidade]';
+      case ActiveTransportType.webRtc:
+        return '[🌐 WebRTC Internet]';
+      case ActiveTransportType.offline:
+        return '[💤 Fila Offline]';
+    }
+  }
+}
 
 /// Estado e lógica de uma conversa com um contato — Fase 3, F6; nota de voz
 /// (Fase 5) integrada na mesma timeline, decisão do usuário.
@@ -71,6 +101,58 @@ class ChatController extends ChangeNotifier {
   String? _connectionError;
   String? get connectionError => _connectionError;
 
+  bool _isVerified = false;
+  bool get isVerified => _isVerified;
+
+  bool _isKeyChanged = false;
+  bool get isKeyChanged => _isKeyChanged;
+
+  ActiveTransportType? _transportOverride;
+  ActiveTransportType? get transportOverride => _transportOverride;
+  set activeTransportOverride(ActiveTransportType? override) {
+    _transportOverride = override;
+    notifyListeners();
+  }
+
+  ActiveTransportType get activeTransport {
+    if (_transportOverride != null) return _transportOverride!;
+    if (!_established || _connectionError != null) {
+      return ActiveTransportType.offline;
+    }
+
+    final transport = _router.transportFor(_contactId);
+    if (transport == null) {
+      return ActiveTransportType.offline;
+    }
+
+    P2PTransport actual = transport;
+    if (actual is SelectingP2PTransport) {
+      final chosen = actual.chosen;
+      if (chosen == null) {
+        return ActiveTransportType.offline;
+      }
+      actual = chosen;
+    }
+
+    if (actual is LanTransport) {
+      return ActiveTransportType.lanDirect;
+    } else if (actual is WifiAwareTransport || actual is MultipeerTransport) {
+      return ActiveTransportType.proximity;
+    } else if (actual is WebrtcP2PTransport) {
+      return ActiveTransportType.webRtc;
+    }
+
+    return ActiveTransportType.webRtc;
+  }
+
+  Future<void> refreshTrustState() async {
+    try {
+      _isVerified = await _core.isContactVerified(contactDeviceId: _contactId.deviceId);
+      _isKeyChanged = await _core.isKeyChanged(contactDeviceId: _contactId.deviceId);
+      notifyListeners();
+    } catch (_) {}
+  }
+
   bool _sending = false;
   bool get isSending => _sending;
 
@@ -102,6 +184,33 @@ class ChatController extends ChangeNotifier {
     return _voiceNoteAudio.containsKey(_hex(fileId));
   }
 
+  /// Retorna os bytes WAV decodificados em cache de uma nota de voz pronta.
+  Uint8List? getVoiceNoteAudio(MessageDto message) {
+    final fileId = message.audioFileId;
+    if (fileId == null) return null;
+    return _voiceNoteAudio[_hex(fileId)];
+  }
+
+  /// Reações mapeadas por ID de mensagem de destino: messageId -> { emoji: count }
+  final Map<int, Map<String, int>> _reactions = {};
+
+  /// Emojis marcados pelo usuário local: `messageId -> Set<String>`
+  final Map<int, Set<String>> _userReactions = {};
+
+  /// Mensagens de visualização única abertas nesta sessão.
+  final Set<int> _openedViewOnceMessageIds = {};
+
+  bool isViewOnceOpened(int messageId) => _openedViewOnceMessageIds.contains(messageId);
+
+  void markViewOnceOpened(int messageId) {
+    _openedViewOnceMessageIds.add(messageId);
+    notifyListeners();
+  }
+
+  Map<String, int> reactionsFor(int messageId) => _reactions[messageId] ?? const {};
+
+  Set<String> userReactionsFor(int messageId) => _userReactions[messageId] ?? const {};
+
   StreamSubscription<Uint8List>? _incomingSub;
   StreamSubscription<Uint8List>? _incomingFileSub;
   StreamSubscription<TransportConnectionEvent>? _connectionSub;
@@ -119,20 +228,35 @@ class ChatController extends ChangeNotifier {
 
     final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
     unawaited(_tryPublishOutgoingHandshake(status));
+    await refreshTrustState();
   }
 
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
   /// sessão já estiver pronta. Se não estiver, a mensagem fica `pending` até
   /// o handshake terminar e o outbox drenar (`_flushPending`).
-  Future<void> sendText(String body) async {
+  Future<void> sendText(
+    String body, {
+    QuotedReply? replyTo,
+    bool isViewOnce = false,
+  }) async {
     if (body.isEmpty) return;
 
     _sending = true;
     notifyListeners();
     try {
+      final payload = (replyTo != null || isViewOnce)
+          ? jsonEncode({
+              'v': 1,
+              'type': 'text',
+              'text': body,
+              if (replyTo != null) 'reply': replyTo.toJson(),
+              if (isViewOnce) 'viewOnce': true,
+            })
+          : body;
+
       final sealed = await _core.sealOutgoingText(
         peerDeviceId: _contactId.deviceId,
-        body: body,
+        body: payload,
       );
       await _refreshMessages();
       if (sealed.bytes != null) {
@@ -142,6 +266,42 @@ class ChatController extends ChangeNotifier {
       _sending = false;
       notifyListeners();
     }
+  }
+
+  /// Envia ou alterna uma reação emoji em uma mensagem de destino.
+  Future<void> sendReaction({
+    required int targetMessageId,
+    required String emoji,
+  }) async {
+    final payload = jsonEncode({
+      'v': 1,
+      'type': 'reaction',
+      'targetId': targetMessageId,
+      'emoji': emoji,
+    });
+
+    final sealed = await _core.sealOutgoingText(
+      peerDeviceId: _contactId.deviceId,
+      body: payload,
+    );
+    await _refreshMessages();
+    if (sealed.bytes != null) {
+      await _sendSealed(sealed.messageId, sealed.bytes!);
+    }
+  }
+
+  /// Cancela a gravação atual e apaga o buffer temporário imediatamente.
+  Future<void> cancelRecording() async {
+    if (!_recording) return;
+    _recording = false;
+    notifyListeners();
+
+    try {
+      final rawPath = await _recorder.stop();
+      if (rawPath != null) {
+        unawaited(File(rawPath).delete().catchError((_) => File(rawPath)));
+      }
+    } catch (_) {}
   }
 
   /// Pede permissão de microfone e começa a gravar em Opus — falha alto
@@ -391,12 +551,35 @@ class ChatController extends ChangeNotifier {
     final loaded = await _core.listMessages(peerDeviceId: _contactId.deviceId);
     if (_disposed) return;
     _messages = loaded;
+    _aggregateReactions();
     for (final m in loaded) {
       if (m.direction == MessageDirectionDto.incoming) {
         _core.markMessageRead(messageId: m.id).catchError((_) {});
       }
     }
     notifyListeners();
+  }
+
+  void _aggregateReactions() {
+    _reactions.clear();
+    _userReactions.clear();
+
+    for (final message in _messages) {
+      if (message.kind != MessageKindDto.text) continue;
+      final parsed = ParsedMessageContent.parse(message.body);
+      if (parsed.isReaction && parsed.targetReactionId != null && parsed.reactionEmoji != null) {
+        final targetId = parsed.targetReactionId!;
+        final emoji = parsed.reactionEmoji!;
+
+        final map = _reactions.putIfAbsent(targetId, () => <String, int>{});
+        map[emoji] = (map[emoji] ?? 0) + 1;
+
+        if (message.direction == MessageDirectionDto.outgoing) {
+          final userSet = _userReactions.putIfAbsent(targetId, () => <String>{});
+          userSet.add(emoji);
+        }
+      }
+    }
   }
 
   @override
@@ -413,3 +596,61 @@ class ChatController extends ChangeNotifier {
 
 String _hex(Uint8List bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+/// Conteúdo estruturado de mensagem persistida, suportando texto puro,
+/// respostas citadas, reações com emojis e mensagens de visualização única.
+class ParsedMessageContent {
+  const ParsedMessageContent({
+    required this.text,
+    this.reply,
+    this.isViewOnce = false,
+    this.isReaction = false,
+    this.targetReactionId,
+    this.reactionEmoji,
+  });
+
+  final String text;
+  final QuotedReply? reply;
+  final bool isViewOnce;
+  final bool isReaction;
+  final int? targetReactionId;
+  final String? reactionEmoji;
+
+  static ParsedMessageContent parse(String rawBody) {
+    if (!rawBody.startsWith('{') || !rawBody.endsWith('}')) {
+      return ParsedMessageContent(text: rawBody);
+    }
+    try {
+      final decoded = jsonDecode(rawBody);
+      if (decoded is! Map<String, dynamic>) {
+        return ParsedMessageContent(text: rawBody);
+      }
+
+      final type = decoded['type'] as String?;
+      if (type == 'reaction') {
+        return ParsedMessageContent(
+          text: '',
+          isReaction: true,
+          targetReactionId: decoded['targetId'] as int?,
+          reactionEmoji: decoded['emoji'] as String?,
+        );
+      }
+
+      if (type == 'text') {
+        final text = decoded['text'] as String? ?? '';
+        final replyMap = decoded['reply'] as Map<String, dynamic>?;
+        final reply = replyMap != null ? QuotedReply.fromJson(replyMap) : null;
+        final viewOnce = decoded['viewOnce'] as bool? ?? false;
+        return ParsedMessageContent(
+          text: text,
+          reply: reply,
+          isViewOnce: viewOnce,
+        );
+      }
+
+      return ParsedMessageContent(text: rawBody);
+    } catch (_) {
+      return ParsedMessageContent(text: rawBody);
+    }
+  }
+}

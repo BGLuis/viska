@@ -65,7 +65,7 @@ class JustAudioVoicePlayer implements VoicePlayer {
 
   @override
   Future<void> playBytes(Uint8List wavBytes) async {
-    await _inner.setAudioSource(_BytesAudioSource(wavBytes));
+    await _inner.setAudioSource(BytesAudioSource(wavBytes));
     await _inner.play();
   }
 
@@ -79,8 +79,8 @@ class JustAudioVoicePlayer implements VoicePlayer {
 /// Fonte de áudio do `just_audio` a partir de bytes já em memória — nunca
 /// toca disco. `audioplayers`/`BytesSource` foi descartado para isto: não
 /// tem suporte em iOS/macOS (`hasBytesSource: false` no Darwin).
-class _BytesAudioSource extends StreamAudioSource {
-  _BytesAudioSource(this._bytes) : super(tag: 'nota-de-voz');
+class BytesAudioSource extends StreamAudioSource {
+  BytesAudioSource(this._bytes) : super(tag: 'nota-de-voz');
 
   final Uint8List _bytes;
 

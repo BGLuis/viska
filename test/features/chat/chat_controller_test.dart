@@ -375,6 +375,56 @@ class _FakeCore implements Core {
 
   @override
   Future<int> sweepExpiredMessages() async => 0;
+
+  @override
+  Future<void> addReaction({
+    required PlatformInt64 targetMsgId,
+    required U8Array16 contactDeviceId,
+    required String emoji,
+  }) async {}
+
+  @override
+  Future<void> configureDuressPin({
+    required String duressPin,
+    required int actionMode,
+  }) async {}
+
+  @override
+  Future<String> exportEncryptedBackup({required String destPath}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> restoreEncryptedBackup({
+    required String mnemonic,
+    required String srcPath,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<String?> getConfig({required String key}) => throw UnimplementedError();
+
+  @override
+  Future<void> setConfig({required String key, required String value}) =>
+      throw UnimplementedError();
+
+  bool contactVerified = false;
+  bool keyChanged = false;
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) async =>
+      contactVerified;
+
+  @override
+  Future<void> verifyContact({
+    required List<int> contactDeviceId,
+    required bool verified,
+  }) async {
+    contactVerified = verified;
+  }
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) async =>
+      keyChanged;
 }
 
 class _FakeP2PTransport implements P2PTransport {
@@ -452,7 +502,7 @@ void main() {
 
   test('initialize loads existing history', () async {
     core.messagesToReturn = [
-      const MessageDto(
+      MessageDto(
         id: 1,
         direction: MessageDirectionDto.incoming,
         kind: MessageKindDto.text,
@@ -460,6 +510,8 @@ void main() {
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 1000,
         isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
       ),
     ];
     controller = makeController();
@@ -557,7 +609,7 @@ void main() {
           receivedAtUnixSecs: 123,
         );
     core.messagesToReturn = [
-      const MessageDto(
+      MessageDto(
         id: 5,
         direction: MessageDirectionDto.incoming,
         kind: MessageKindDto.text,
@@ -565,6 +617,8 @@ void main() {
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 123,
         isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
       ),
     ];
     controller = makeController();
@@ -725,6 +779,8 @@ void main() {
           deliveryState: DeliveryStateDto.sent,
           createdAtUnixSecs: 0,
           isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
         );
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
@@ -757,6 +813,8 @@ void main() {
             deliveryState: DeliveryStateDto.delivered,
             createdAtUnixSecs: 500,
             isEphemeral: false,
+            viewOnce: false,
+            reactions: const [],
           ),
         ];
         core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
@@ -845,6 +903,8 @@ void main() {
         deliveryState: DeliveryStateDto.delivered,
         createdAtUnixSecs: 0,
         isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
       );
 
       transport.emitIncomingFile(Uint8List.fromList([1]));
