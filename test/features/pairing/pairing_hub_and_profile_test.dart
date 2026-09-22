@@ -146,6 +146,13 @@ void main() {
 
       expect(find.text('Escanear amigo'), findsOneWidget);
       expect(find.text('Meu código'), findsOneWidget);
+
+      // Alterna para Proximidade
+      await tester.tap(find.text('Proximidade'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Procurando aparelhos próximos na rede local...'), findsOneWidget);
     });
 
     testWidgets('Manual tab validates Base64 code and executes pairing', (tester) async {
