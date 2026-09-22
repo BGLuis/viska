@@ -16,6 +16,7 @@ class ContactDto {
   final Uint8List dhPubkey;
   final PlatformInt64 pairedAtUnixSecs;
   final String? nickname;
+  final bool isVerified;
 
   const ContactDto({
     required this.deviceId,
@@ -23,6 +24,7 @@ class ContactDto {
     required this.dhPubkey,
     required this.pairedAtUnixSecs,
     this.nickname,
+    required this.isVerified,
   });
 
   @override
@@ -31,7 +33,8 @@ class ContactDto {
       signingPubkey.hashCode ^
       dhPubkey.hashCode ^
       pairedAtUnixSecs.hashCode ^
-      nickname.hashCode;
+      nickname.hashCode ^
+      isVerified.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -42,7 +45,8 @@ class ContactDto {
           signingPubkey == other.signingPubkey &&
           dhPubkey == other.dhPubkey &&
           pairedAtUnixSecs == other.pairedAtUnixSecs &&
-          nickname == other.nickname;
+          nickname == other.nickname &&
+          isVerified == other.isVerified;
 }
 
 /// Estado de entrega de uma mensagem de saída — espelha
@@ -186,6 +190,9 @@ class MessageDto {
   final DeliveryStateDto deliveryState;
   final PlatformInt64 createdAtUnixSecs;
   final bool isEphemeral;
+  final PlatformInt64? replyToId;
+  final bool viewOnce;
+  final List<String> reactions;
 
   const MessageDto({
     required this.id,
@@ -196,6 +203,9 @@ class MessageDto {
     required this.deliveryState,
     required this.createdAtUnixSecs,
     required this.isEphemeral,
+    this.replyToId,
+    required this.viewOnce,
+    required this.reactions,
   });
 
   @override
@@ -207,7 +217,10 @@ class MessageDto {
       audioFileId.hashCode ^
       deliveryState.hashCode ^
       createdAtUnixSecs.hashCode ^
-      isEphemeral.hashCode;
+      isEphemeral.hashCode ^
+      replyToId.hashCode ^
+      viewOnce.hashCode ^
+      reactions.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -221,7 +234,10 @@ class MessageDto {
           audioFileId == other.audioFileId &&
           deliveryState == other.deliveryState &&
           createdAtUnixSecs == other.createdAtUnixSecs &&
-          isEphemeral == other.isEphemeral;
+          isEphemeral == other.isEphemeral &&
+          replyToId == other.replyToId &&
+          viewOnce == other.viewOnce &&
+          reactions == other.reactions;
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —

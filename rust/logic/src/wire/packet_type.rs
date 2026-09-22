@@ -18,6 +18,8 @@ pub enum PacketType {
     MsgText = 0x10,
     MsgReceipt = 0x11,
     MsgTyping = 0x12,
+    MsgReaction = 0x13,
+    MsgRevoke = 0x14,
     FileMetadata = 0x20,
     FileSymbol = 0x21,
     FileFeedback = 0x22,
@@ -29,10 +31,12 @@ pub enum PacketType {
 
 impl PacketType {
     /// Todas as variantes, na ordem da spec. Usado pelos testes exaustivos.
-    pub const ALL: [PacketType; 10] = [
+    pub const ALL: [PacketType; 12] = [
         PacketType::MsgText,
         PacketType::MsgReceipt,
         PacketType::MsgTyping,
+        PacketType::MsgReaction,
+        PacketType::MsgRevoke,
         PacketType::FileMetadata,
         PacketType::FileSymbol,
         PacketType::FileFeedback,
@@ -59,6 +63,8 @@ impl PacketType {
             0x10 => Ok(Self::MsgText),
             0x11 => Ok(Self::MsgReceipt),
             0x12 => Ok(Self::MsgTyping),
+            0x13 => Ok(Self::MsgReaction),
+            0x14 => Ok(Self::MsgRevoke),
             0x20 => Ok(Self::FileMetadata),
             0x21 => Ok(Self::FileSymbol),
             0x22 => Ok(Self::FileFeedback),
@@ -99,7 +105,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_values() {
-        for valor in [0x00, 0x03, 0x13, 0x1f, 0x24, 0x31, 0x42, 0xff] {
+        for valor in [0x00, 0x03, 0x15, 0x1f, 0x24, 0x31, 0x42, 0xff] {
             assert!(
                 matches!(PacketType::from_u8(valor), Err(Error::Malformed(_))),
                 "valor {valor:#04x} deveria ser rejeitado"

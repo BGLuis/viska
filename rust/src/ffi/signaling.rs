@@ -20,11 +20,12 @@ impl Core {
     /// Resolve o contato e a `K_sig` compartilhada com ele — repetido nos
     /// três métodos abaixo, então isolado aqui.
     fn signaling_key_for(&self, device_id: &[u8; DEVICE_ID_LEN]) -> Result<(PublicIdentity, viska_proto::crypto::kdf::Key), FfiError> {
-        let (peer, _, _) = self
+        let (peer, _, _, _) = self
             .store
             .find_contact(device_id)?
             .ok_or(FfiError::ContactNotFound)?;
-        let k_sig = topic::signaling_key(&self.identity, &peer)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let k_sig = topic::signaling_key(&id, &peer)?;
         Ok((peer, k_sig))
     }
 
@@ -35,7 +36,8 @@ impl Core {
         let device_id = to_device_id(peer_device_id)?;
         let (peer, k_sig) = self.signaling_key_for(&device_id)?;
 
-        let my_direction = topic::direction(&self.identity.public(), &peer);
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let my_direction = topic::direction(&id.public(), &peer);
         let publish_topic = topic::topic_hex(
             &k_sig,
             my_direction,

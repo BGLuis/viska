@@ -46,11 +46,12 @@ impl Core {
             return Ok(status_dto(session));
         }
 
-        let (peer, _, _) = self
+        let (peer, _, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
-        let (session, _) = Session::open(&self.identity, peer)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let (session, _) = Session::open(&id, peer)?;
         let status = status_dto(&session);
         sessions.insert(device_id, session);
         Ok(status)
@@ -76,7 +77,8 @@ impl Core {
             .get_mut(&device_id)
             .ok_or(FfiError::NoActiveSession)?;
 
-        Ok(session.process_handshake_message(&self.identity, &bytes)?)
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        Ok(session.process_handshake_message(&id, &bytes)?)
     }
 
     /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
@@ -300,6 +302,9 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         delivery_state,
         created_at_unix_secs: message.created_at_unix_secs,
         is_ephemeral: message.is_ephemeral,
+        reply_to_id: message.reply_to_id,
+        view_once: message.view_once,
+        reactions: message.reactions,
     }
 }
 
@@ -367,8 +372,10 @@ mod tests {
         if !result
             .core_a
             .identity
+            .read()
+            .unwrap()
             .public()
-            .is_before(&result.core_b.identity.public())
+            .is_before(&result.core_b.identity.read().unwrap().public())
         {
             std::mem::swap(&mut result.core_a, &mut result.core_b);
             std::mem::swap(&mut result.device_id_a, &mut result.device_id_b);

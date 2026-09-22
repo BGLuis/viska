@@ -87,6 +87,15 @@ impl Store {
         Ok(guard.is_none())
     }
 
+    /// Executa checkpoint do WAL para sincronizar o arquivo de banco principal.
+    pub fn checkpoint(&self) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|_| Error::Store)?;
+            Ok(())
+        })
+    }
+
     /// Carrega a identidade local, criando uma na primeira execução.
     pub fn load_or_create_identity(&self) -> Result<LocalIdentity> {
         self.with_conn(identity::load_or_create)
@@ -108,13 +117,36 @@ impl Store {
     }
 
     /// Lista todos os contatos pareados.
-    pub fn list_contacts(&self) -> Result<Vec<(PublicIdentity, i64, Option<String>)>> {
+    pub fn list_contacts(&self) -> Result<Vec<contacts::StoredContact>> {
         self.with_conn(contacts::list)
     }
 
     /// Busca um contato pelo `device_id`.
-    pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<(PublicIdentity, i64, Option<String>)>> {
+    pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<contacts::StoredContact>> {
         self.with_conn(|conn| contacts::find_by_device_id(conn, device_id))
+    }
+
+    /// Define se o contato está verificado (Fase 9).
+    pub fn set_verified(&self, device_id: &[u8; 16], verified: bool) -> Result<()> {
+        self.with_conn(|conn| contacts::set_verified(conn, device_id, verified))
+    }
+
+    /// Define o status de verificação de um contato com safety number opcional.
+    pub fn set_contact_verified(
+        &self,
+        device_id: &[u8; 16],
+        is_verified: bool,
+        verified_safety_number: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn(|conn| contacts::set_verified_with_sn(conn, device_id, is_verified, verified_safety_number))
+    }
+
+    /// Consulta se um contato está verificado e o Safety Number salvo na verificação.
+    pub fn get_contact_verified_status(
+        &self,
+        device_id: &[u8; 16],
+    ) -> Result<(bool, Option<String>)> {
+        self.with_conn(|conn| contacts::get_verified_status(conn, device_id))
     }
 
     /// Define uma configuração chave-valor do aplicativo (ex: apelido próprio).
@@ -151,6 +183,16 @@ impl Store {
     /// Consulta o TTL configurado para o contato.
     pub fn get_ephemeral_ttl(&self, device_id: &[u8; 16]) -> Result<i64> {
         self.with_conn(|conn| contacts::get_ephemeral_ttl(conn, device_id))
+    }
+
+    /// Substitui a identidade local no banco por uma restaurada.
+    pub fn replace_identity(&self, identity: &LocalIdentity) -> Result<()> {
+        self.with_conn(|conn| identity::replace_identity(conn, identity))
+    }
+
+    /// Remove todos os contatos do banco para restauração limpa.
+    pub fn clear_contacts(&self) -> Result<()> {
+        self.with_conn(contacts::clear)
     }
 
     /// Persiste uma mensagem de saída como `Pending`, antes de qualquer
@@ -206,6 +248,60 @@ impl Store {
         contact_device_id: &[u8; 16],
     ) -> Result<Vec<messages::StoredMessage>> {
         self.with_conn(|conn| messages::list_pending(conn, contact_device_id))
+    }
+
+    /// Adiciona uma reação emoji a uma mensagem.
+    pub fn add_reaction(
+        &self,
+        message_id: i64,
+        contact_device_id: &[u8; 16],
+        emoji: &str,
+        created_at_unix_secs: i64,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            messages::add_reaction(conn, message_id, contact_device_id, emoji, created_at_unix_secs)
+        })
+    }
+
+    /// Consulta as reações emoji vinculadas a uma mensagem.
+    pub fn get_reactions(&self, message_id: i64) -> Result<Vec<String>> {
+        self.with_conn(|conn| messages::get_reactions_for_message(conn, message_id))
+    }
+
+    /// Configura o PIN de coação e o modo de ação do cofre falso (Fase 9).
+    pub fn configure_duress_pin(&self, duress_pin: &str, action_mode: u8) -> Result<()> {
+        self.with_conn(|conn| {
+            let is_enabled = if duress_pin.is_empty() { 0 } else { 1 };
+            conn.execute(
+                "INSERT INTO decoy_vault_config (id, is_enabled, duress_pin, action_mode)
+                 VALUES (0, ?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET
+                    is_enabled = excluded.is_enabled,
+                    duress_pin = excluded.duress_pin,
+                    action_mode = excluded.action_mode",
+                rusqlite::params![is_enabled, duress_pin, action_mode as i64],
+            )
+            .map_err(|_| Error::Store)?;
+            Ok(())
+        })
+    }
+
+    /// Consulta a configuração do cofre falso (Fase 9).
+    pub fn get_decoy_vault_config(&self) -> Result<Option<(bool, Option<String>, u8)>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT is_enabled, duress_pin, action_mode FROM decoy_vault_config WHERE id = 0",
+                [],
+                |row| {
+                    let enabled: i64 = row.get(0)?;
+                    let pin: Option<String> = row.get(1)?;
+                    let mode: i64 = row.get(2)?;
+                    Ok((enabled != 0, pin, mode as u8))
+                },
+            )
+            .optional()
+            .map_err(|_| Error::Store)
+        })
     }
 
     /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência nova.
@@ -303,10 +399,11 @@ mod tests {
         }
 
         let store = Store::open(&path, &k).unwrap();
-        let (found, paired_at, nickname) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        let (found, paired_at, nickname, is_verified) = store.find_contact(&contact.device_id).unwrap().unwrap();
         assert_eq!(found, contact);
         assert_eq!(paired_at, 1_700_000_000);
         assert_eq!(nickname.as_deref(), Some("Alice"));
+        assert!(!is_verified);
     }
 
     #[test]
@@ -363,8 +460,8 @@ mod tests {
 
         let listed = store.list_contacts().unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|(c, _, _)| c == &a));
-        assert!(listed.iter().any(|(c, _, nick)| c == &b && nick.as_deref() == Some("Bob")));
+        assert!(listed.iter().any(|(c, _, _, _)| c == &a));
+        assert!(listed.iter().any(|(c, _, nick, _)| c == &b && nick.as_deref() == Some("Bob")));
     }
 
     #[test]
@@ -418,18 +515,27 @@ mod tests {
         store.insert_contact(&contact, 100, None).unwrap();
 
         // Inicialmente sem apelido
-        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        let (_, _, nick, _) = store.find_contact(&contact.device_id).unwrap().unwrap();
         assert!(nick.is_none());
 
         // Atualiza apelido do contato
         store.update_contact_nickname(&contact.device_id, "Meu Amigo").unwrap();
-        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        let (_, _, nick, _) = store.find_contact(&contact.device_id).unwrap().unwrap();
         assert_eq!(nick.as_deref(), Some("Meu Amigo"));
 
         // Re-inserção com None preserva o apelido existente
         store.insert_contact(&contact, 200, None).unwrap();
-        let (_, _, nick) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        let (_, _, nick, _) = store.find_contact(&contact.device_id).unwrap().unwrap();
         assert_eq!(nick.as_deref(), Some("Meu Amigo"));
+
+        // Verificação de contato
+        store.set_contact_verified(&contact.device_id, true, Some("12345 67890")).unwrap();
+        let (verified, sn) = store.get_contact_verified_status(&contact.device_id).unwrap();
+        assert!(verified);
+        assert_eq!(sn.as_deref(), Some("12345 67890"));
+
+        let (_, _, _, is_v) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert!(is_v);
 
         // Configurações do app (ex: apelido próprio)
         assert_eq!(store.get_config("my_nickname").unwrap(), None);

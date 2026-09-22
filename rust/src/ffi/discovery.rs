@@ -24,7 +24,7 @@ impl Core {
     /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
     /// dele até a descoberta local.
     pub fn my_device_id(&self) -> Vec<u8> {
-        self.identity.public().device_id.to_vec()
+        self.identity.read().unwrap().public().device_id.to_vec()
     }
 
     /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
@@ -32,11 +32,12 @@ impl Core {
     /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
     pub fn discovery_beacons(&self, peer_device_id: Vec<u8>) -> Result<DiscoveryBeaconsDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
-        let (peer, _, _) = self
+        let (peer, _, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
-        let k_sig = signaling_key(&self.identity, &peer)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let k_sig = signaling_key(&id, &peer)?;
 
         Ok(DiscoveryBeaconsDto {
             advertise_beacon: beacon_id(&k_sig, current_epoch()).to_vec(),
@@ -55,10 +56,11 @@ impl Core {
     pub fn match_discovered_beacon(&self, beacon: Vec<u8>) -> Result<Option<ContactDto>, FfiError> {
         let beacon: [u8; 16] = beacon.try_into().map_err(|_| FfiError::Internal)?;
 
-        for (peer, paired_at, nickname) in self.store.list_contacts()? {
-            let k_sig = signaling_key(&self.identity, &peer)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        for (peer, paired_at, nickname, is_verified) in self.store.list_contacts()? {
+            let k_sig = signaling_key(&id, &peer)?;
             if beacon_ids_for_window(&k_sig).contains(&beacon) {
-                return Ok(Some(ContactDto::from_identity(&peer, paired_at, nickname)));
+                return Ok(Some(ContactDto::from_identity(&peer, paired_at, nickname, is_verified)));
             }
         }
         Ok(None)

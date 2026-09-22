@@ -40,6 +40,10 @@ pub enum FfiError {
     /// O núcleo ou banco está trancado (auto-lock ou segundo plano) e requer
     /// autenticação prévia para executar operações.
     Locked,
+    /// Falha de autenticação ou decifragem AEAD.
+    AeadFailure,
+    /// Formato inválido ou corrompido.
+    Malformed,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }

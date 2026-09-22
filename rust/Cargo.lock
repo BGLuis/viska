@@ -1647,10 +1647,14 @@ name = "viska_core"
 version = "0.1.0"
 dependencies = [
  "audiopus",
+ "blake3",
+ "ciborium",
  "flutter_rust_bridge",
  "hex",
+ "serde",
  "tempfile",
  "viska_proto",
+ "zeroize",
 ]
 
 [[package]]
@@ -1670,6 +1674,7 @@ dependencies = [
  "raptorq",
  "rusqlite",
  "serde",
+ "sha2",
  "subtle",
  "tempfile",
  "thiserror",

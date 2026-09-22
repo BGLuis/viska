@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
+use zeroize::Zeroize;
 
 use crate::ffi::error::FfiError;
 use crate::ffi::transfer::TransferHandle;
@@ -30,7 +31,7 @@ pub struct Core {
     // privados ao arquivo, só de não serem `pub` ao ponto de o codegen do
     // `flutter_rust_bridge` tentar codificá-los (que ele não tenta, porque
     // nenhum dos três tipos é serializável pela ponte).
-    pub(super) identity: LocalIdentity,
+    pub(super) identity: RwLock<LocalIdentity>,
     pub(super) store: Store,
     /// Sessões de mensagens em memória, uma por contato — nunca persistidas:
     /// reabrir o app começa sem sessão nenhuma, exatamente como dois
@@ -70,7 +71,7 @@ impl Core {
         viska_proto::file::staging::sweep_orphaned(&staging_dir, &active_ids)?;
 
         Ok(Core {
-            identity,
+            identity: RwLock::new(identity),
             store,
             sessions: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
@@ -167,17 +168,19 @@ impl Core {
 
     /// Os 145 bytes do QR Code desta identidade.
     pub fn my_qr_payload(&self) -> Vec<u8> {
-        pairing::encode_qr(&self.identity).to_vec()
+        let id = self.identity.read().unwrap();
+        pairing::encode_qr(&id).to_vec()
     }
 
     /// Valida o payload lido pela câmera ou recebido por proximidade e persiste o contato.
     pub fn pair_from_qr(&self, payload: Vec<u8>, nickname: Option<String>) -> Result<ContactDto, FfiError> {
         self.ensure_not_locked()?;
-        let candidate = pairing::decode_qr(&payload, &self.identity.public())?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let candidate = pairing::decode_qr(&payload, &id.public())?;
         let paired_at = viska_proto::util::time::unix_seconds() as i64;
         self.store.insert_contact(&candidate, paired_at, nickname.as_deref())?;
 
-        Ok(ContactDto::from_identity(&candidate, paired_at, nickname))
+        Ok(ContactDto::from_identity(&candidate, paired_at, nickname, false))
     }
 
     /// Todos os contatos já pareados.
@@ -186,7 +189,7 @@ impl Core {
         let contacts = self.store.list_contacts()?;
         Ok(contacts
             .into_iter()
-            .map(|(identity, paired_at, nickname)| ContactDto::from_identity(&identity, paired_at, nickname))
+            .map(|(identity, paired_at, nickname, is_verified)| ContactDto::from_identity(&identity, paired_at, nickname, is_verified))
             .collect())
     }
 
@@ -196,16 +199,64 @@ impl Core {
         let device_id: [u8; 16] = contact_device_id
             .try_into()
             .map_err(|_| FfiError::Internal)?;
-        let (contact, _, _) = self
+        let (contact, _, _, _) = self
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
 
-        let number = SafetyNumber::compute(&self.identity.public(), &contact);
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let number = SafetyNumber::compute(&id.public(), &contact);
         Ok(SafetyNumberDto {
             digits: number.to_display_string(),
             words: number.to_words_display_string(),
         })
+    }
+
+    /// Define se o contato foi verificado (true/false) após conferência do Safety Number.
+    pub fn verify_contact(&self, contact_device_id: Vec<u8>, verified: bool) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+        let current_sn = if verified {
+            let sn = self.safety_number(device_id.to_vec())?;
+            Some(sn.digits)
+        } else {
+            None
+        };
+
+        self.store.set_contact_verified(&device_id, verified, current_sn.as_deref())?;
+        Ok(())
+    }
+
+    /// Retorna se o contato está com status verificado.
+    pub fn is_contact_verified(&self, contact_device_id: Vec<u8>) -> Result<bool, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+
+        let (verified, _) = self.store.get_contact_verified_status(&device_id)?;
+        Ok(verified)
+    }
+
+    /// Verifica se as chaves criptográficas do contato mudaram desde a última verificação.
+    pub fn is_key_changed(&self, contact_device_id: Vec<u8>) -> Result<bool, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id: [u8; 16] = contact_device_id
+            .try_into()
+            .map_err(|_| FfiError::Internal)?;
+
+        let (_, saved_sn) = self.store.get_contact_verified_status(&device_id)?;
+        if let Some(saved) = saved_sn {
+            let current_sn = self.safety_number(device_id.to_vec())?;
+            let current_digits_norm = current_sn.digits.replace(' ', "");
+            let saved_digits_norm = saved.replace(' ', "");
+            if current_digits_norm != saved_digits_norm {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Apelido desta identidade local, se configurado.
@@ -218,6 +269,19 @@ impl Core {
     pub fn set_my_nickname(&self, nickname: String) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
         self.store.set_config("my_nickname", &nickname)?;
+        Ok(())
+    }
+
+    /// Consulta chave de configuração arbitrária.
+    pub fn get_config(&self, key: String) -> Result<Option<String>, FfiError> {
+        self.ensure_not_locked()?;
+        Ok(self.store.get_config(&key)?)
+    }
+
+    /// Define chave de configuração arbitrária.
+    pub fn set_config(&self, key: String, value: String) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        self.store.set_config(&key, &value)?;
         Ok(())
     }
 
@@ -235,8 +299,9 @@ impl Core {
     /// entre aparelhos próximos em pareamento.
     pub fn compute_sas_code(&self, peer_payload: Vec<u8>) -> Result<String, FfiError> {
         self.ensure_not_locked()?;
-        let candidate = pairing::decode_qr(&peer_payload, &self.identity.public())?;
-        let number = SafetyNumber::compute(&self.identity.public(), &candidate);
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let candidate = pairing::decode_qr(&peer_payload, &id.public())?;
+        let number = SafetyNumber::compute(&id.public(), &candidate);
         let digits_raw = number.to_display_string().replace(' ', "");
         let sas = if digits_raw.len() >= 6 {
             digits_raw[0..6].to_string()
@@ -245,6 +310,97 @@ impl Core {
         };
         Ok(sas)
     }
+
+    /// Adiciona uma reação emoji a uma mensagem persistida (Fase 9).
+    pub fn add_reaction(
+        &self,
+        contact_device_id: [u8; 16],
+        target_msg_id: i64,
+        emoji: String,
+    ) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let now = viska_proto::util::time::unix_seconds() as i64;
+        self.store.add_reaction(target_msg_id, &contact_device_id, &emoji, now)?;
+        Ok(())
+    }
+
+    /// Exporta backup cifrado com frase mnemônica de 24 palavras (BIP-39).
+    pub fn export_encrypted_backup(&self, dest_path: String) -> Result<String, FfiError> {
+        self.ensure_not_locked()?;
+        let _ = self.store.checkpoint();
+        let db_path = self.app_dir.join(DB_FILE_NAME);
+        let db_bytes = std::fs::read(&db_path).map_err(|_| FfiError::Internal)?;
+        let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
+
+        let mut bundle = Vec::with_capacity(32 + db_bytes.len());
+        bundle.extend_from_slice(master_secret.as_bytes());
+        bundle.extend_from_slice(&db_bytes);
+
+        let mnemonic = viska_proto::backup::export_backup_to_file(&bundle, Path::new(&dest_path))
+            .map_err(|_| FfiError::Internal)?;
+        bundle.zeroize();
+        Ok(mnemonic)
+    }
+
+    /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
+    pub fn restore_encrypted_backup(&self, src_path: String, mnemonic: String) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let mut bundle = viska_proto::backup::restore_backup_from_file(Path::new(&src_path), &mnemonic)
+            .map_err(|_| FfiError::FileCorrupted)?;
+        if bundle.len() < 32 {
+            return Err(FfiError::FileCorrupted);
+        }
+        let mut restored_master_secret = [0u8; 32];
+        restored_master_secret.copy_from_slice(&bundle[..32]);
+        let db_bytes = &bundle[32..];
+
+        let _ = self.lock();
+
+        let master_key_path = self.app_dir.join("master.key");
+        let _ = std::fs::remove_file(&master_key_path);
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&master_key_path)
+                .map_err(|_| FfiError::Internal)?;
+            file.write_all(&restored_master_secret).map_err(|_| FfiError::Internal)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&master_key_path, &restored_master_secret).map_err(|_| FfiError::Internal)?;
+        }
+        restored_master_secret.zeroize();
+
+        let db_path = self.app_dir.join(DB_FILE_NAME);
+        let write_res = std::fs::write(&db_path, db_bytes);
+        let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-wal"));
+        let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
+        bundle.zeroize();
+        write_res.map_err(|_| FfiError::Internal)?;
+
+        self.unlock()?;
+        if let Ok(new_id) = self.store.load_or_create_identity() {
+            let mut id_guard = self.identity.write().map_err(|_| FfiError::Internal)?;
+            *id_guard = new_id;
+        }
+        self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
+        Ok(())
+    }
+
+    /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
+    pub fn configure_duress_pin(&self, duress_pin: String, action_mode: u8) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        self.store.configure_duress_pin(&duress_pin, action_mode)?;
+        Ok(())
+    }
+
 }
 
 impl std::fmt::Debug for Core {
@@ -265,7 +421,7 @@ mod tests {
     fn open_core_generates_identity_on_first_run() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
-        let id = core.identity.public();
+        let id = core.identity.read().unwrap().public();
 
         assert_eq!(id.device_id.len(), 16);
         assert_eq!(id.signing.len(), 32);
@@ -283,12 +439,12 @@ mod tests {
 
         assert_eq!(
             contact_of_a_seen_by_b.signing_pubkey,
-            core_a.identity.public().signing
+            core_a.identity.read().unwrap().public().signing
         );
         assert_eq!(contact_of_a_seen_by_b.nickname.as_deref(), Some("Alice"));
         assert_eq!(
             contact_of_b_seen_by_a.signing_pubkey,
-            core_b.identity.public().signing
+            core_b.identity.read().unwrap().public().signing
         );
         assert_eq!(contact_of_b_seen_by_a.nickname.as_deref(), Some("Bob"));
 
@@ -352,10 +508,10 @@ mod tests {
         core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
 
         let sn_a = core_a
-            .safety_number(core_b.identity.public().device_id.to_vec())
+            .safety_number(core_b.identity.read().unwrap().public().device_id.to_vec())
             .unwrap();
         let sn_b = core_b
-            .safety_number(core_a.identity.public().device_id.to_vec())
+            .safety_number(core_a.identity.read().unwrap().public().device_id.to_vec())
             .unwrap();
 
         assert_eq!(sn_a, sn_b);
@@ -427,5 +583,138 @@ mod tests {
         assert!(core.is_locked());
         assert!(!db_path.exists());
         assert_eq!(core.list_contacts(), Err(FfiError::Locked));
+    }
+
+    #[test]
+    fn backup_export_and_restore_roundtrip() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        core_a.set_my_nickname("Alice".to_string()).unwrap();
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), Some("Bob".to_string())).unwrap();
+        core_a.set_ephemeral_ttl(contact.device_id.clone(), 300).unwrap();
+
+        // Exporta backup
+        let backup_path = dir_a.path().join("backup.viskasafe");
+        let mnemonic = core_a
+            .export_encrypted_backup(backup_path.to_str().unwrap().to_string())
+            .unwrap();
+        let words: Vec<&str> = mnemonic.split_whitespace().collect();
+        assert_eq!(words.len(), 24);
+        assert!(backup_path.exists());
+
+        // Restauração com mnemonic errado falha
+        let dir_c = tempfile::tempdir().unwrap();
+        let core_c = open_core(&dir_c);
+        let mut wrong_words = words.clone();
+        wrong_words[0] = if wrong_words[0] == "casa" { "mesa" } else { "casa" };
+        assert_eq!(
+            core_c.restore_encrypted_backup(
+                backup_path.to_str().unwrap().to_string(),
+                wrong_words.join(" "),
+            ),
+            Err(FfiError::FileCorrupted)
+        );
+
+        // Restauração com bytes adulterados falha
+        let mut tampered_bytes = std::fs::read(&backup_path).unwrap();
+        let last_idx = tampered_bytes.len() - 1;
+        tampered_bytes[last_idx] ^= 0x55;
+        let tampered_path = dir_a.path().join("tampered.viskasafe");
+        std::fs::write(&tampered_path, &tampered_bytes).unwrap();
+        assert_eq!(
+            core_c.restore_encrypted_backup(
+                tampered_path.to_str().unwrap().to_string(),
+                mnemonic.clone(),
+            ),
+            Err(FfiError::FileCorrupted)
+        );
+
+        // Restauração correta em core_c
+        core_c
+            .restore_encrypted_backup(backup_path.to_str().unwrap().to_string(), mnemonic)
+            .unwrap();
+
+        assert_eq!(core_c.my_nickname().unwrap().as_deref(), Some("Alice"));
+        assert_eq!(core_c.my_device_id(), core_a.my_device_id());
+        let contacts_c = core_c.list_contacts().unwrap();
+        assert_eq!(contacts_c.len(), 1);
+        assert_eq!(contacts_c[0].nickname.as_deref(), Some("Bob"));
+        assert_eq!(core_c.get_ephemeral_ttl(contacts_c[0].device_id.clone()).unwrap(), 300);
+    }
+
+    #[test]
+    fn contact_verification_and_key_change_detection() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), Some("Bob".to_string())).unwrap();
+        let dev_id: [u8; 16] = contact.device_id.clone().try_into().unwrap();
+        assert!(!contact.is_verified);
+        assert!(!core_a.is_contact_verified(contact.device_id.clone()).unwrap());
+        assert!(!core_a.is_key_changed(contact.device_id.clone()).unwrap());
+
+        // Verifica o contato
+        core_a.verify_contact(dev_id.to_vec(), true).unwrap();
+        assert!(core_a.is_contact_verified(contact.device_id.clone()).unwrap());
+        assert!(!core_a.is_key_changed(contact.device_id.clone()).unwrap());
+
+        let list = core_a.list_contacts().unwrap();
+        assert!(list[0].is_verified);
+
+        // Se Bob regenerar identidade e re-parear (simulando chave alterada / MITM)
+        let dir_b_fake = tempfile::tempdir().unwrap();
+        let core_b_fake = open_core(&dir_b_fake);
+        let fake_public = core_b_fake.identity.read().unwrap().public();
+        let fake_contact_with_same_id = viska_proto::crypto::identity::PublicIdentity {
+            device_id: dev_id,
+            signing: fake_public.signing,
+            dh: fake_public.dh,
+        };
+        core_a.store.insert_contact(&fake_contact_with_same_id, 2000, Some("Bob")).unwrap();
+
+        // Agora is_verified foi revogado para false e is_key_changed deve detectar true!
+        assert!(!core_a.is_contact_verified(contact.device_id.clone()).unwrap());
+        assert!(core_a.is_key_changed(contact.device_id.clone()).unwrap());
+
+        // Re-verificando o contato atualiza o Safety Number gravado e limpa o alerta
+        core_a.verify_contact(dev_id.to_vec(), true).unwrap();
+        assert!(core_a.is_contact_verified(contact.device_id.clone()).unwrap());
+        assert!(!core_a.is_key_changed(contact.device_id.clone()).unwrap());
+    }
+
+    #[test]
+    fn reactions_and_duress_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_core(&dir);
+
+        // Testa configuração de duress PIN
+        core.configure_duress_pin("9999".to_string(), 1).unwrap();
+        let (is_enabled, duress_pin, action_mode) = core.store.get_decoy_vault_config().unwrap().unwrap();
+        assert!(is_enabled);
+        assert_eq!(duress_pin.as_deref(), Some("9999"));
+        assert_eq!(action_mode, 1);
+
+        // Insere contato e mensagem para testar reação
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_b = open_core(&dir_b);
+        let contact = core.pair_from_qr(core_b.my_qr_payload(), Some("Bob".to_string())).unwrap();
+        let dev_id: [u8; 16] = contact.device_id.try_into().unwrap();
+
+        let msg_id = core.store.insert_pending_message(
+            &dev_id,
+            viska_proto::wire::packet_type::PacketType::MsgText,
+            "Olá!",
+            1000,
+        ).unwrap();
+
+        // Adiciona reação via Core
+        core.add_reaction(dev_id, msg_id, "❤️".to_string()).unwrap();
+        let reactions = core.store.get_reactions(msg_id).unwrap();
+        assert_eq!(reactions, vec!["❤️".to_string()]);
     }
 }

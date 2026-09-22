@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'error.dart';
+import 'package:collection/collection.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
@@ -13,6 +14,13 @@ import 'types.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
 abstract class Core implements RustOpaqueInterface {
+  /// Adiciona uma reação emoji a uma mensagem persistida (Fase 9).
+  Future<void> addReaction({
+    required U8Array16 contactDeviceId,
+    required PlatformInt64 targetMsgId,
+    required String emoji,
+  });
+
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`. Do lado receptor, também apaga o
   /// `.staging` — mesma garantia de "abortar destrói a chave" de
@@ -24,6 +32,12 @@ abstract class Core implements RustOpaqueInterface {
   /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
   /// entre aparelhos próximos em pareamento.
   Future<String> computeSasCode({required List<int> peerPayload});
+
+  /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
+  Future<void> configureDuressPin({
+    required String duressPin,
+    required int actionMode,
+  });
 
   /// Decodifica o formato interno devolvido por
   /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
@@ -81,6 +95,9 @@ abstract class Core implements RustOpaqueInterface {
   /// `viska_proto::session::Session::pending_outgoing_handshake`.
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId});
 
+  /// Exporta backup cifrado com frase mnemônica de 24 palavras (BIP-39).
+  Future<String> exportEncryptedBackup({required String destPath});
+
   /// Alimenta a sessão com uma mensagem de handshake recebida via
   /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
   /// de resposta a publicar, se houver.
@@ -126,6 +143,9 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> peerDeviceId,
   });
 
+  /// Consulta chave de configuração arbitrária.
+  Future<String?> getConfig({required String key});
+
   /// Consulta o TTL efêmero configurado para o contato.
   Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId});
 
@@ -140,6 +160,12 @@ abstract class Core implements RustOpaqueInterface {
   Future<IngestedChunkDto?> ingestIncomingWireBytes({
     required List<int> wireBytes,
   });
+
+  /// Retorna se o contato está com status verificado.
+  Future<bool> isContactVerified({required List<int> contactDeviceId});
+
+  /// Verifica se as chaves criptográficas do contato mudaram desde a última verificação.
+  Future<bool> isKeyChanged({required List<int> contactDeviceId});
 
   /// Informa se a Core está trancada.
   Future<bool> isLocked();
@@ -224,6 +250,12 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> peerDeviceId,
   });
 
+  /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
+  Future<void> restoreEncryptedBackup({
+    required String srcPath,
+    required String mnemonic,
+  });
+
   /// Safety number entre esta identidade e um contato já pareado.
   Future<SafetyNumberDto> safetyNumber({required List<int> contactDeviceId});
 
@@ -260,6 +292,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Status atual da sessão com um contato, sem alterar nada — `None` se
   /// `ensure_session` nunca foi chamado para ele.
   Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId});
+
+  /// Define chave de configuração arbitrária.
+  Future<void> setConfig({required String key, required String value});
 
   /// Altera o apelido local de um contato já pareado.
   Future<void> setContactNickname({
@@ -321,4 +356,22 @@ abstract class Core implements RustOpaqueInterface {
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
   /// mestre e reabre a conexão do SQLCipher.
   Future<void> unlock();
+
+  /// Define se o contato foi verificado (true/false) após conferência do Safety Number.
+  Future<void> verifyContact({
+    required List<int> contactDeviceId,
+    required bool verified,
+  });
+}
+
+class U8Array16 extends NonGrowableListView<int> {
+  static const arraySize = 16;
+
+  @internal
+  Uint8List get inner => _inner;
+  final Uint8List _inner;
+
+  U8Array16(this._inner) : assert(_inner.length == arraySize), super(_inner);
+
+  U8Array16.init() : this(Uint8List(arraySize));
 }

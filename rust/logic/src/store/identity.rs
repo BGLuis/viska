@@ -59,3 +59,32 @@ pub fn load_or_create(conn: &rusqlite::Connection) -> Result<LocalIdentity> {
 
     Ok(generated)
 }
+
+/// Substitui a identidade armazenada pela identidade restaurada de um backup.
+pub fn replace_identity(conn: &rusqlite::Connection, identity: &LocalIdentity) -> Result<()> {
+    let mut signing_seed = identity.signing_seed();
+    let mut dh_secret = identity.dh().to_bytes();
+    let now = crate::util::time::unix_seconds() as i64;
+
+    let result = conn.execute(
+        "INSERT INTO local_identity (id, device_id, signing_seed, dh_secret, created_at)
+         VALUES (0, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+            device_id = excluded.device_id,
+            signing_seed = excluded.signing_seed,
+            dh_secret = excluded.dh_secret",
+        rusqlite::params![
+            identity.device_id().as_slice(),
+            signing_seed.as_slice(),
+            dh_secret.as_slice(),
+            now,
+        ],
+    );
+
+    signing_seed.zeroize();
+    dh_secret.zeroize();
+    result.map_err(|_| Error::Store)?;
+
+    Ok(())
+}
+

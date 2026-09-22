@@ -597,8 +597,10 @@ mod tests {
         if !pair
             .core_a
             .identity
+            .read()
+            .unwrap()
             .public()
-            .is_before(&pair.core_b.identity.public())
+            .is_before(&pair.core_b.identity.read().unwrap().public())
         {
             std::mem::swap(&mut pair.core_a, &mut pair.core_b);
             std::mem::swap(&mut pair.device_id_a, &mut pair.device_id_b);
