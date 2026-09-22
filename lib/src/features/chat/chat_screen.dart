@@ -54,8 +54,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // Gestos avançados do microfone (trava de gravação e cancelamento)
   bool _isMicLocked = false;
-  double _micDragAccumulatedX = 0.0;
-  double _micDragAccumulatedY = 0.0;
   Timer? _recordTimer;
   int _recordSeconds = 0;
   bool _isOpeningSafetyNumber = false;
@@ -471,12 +469,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _startRecordingGesture() async {
     final c = _controller;
     if (c == null) return;
-    _micDragAccumulatedX = 0;
-    _micDragAccumulatedY = 0;
     _isMicLocked = false;
     await c.startRecording();
     if (c.isRecording) {
       _startRecordTimer();
+      setState(() {}); // redesenha para exibir _buildRecordingBar
     }
   }
 
@@ -502,21 +499,21 @@ class _ChatScreenState extends State<ChatScreen> {
     await _controller?.stopRecordingAndSend();
   }
 
-  void _onMicDragUpdate(DragUpdateDetails details) {
+  void _onMicDragUpdate(double totalDx, double totalDy) {
     final c = _controller;
     if (c == null || !c.isRecording || _isMicLocked) return;
 
-    _micDragAccumulatedX += details.delta.dx;
-    _micDragAccumulatedY += details.delta.dy;
+    // totalDx/totalDy já são deslocamentos acumulados desde o início do gesto
+    // (offsetFromOrigin), então não somamos — comparamos diretamente.
 
     // Deslizar para a esquerda (<= -60px) cancela a gravação
-    if (_micDragAccumulatedX <= -60) {
+    if (totalDx <= -60) {
       _cancelRecordingGesture();
       return;
     }
 
     // Deslizar para cima (<= -50px) trava a gravação em modo mãos livres
-    if (_micDragAccumulatedY <= -50) {
+    if (totalDy <= -50) {
       HapticFeedback.mediumImpact();
       setState(() => _isMicLocked = true);
     }
@@ -804,10 +801,10 @@ class _ChatScreenState extends State<ChatScreen> {
           GestureDetector(
             onLongPressStart: (_) => _startRecordingGesture(),
             onLongPressMoveUpdate: (details) {
-              _onMicDragUpdate(DragUpdateDetails(
-                delta: details.offsetFromOrigin,
-                globalPosition: details.globalPosition,
-              ));
+              _onMicDragUpdate(
+                details.offsetFromOrigin.dx,
+                details.offsetFromOrigin.dy,
+              );
             },
             onLongPressEnd: _onMicDragEnd,
             child: IconButton.filled(
