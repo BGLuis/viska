@@ -34,7 +34,21 @@ android {
         versionName = flutter.versionName
 
         ndk {
+            abiFilters.clear()
             abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+        }
+    }
+
+    packaging {
+        jniLibs {
+            excludes.addAll(
+                listOf(
+                    "**/armeabi/**",
+                    "**/armeabi-v7a/**",
+                    "**/x86/**",
+                    "**/libVkLayer_khronos_validation.so",
+                )
+            )
         }
     }
 

@@ -39,7 +39,7 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  late final ChatController _controller;
+  ChatController? _controller;
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
 
@@ -63,13 +63,18 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _controller = ChatController(
-      core: widget.core,
-      router: widget.router,
-      contactId: widget.contactId,
-    );
-    _controller.addListener(_onControllerChanged);
-    _controller.initialize();
+    try {
+      final controller = ChatController(
+        core: widget.core,
+        router: widget.router,
+        contactId: widget.contactId,
+      );
+      _controller = controller;
+      controller.addListener(_onControllerChanged);
+      controller.initialize();
+    } catch (e, stack) {
+      debugPrint('[ChatScreen] Erro ao instanciar ChatController: $e\n$stack');
+    }
     _loadEphemeralTtl();
   }
 
@@ -137,7 +142,7 @@ class _ChatScreenState extends State<ChatScreen> {
       dhPubkey: Uint8List(32),
       pairedAtUnixSecs: 0,
       nickname: _currentContactLabel,
-      isVerified: _controller.isVerified,
+      isVerified: _controller?.isVerified ?? false,
     );
   }
 
@@ -159,11 +164,11 @@ class _ChatScreenState extends State<ChatScreen> {
           safetyNumber: safetyNumber,
           core: widget.core,
           onVerified: () {
-            _controller.refreshTrustState();
+            _controller?.refreshTrustState();
           },
         ),
       );
-      await _controller.refreshTrustState();
+      await _controller?.refreshTrustState();
     } catch (e, stack) {
       debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
       if (!mounted) return;
@@ -248,7 +253,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (_controller.isVerified) ...[
+                      if (_controller?.isVerified == true) ...[
                         const SizedBox(width: 6),
                         const Icon(
                           Icons.verified,
@@ -415,7 +420,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _isViewOnce = false;
     });
 
-    await _controller.sendText(text, replyTo: reply, isViewOnce: viewOnce);
+    await _controller?.sendText(text, replyTo: reply, isViewOnce: viewOnce);
   }
 
   void _startReply(MessageDto message) {
@@ -441,7 +446,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context,
       tapPosition: tapPos,
       onSelect: (emoji) {
-        _controller.sendReaction(targetMessageId: message.id, emoji: emoji);
+        _controller?.sendReaction(targetMessageId: message.id, emoji: emoji);
       },
     );
   }
@@ -451,7 +456,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _recordTimer?.cancel();
     _recordSeconds = 0;
     _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _controller.isRecording) {
+      if (mounted && (_controller?.isRecording ?? false)) {
         setState(() => _recordSeconds++);
       }
     });
@@ -464,11 +469,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _startRecordingGesture() async {
+    final c = _controller;
+    if (c == null) return;
     _micDragAccumulatedX = 0;
     _micDragAccumulatedY = 0;
     _isMicLocked = false;
-    await _controller.startRecording();
-    if (_controller.isRecording) {
+    await c.startRecording();
+    if (c.isRecording) {
       _startRecordTimer();
     }
   }
@@ -477,7 +484,7 @@ class _ChatScreenState extends State<ChatScreen> {
     HapticFeedback.heavyImpact();
     _stopRecordTimer();
     _isMicLocked = false;
-    await _controller.cancelRecording();
+    await _controller?.cancelRecording();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -492,11 +499,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _stopAndSendRecordingGesture() async {
     _stopRecordTimer();
     _isMicLocked = false;
-    await _controller.stopRecordingAndSend();
+    await _controller?.stopRecordingAndSend();
   }
 
   void _onMicDragUpdate(DragUpdateDetails details) {
-    if (!_controller.isRecording || _isMicLocked) return;
+    final c = _controller;
+    if (c == null || !c.isRecording || _isMicLocked) return;
 
     _micDragAccumulatedX += details.delta.dx;
     _micDragAccumulatedY += details.delta.dy;
@@ -515,7 +523,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _onMicDragEnd([dynamic _]) {
-    if (!_controller.isRecording) return;
+    final c = _controller;
+    if (c == null || !c.isRecording) return;
     if (!_isMicLocked) {
       // Se não estava travada, ao soltar o dedo envia a gravação
       _stopAndSendRecordingGesture();
@@ -525,8 +534,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _stopRecordTimer();
-    _controller.removeListener(_onControllerChanged);
-    _controller.dispose();
+    _controller?.removeListener(_onControllerChanged);
+    _controller?.dispose();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -534,6 +543,37 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final controller = _controller;
+    if (controller == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text(_currentContactLabel ?? 'Conversa'),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: DarkTechTheme.alert),
+                const SizedBox(height: 16),
+                const Text(
+                  'Não foi possível inicializar a conversa com este contato.',
+                  style: TextStyle(color: DarkTechTheme.textPrimary, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Voltar'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: InkWell(
@@ -551,7 +591,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
-                if (_controller.isVerified) ...[
+                if (controller.isVerified) ...[
                   const SizedBox(width: 4),
                   const Icon(
                     Icons.verified,
@@ -586,7 +626,7 @@ class _ChatScreenState extends State<ChatScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _statusLabel(),
+                  _statusLabel(controller),
                   style: const TextStyle(
                     fontSize: 11,
                     color: DarkTechTheme.primary,
@@ -594,7 +634,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 const SizedBox(height: 3),
-                _buildTransportPill(),
+                _buildTransportPill(controller),
               ],
             ),
           ),
@@ -602,7 +642,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          if (_controller.isKeyChanged)
+          if (controller.isKeyChanged)
             Material(
               color: Colors.transparent,
               child: InkWell(
@@ -631,28 +671,28 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-          if (_controller.connectionError != null)
+          if (controller.connectionError != null)
             Container(
               width: double.infinity,
               color: DarkTechTheme.alert.withValues(alpha: 0.2),
               padding: const EdgeInsets.all(12),
               child: Text(
-                _controller.connectionError!,
+                controller.connectionError!,
                 style: const TextStyle(color: DarkTechTheme.alert),
               ),
             ),
-          if (_controller.voiceError != null)
+          if (controller.voiceError != null)
             Container(
               width: double.infinity,
               color: DarkTechTheme.alert.withValues(alpha: 0.2),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               child: Text(
-                _controller.voiceError!,
+                controller.voiceError!,
                 style: const TextStyle(color: DarkTechTheme.alert),
               ),
             ),
           Expanded(
-            child: _controller.messages.isEmpty
+            child: controller.messages.isEmpty
                 ? const Center(
                     child: Text(
                       'Nenhuma mensagem ainda',
@@ -662,9 +702,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.all(12),
-                    itemCount: _controller.messages.length,
+                    itemCount: controller.messages.length,
                     itemBuilder: (context, index) {
-                      final message = _controller.messages[index];
+                      final message = controller.messages[index];
                       final parsed = ParsedMessageContent.parse(message.body);
 
                       // Oculta mensagens que são puramente comandos de reação
@@ -676,7 +716,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         onReply: () => _startReply(message),
                         child: _MessageBubble(
                           message: message,
-                          controller: _controller,
+                          controller: controller,
                           onLongPress: (tapPos) => _showReactionPicker(message, tapPos),
                         ),
                       );
@@ -694,9 +734,9 @@ class _ChatScreenState extends State<ChatScreen> {
           // Barra inferior de entrada ou gravador de áudio ativo
           SafeArea(
             top: false,
-            child: _controller.isRecording
-                ? _buildRecordingBar()
-                : _buildTextInputBar(),
+            child: controller.isRecording
+                ? _buildRecordingBar(controller)
+                : _buildTextInputBar(controller),
           ),
         ],
       ),
@@ -704,7 +744,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Barra de entrada padrão de texto, com alternador de Visualização Única e mic
-  Widget _buildTextInputBar() {
+  Widget _buildTextInputBar(ChatController controller) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
       child: Row(
@@ -772,7 +812,7 @@ class _ChatScreenState extends State<ChatScreen> {
             onLongPressEnd: _onMicDragEnd,
             child: IconButton.filled(
               tooltip: 'Segure para gravar (↑ trava, ← cancela)',
-              onPressed: _controller.isSendingVoice ? null : () => _startRecordingGesture(),
+              onPressed: controller.isSendingVoice ? null : () => _startRecordingGesture(),
               icon: const Icon(Icons.mic_rounded),
               style: IconButton.styleFrom(
                 backgroundColor: DarkTechTheme.surfaceContainer,
@@ -785,7 +825,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Botão de enviar texto
           IconButton.filled(
-            onPressed: _controller.isSending ? null : _handleSend,
+            onPressed: controller.isSending ? null : _handleSend,
             icon: const Icon(Icons.send_rounded),
           ),
         ],
@@ -794,7 +834,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Barra dinâmica quando a gravação de voz está ativa
-  Widget _buildRecordingBar() {
+  Widget _buildRecordingBar(ChatController controller) {
     final minutes = (_recordSeconds ~/ 60).toString().padLeft(2, '0');
     final seconds = (_recordSeconds % 60).toString().padLeft(2, '0');
 
@@ -859,13 +899,13 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  String _statusLabel() {
-    if (_controller.connectionError != null) return 'Falha na conexão';
-    return _controller.isEstablished ? 'Conectado (P2P Pós-Quântico)' : 'Conectando…';
+  String _statusLabel(ChatController controller) {
+    if (controller.connectionError != null) return 'Falha na conexão';
+    return controller.isEstablished ? 'Conectado (P2P Pós-Quântico)' : 'Conectando…';
   }
 
-  Widget _buildTransportPill() {
-    final transport = _controller.activeTransport;
+  Widget _buildTransportPill(ChatController controller) {
+    final transport = controller.activeTransport;
     return Container(
       key: const Key('transport_indicator_pill'),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

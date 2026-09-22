@@ -112,24 +112,38 @@ class LanListener {
   }
 
   void _acceptConnection(Socket socket) {
-    unawaited(_routeConnection(socket));
+    unawaited(() async {
+      try {
+        await _routeConnection(socket);
+      } catch (_) {
+        try {
+          socket.destroy();
+        } catch (_) {}
+      }
+    }());
   }
 
   Future<void> _routeConnection(Socket socket) async {
-    final peeled = await _peelPreamble(socket);
-    if (peeled == null) {
-      socket.destroy();
-      return;
+    try {
+      final peeled = await _peelPreamble(socket);
+      if (peeled == null) {
+        socket.destroy();
+        return;
+      }
+      final key = _waitKey(peeled.deviceId, peeled.channel);
+      final completer = _waiting.remove(key);
+      if (completer == null) {
+        // Ninguém está esperando essa conexão agora (contato desconhecido, ou
+        // já resolvida por outro caminho) — descarta.
+        socket.destroy();
+        return;
+      }
+      completer.complete(LanConnection(socket: socket, incoming: peeled.rest));
+    } catch (_) {
+      try {
+        socket.destroy();
+      } catch (_) {}
     }
-    final key = _waitKey(peeled.deviceId, peeled.channel);
-    final completer = _waiting.remove(key);
-    if (completer == null) {
-      // Ninguém está esperando essa conexão agora (contato desconhecido, ou
-      // já resolvida por outro caminho) — descarta.
-      socket.destroy();
-      return;
-    }
-    completer.complete(LanConnection(socket: socket, incoming: peeled.rest));
   }
 }
 

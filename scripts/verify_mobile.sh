@@ -62,13 +62,25 @@ if [ ! -f "${APK_PATH}" ]; then
 fi
 
 # Verifica presença das .so para arm64-v8a e x86_64
-if ! unzip -l "${APK_PATH}" | grep -q "lib/arm64-v8a/libviska_core.so"; then
+if ! unzip -l "${APK_PATH}" | grep "lib/arm64-v8a/libviska_core.so" > /dev/null; then
     log_error "libviska_core.so ausente para arm64-v8a!"
     exit 1
 fi
 
-if ! unzip -l "${APK_PATH}" | grep -q "lib/x86_64/libviska_core.so"; then
+if ! unzip -l "${APK_PATH}" | grep "lib/x86_64/libviska_core.so" > /dev/null; then
     log_error "libviska_core.so ausente para x86_64!"
+    exit 1
+fi
+
+# Verifica ausência de arquivos 32-bit (armeabi-v7a)
+if unzip -l "${APK_PATH}" | grep "lib/armeabi" > /dev/null; then
+    log_error "Bibliotecas 32-bit armeabi detectadas no APK! Isso causa falhas de ABI em dispositivos modernos."
+    exit 1
+fi
+
+# Verifica ausência de camadas de validação Vulkan de debug
+if unzip -l "${APK_PATH}" | grep "libVkLayer" > /dev/null; then
+    log_error "Camada de validação Vulkan detectada no APK! Isso causa crashes de driver em GPUs Adreno."
     exit 1
 fi
 
