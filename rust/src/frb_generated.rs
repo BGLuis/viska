@@ -3187,6 +3187,7 @@ impl SseDecode for crate::ffi::types::MessageKindDto {
         return match inner {
             0 => crate::ffi::types::MessageKindDto::Text,
             1 => crate::ffi::types::MessageKindDto::VoiceNote,
+            2 => crate::ffi::types::MessageKindDto::File,
             _ => unreachable!("Invalid variant for MessageKindDto: {}", inner),
         };
     }
@@ -3340,9 +3341,11 @@ impl SseDecode for crate::ffi::types::SendFileStartedDto {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_fileId = <Vec<u8>>::sse_decode(deserializer);
         let mut var_sealedMetadata = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_messageId = <i64>::sse_decode(deserializer);
         return crate::ffi::types::SendFileStartedDto {
             file_id: var_fileId,
             sealed_metadata: var_sealedMetadata,
+            message_id: var_messageId,
         };
     }
 }
@@ -3852,6 +3855,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::MessageKindDto {
         match self {
             Self::Text => 0.into_dart(),
             Self::VoiceNote => 1.into_dart(),
+            Self::File => 2.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -3937,6 +3941,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::SendFileStartedDto {
         [
             self.file_id.into_into_dart().into_dart(),
             self.sealed_metadata.into_into_dart().into_dart(),
+            self.message_id.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4290,6 +4295,7 @@ impl SseEncode for crate::ffi::types::MessageKindDto {
             match self {
                 crate::ffi::types::MessageKindDto::Text => 0,
                 crate::ffi::types::MessageKindDto::VoiceNote => 1,
+                crate::ffi::types::MessageKindDto::File => 2,
                 _ => {
                     unimplemented!("");
                 }
@@ -4417,6 +4423,7 @@ impl SseEncode for crate::ffi::types::SendFileStartedDto {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<u8>>::sse_encode(self.file_id, serializer);
         <Vec<u8>>::sse_encode(self.sealed_metadata, serializer);
+        <i64>::sse_encode(self.message_id, serializer);
     }
 }
 

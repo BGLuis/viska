@@ -17,8 +17,10 @@ dependencies:
   mobile_scanner: ^7.4.2
   mqtt_client: ^10.9.0
   nsd: ^5.0.1
+  path: ^1.9.1
   path_provider: ^2.1.6
   permission_handler: ^13.0.2
+  file_picker: ^8.1.7
   qr_flutter: ^4.1.0
   record: ^6.2.1
   typed_data: ^1.4.0

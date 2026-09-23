@@ -129,10 +129,31 @@ impl Core {
         file_path: String,
         use_lan: bool,
     ) -> Result<SendFileStartedDto, FfiError> {
+        let device_id = to_device_id(peer_device_id.clone())?;
+
+        // Extrai o nome do arquivo para usar como corpo da mensagem na timeline
+        // — o mesmo `name` que vai cifrado no manifesto, mas aqui em claro
+        // para exibição local. Não é segredo: o receptor também verá.
+        let file_name = Path::new(&file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(FfiError::Internal)?
+            .to_owned();
+
         let started = self.start_send(peer_device_id, file_path, use_lan, TransferKind::File)?;
+
+        let created_at = viska_proto::util::time::unix_seconds() as i64;
+        let message_id = self.store.insert_pending_message(
+            &device_id,
+            PacketType::FileMetadata,
+            &file_name,
+            created_at,
+        )?;
+
         Ok(SendFileStartedDto {
             file_id: started.file_id.to_vec(),
             sealed_metadata: started.sealed_metadata,
+            message_id,
         })
     }
 

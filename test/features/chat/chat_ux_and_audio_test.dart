@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
@@ -15,6 +15,7 @@ import 'package:viska/src/features/chat/widgets/swipe_to_reply.dart';
 import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/features/chat/chat_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
@@ -107,11 +108,22 @@ class _FakeCore implements Core {
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async => [];
 
+  List<MessageDto> messagesToReturn = [];
+
   @override
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => [];
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
 
   @override
   Future<void> markMessageRead({required int messageId}) async {}
+
+  @override
+  Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId}) async => 0;
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) async => false;
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
 
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -483,6 +495,116 @@ void main() {
       expect(p3.isReaction, isTrue);
       expect(p3.targetReactionId, 99);
       expect(p3.reactionEmoji, '👍');
+    });
+  });
+
+  group('file attachment UI', () {
+    late Directory tempDir;
+    late _FakeCore core;
+    late _FakeP2PTransport transport;
+    late P2PTransportRouter router;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('viska-chat-ui-test');
+      PathProviderPlatform.instance = _FakePathProviderPlatform(tempDir);
+      core = _FakeCore();
+      transport = _FakeP2PTransport();
+      router = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) => transport,
+      );
+    });
+
+    tearDown(() {
+      tempDir.deleteSync(recursive: true);
+    });
+
+    testWidgets('attach_file_button is present in input bar', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attach_file_button')), findsOneWidget);
+      expect(find.byIcon(Icons.attach_file_rounded), findsOneWidget);
+    });
+
+    testWidgets('file message bubble renders progress indicator while receiving', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.file,
+          body: 'documento.pdf',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Recebendo arquivo…'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    });
+
+    testWidgets('file message bubble renders icon, filename and sent status for outgoing file', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 8));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 2,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'foto.png',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.sent,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('foto.png'), findsOneWidget);
+      expect(find.text('Enviado'), findsOneWidget);
+      expect(find.byIcon(Icons.insert_drive_file_rounded), findsOneWidget);
     });
   });
 }

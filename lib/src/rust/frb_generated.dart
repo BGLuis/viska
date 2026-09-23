@@ -2774,11 +2774,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return SendFileStartedDto(
       fileId: dco_decode_list_prim_u_8_strict(arr[0]),
       sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
+      messageId: dco_decode_i_64(arr[2]),
     );
   }
 
@@ -3336,9 +3337,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
     var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_messageId = sse_decode_i_64(deserializer);
     return SendFileStartedDto(
       fileId: var_fileId,
       sealedMetadata: var_sealedMetadata,
+      messageId: var_messageId,
     );
   }
 
@@ -3888,6 +3891,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.fileId, serializer);
     sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
+    sse_encode_i_64(self.messageId, serializer);
   }
 
   @protected

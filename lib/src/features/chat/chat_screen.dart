@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
@@ -405,6 +406,15 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Abre o seletor nativo de arquivos da plataforma e envia o arquivo
+  /// selecionado pelo canal `file` do transporte P2P, sem passar pela UI de
+  /// texto. Sem filtro de tipo — o protocolo aceita qualquer arquivo.
+  Future<void> _handlePickAndSendFile() async {
+    final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+    if (result == null || result.files.single.path == null) return;
+    await _controller?.sendFile(result.files.single.path!);
+  }
+
   Future<void> _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -688,6 +698,17 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: const TextStyle(color: DarkTechTheme.alert),
               ),
             ),
+          if (controller.fileError != null)
+            Container(
+              key: const Key('file_error_banner'),
+              width: double.infinity,
+              color: DarkTechTheme.alert.withValues(alpha: 0.2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Text(
+                controller.fileError!,
+                style: const TextStyle(color: DarkTechTheme.alert),
+              ),
+            ),
           Expanded(
             child: controller.messages.isEmpty
                 ? const Center(
@@ -746,6 +767,15 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
       child: Row(
         children: [
+          // Botão de clipe de papel — abre o seletor nativo de arquivos
+          IconButton(
+            key: const Key('attach_file_button'),
+            tooltip: 'Enviar arquivo',
+            icon: const Icon(Icons.attach_file_rounded),
+            color: DarkTechTheme.primary,
+            onPressed: controller.isSendingFile ? null : _handlePickAndSendFile,
+          ),
+
           // Alternador de Visualização Única (View-Once)
           IconButton(
             tooltip: _isViewOnce ? 'Visualização única ativa' : 'Ativar visualização única',
@@ -979,9 +1009,11 @@ class _MessageBubble extends StatelessWidget {
               if (parsed.reply != null)
                 QuotedMessageBubbleView(reply: parsed.reply!),
 
-              // Mensagem de voz com AudioWaveformPlayer OU texto
+              // Mensagem de voz com AudioWaveformPlayer OU arquivo OU texto
               if (message.kind == MessageKindDto.voiceNote)
                 _buildVoiceNoteContent(context)
+              else if (message.kind == MessageKindDto.file)
+                _buildFileContent(context)
               else if (parsed.isViewOnce)
                 _buildViewOnceContent(context, parsed.text)
               else
@@ -1084,6 +1116,71 @@ class _MessageBubble extends StatelessWidget {
     final audioBytes = controller.getVoiceNoteAudio(message);
     return AudioWaveformPlayer(
       audioBytes: audioBytes,
+    );
+  }
+
+  /// Renderiza um balão de arquivo genérico. Outgoing é sempre exibido como
+  /// "enviado" — quem mandou já tem o arquivo. Incoming mostra progresso até
+  /// [ChatController.isFileReady] ser `true`.
+  Widget _buildFileContent(BuildContext context) {
+    final isOutgoing = message.direction == MessageDirectionDto.outgoing;
+    final isReady = isOutgoing || controller.isFileReady(message);
+
+    if (!isReady) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: DarkTechTheme.scaffoldBackground.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: DarkTechTheme.primary,
+              ),
+            ),
+            SizedBox(width: 10),
+            Text(
+              'Recebendo arquivo…',
+              style: TextStyle(fontSize: 12.5, color: DarkTechTheme.textSecondary),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Exibe o nome do arquivo a partir do corpo da mensagem (persistido pelo
+    // Rust como o nome original) ou um fallback genérico.
+    final label = message.body.isNotEmpty ? message.body : 'arquivo';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.insert_drive_file_rounded, color: DarkTechTheme.primary, size: 22),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              color: DarkTechTheme.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (isOutgoing) ...const [
+          SizedBox(width: 8),
+          Text(
+            'Enviado',
+            style: TextStyle(fontSize: 10.5, color: DarkTechTheme.textMuted),
+          ),
+        ],
+      ],
     );
   }
 

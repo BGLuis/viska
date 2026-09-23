@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
@@ -191,6 +192,32 @@ class ChatController extends ChangeNotifier {
     return _voiceNoteAudio[_hex(fileId)];
   }
 
+  bool _sendingFile = false;
+  bool get isSendingFile => _sendingFile;
+
+  String? _fileError;
+  String? get fileError => _fileError;
+
+  /// Caminhos temporários de arquivos genéricos recebidos e verificados,
+  /// indexados por hex do `file_id`. Permite à UI confirmar que um arquivo
+  /// chegou completo sem round-trip adicional ao Rust.
+  final Map<String, String> _receivedFilePaths = {};
+
+  /// `true` se o arquivo recebido já está disponível no diretório temporário.
+  bool isFileReady(MessageDto message) {
+    final fileId = message.audioFileId;
+    if (fileId == null) return false;
+    return _receivedFilePaths.containsKey(_hex(fileId));
+  }
+
+  /// Caminho absoluto do arquivo recebido e verificado, ou `null` se ainda
+  /// em recebimento.
+  String? getReceivedFilePath(MessageDto message) {
+    final fileId = message.audioFileId;
+    if (fileId == null) return null;
+    return _receivedFilePaths[_hex(fileId)];
+  }
+
   /// Reações mapeadas por ID de mensagem de destino: messageId -> { emoji: count }
   final Map<int, Map<String, int>> _reactions = {};
 
@@ -295,6 +322,36 @@ class ChatController extends ChangeNotifier {
     await _refreshMessages();
     if (sealed.bytes != null) {
       await _sendSealed(sealed.messageId, sealed.bytes!);
+    }
+  }
+
+  /// Inicia o envio de um arquivo genérico cujo caminho foi devolvido pelo
+  /// seletor de arquivos da plataforma. Falha alto via [fileError] em vez de
+  /// exception — mesma política de [stopRecordingAndSend]. Envios simultâneos
+  /// são ignorados silenciosamente (o botão na UI fica desabilitado enquanto
+  /// [isSendingFile] for `true`).
+  Future<void> sendFile(String filePath) async {
+    if (_sendingFile) return;
+
+    _sendingFile = true;
+    _fileError = null;
+    notifyListeners();
+    try {
+      final started = await _core.startSendFile(
+        peerDeviceId: _contactId.deviceId,
+        filePath: filePath,
+        useLan: false,
+      );
+      await _refreshMessages();
+      await _router.sendToContact(_contactId, started.sealedMetadata);
+      await _pumpOutgoingChunks(started.fileId);
+      await _core.markMessageSent(messageId: started.messageId);
+      await _refreshMessages();
+    } catch (_) {
+      _fileError = 'Não foi possível enviar o arquivo.';
+    } finally {
+      _sendingFile = false;
+      notifyListeners();
     }
   }
 
@@ -412,12 +469,25 @@ class ChatController extends ChangeNotifier {
   /// genérico ou pedaço de nota de voz. `null` é normal: pacote de uma
   /// transferência que este `Core` não está rastreando (não é nosso, já
   /// terminou, etc.) — mesma política de silêncio do resto da fronteira.
+  ///
+  /// Quando o recebimento completa, tenta primeiro como áudio — se o Rust
+  /// retornar erro (a transferência não era `kind = Audio`), tenta como
+  /// arquivo genérico. Nenhum dos dois lança para quem chama.
   Future<void> _handleIncomingFileBytes(Uint8List wireBytes) async {
     final ingested = await _core.ingestIncomingWireBytes(wireBytes: wireBytes);
     if (ingested == null) return;
-    if (ingested.progress.isComplete) {
-      await _finishReceivingVoiceNote(ingested.fileId);
-    }
+    if (!ingested.progress.isComplete) return;
+
+    try {
+      final fileOffers = await _core.pendingFileOffers(peerDeviceId: _contactId.deviceId);
+      final fileOffer = fileOffers.where((o) => listEquals(o.fileId, ingested.fileId)).firstOrNull;
+      if (fileOffer != null) {
+        await _finishReceivingFile(ingested.fileId, fileOffer);
+        return;
+      }
+    } catch (_) {}
+
+    await _finishReceivingVoiceNote(ingested.fileId);
   }
 
   /// Fecha um recebimento de nota de voz completo: confirma ao emissor
@@ -447,6 +517,39 @@ class ChatController extends ChangeNotifier {
       // outro caminho) — nada a fazer.
     } finally {
       unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
+    }
+  }
+
+  /// Fecha um recebimento de arquivo genérico completo: verifica a raiz
+  /// Merkle (dentro de `finishReceiveFile`), envia `FILE_COMPLETE` de volta
+  /// ao emissor e cacheia o caminho temporário para a UI exibir o arquivo.
+  /// Silencioso se `fileId` não corresponder a nenhuma oferta de arquivo
+  /// conhecida (ex.: já foi cancelada ou é de um par diferente).
+  Future<void> _finishReceivingFile(Uint8List fileId, [FileOfferDto? cachedOffer]) async {
+    final offer = cachedOffer ??
+        (await _core.pendingFileOffers(peerDeviceId: _contactId.deviceId))
+            .where((o) => listEquals(o.fileId, fileId))
+            .firstOrNull;
+    if (offer == null) return;
+
+    final dir = await getTemporaryDirectory();
+    // `path.basename` elimina qualquer componente de diretório no nome que
+    // chegou da rede — previne path traversal mesmo que o par seja malicioso.
+    final safeName = path.basename(offer.name);
+    final destPath = '${dir.path}/viska-recv-${_hex(fileId)}-$safeName';
+    try {
+      final sealedComplete = await _core.finishReceiveFile(
+        peerDeviceId: _contactId.deviceId,
+        fileId: fileId,
+        destinationPath: destPath,
+      );
+      await _router.sendToContact(_contactId, sealedComplete);
+      _receivedFilePaths[_hex(fileId)] = destPath;
+      await _refreshMessages();
+    } catch (_) {
+      // Transferência desconhecida ou já concluída por outro caminho —
+      // silencioso, mesma política do resto da fronteira.
+      unawaited(File(destPath).delete().catchError((_) => File(destPath)));
     }
   }
 

@@ -245,7 +245,7 @@ class MessageDto {
 /// `messages` (`MSG_TEXT`/`AUDIO_CHUNK`); qualquer outro `packet_type`
 /// nunca é persistido nesta tabela (`store::messages::reject_typing` e o
 /// resto do desenho da Fase 3).
-enum MessageKindDto { text, voiceNote }
+enum MessageKindDto { text, voiceNote, file }
 
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
@@ -334,13 +334,18 @@ class SendFileStartedDto {
   /// Corpo do `FILE_METADATA` já selado — mandar pelo canal `control`.
   final Uint8List sealedMetadata;
 
+  /// `id` na tabela `messages` — usado depois em `Core::mark_message_sent`.
+  final PlatformInt64 messageId;
+
   const SendFileStartedDto({
     required this.fileId,
     required this.sealedMetadata,
+    required this.messageId,
   });
 
   @override
-  int get hashCode => fileId.hashCode ^ sealedMetadata.hashCode;
+  int get hashCode =>
+      fileId.hashCode ^ sealedMetadata.hashCode ^ messageId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -348,7 +353,8 @@ class SendFileStartedDto {
       other is SendFileStartedDto &&
           runtimeType == other.runtimeType &&
           fileId == other.fileId &&
-          sealedMetadata == other.sealedMetadata;
+          sealedMetadata == other.sealedMetadata &&
+          messageId == other.messageId;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de

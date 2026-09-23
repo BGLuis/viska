@@ -289,6 +289,8 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
     let (kind, body, audio_file_id) =
         if message.packet_type == viska_proto::wire::packet_type::PacketType::AudioChunk {
             (MessageKindDto::VoiceNote, String::new(), hex::decode(&message.body).ok())
+        } else if message.packet_type == viska_proto::wire::packet_type::PacketType::FileMetadata {
+            (MessageKindDto::File, message.body, None)
         } else {
             (MessageKindDto::Text, message.body, None)
         };

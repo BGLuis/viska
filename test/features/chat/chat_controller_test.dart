@@ -242,31 +242,49 @@ class _FakeCore implements Core {
   @override
   bool get isDisposed => false;
 
-  // Fase 4 — transferência de arquivo genérico: `ChatController` não chama
-  // nenhum destes ainda; stubs só para o fake continuar implementando
-  // `Core` por inteiro.
+  // Fase 4 — transferência de arquivo genérico: configuráveis por teste no
+  // mesmo padrão dos stubs de áudio (Fase 5) acima.
+  FutureOr<SendFileStartedDto> Function(String filePath)? startSendFileHandler;
+  final startSendFileCalls = <String>[];
+  final finishReceiveFileCalls = <String>[];
+  Uint8List Function(Uint8List fileId, String destinationPath)? finishReceiveFileHandler;
+  List<FileOfferDto> pendingFileOffersToReturn = [];
+
   @override
-  Future<void> cancelTransfer({required List<int> fileId}) => throw UnimplementedError();
+  Future<void> cancelTransfer({required List<int> fileId}) async {}
 
   @override
   Future<Uint8List> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    finishReceiveFileCalls.add(destinationPath);
+    // Cria o arquivo de destino para que o controller possa verificar que
+    // ele existe — mesmo padrão de finishReceiveAudio no fake acima.
+    await File(destinationPath).writeAsBytes([42]);
+    return finishReceiveFileHandler?.call(Uint8List.fromList(fileId), destinationPath) ??
+        Uint8List.fromList([5, 5, 5]);
+  }
 
   @override
-  Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) =>
-      throw UnimplementedError();
+  Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) async =>
+      pendingFileOffersToReturn;
 
   @override
   Future<SendFileStartedDto> startSendFile({
     required List<int> peerDeviceId,
     required String filePath,
     required bool useLan,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    startSendFileCalls.add(filePath);
+    if (startSendFileHandler != null) return await startSendFileHandler!(filePath);
+    return SendFileStartedDto(
+      fileId: Uint8List.fromList(List.filled(16, 5)),
+      sealedMetadata: Uint8List.fromList([8, 8, 8]),
+      messageId: nextMessageId++,
+    );
+  }
 
   // Fase 5 — nota de voz: configuráveis por teste (ver campos acima de
   // cada implementação), com um padrão razoável quando o teste não se
@@ -919,6 +937,175 @@ void main() {
       await controller.stopVoicePlayback();
       expect(player.stopCalls, 1);
       expect(controller.playingMessageId, isNull);
+    });
+  });
+
+  group('generic file transfer (Phase 4)', () {
+    test(
+      'sendFile seals FILE_METADATA through control channel, pumps chunks and marks message as sent',
+      () async {
+        core.sessionState = SessionStateKind.established;
+        final fileId = Uint8List.fromList(List.filled(16, 5));
+        core.startSendFileHandler = (_) => SendFileStartedDto(
+              fileId: fileId,
+              sealedMetadata: Uint8List.fromList([8, 8, 8]),
+              messageId: 77,
+            );
+        var chunkCalls = 0;
+        core.nextOutgoingWireChunkHandler = (_) {
+          chunkCalls++;
+          return chunkCalls <= 2 ? Uint8List.fromList([chunkCalls]) : null;
+        };
+        core.transferProgressHandler = (_) => TransferProgressDto(
+              blocksDone: 1,
+              totalBlocks: 1,
+              bytesDone: BigInt.from(100),
+              isComplete: true,
+            );
+        controller = makeController();
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(core.startSendFileCalls, ['/tmp/documento.pdf']);
+        expect(
+          transport.sendCalls,
+          [Uint8List.fromList([8, 8, 8])],
+          reason: 'FILE_METADATA vai pelo canal control',
+        );
+        expect(
+          transport.sendFileCalls,
+          [Uint8List.fromList([1]), Uint8List.fromList([2])],
+          reason: 'símbolos vão pelo canal file na ordem de nextOutgoingWireChunk',
+        );
+        expect(core.markSentCalls, [77], reason: 'markMessageSent deve ser chamado com o message_id do DTO');
+        expect(controller.isSendingFile, isFalse);
+        expect(controller.fileError, isNull);
+      },
+    );
+
+    test('sendFile failure becomes fileError, not exception', () async {
+      core.sessionState = SessionStateKind.established;
+      core.startSendFileHandler = (_) => throw StateError('sem sessão ativa');
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.sendFile('/tmp/qualquer.bin');
+
+      expect(controller.fileError, isNotNull);
+      expect(controller.isSendingFile, isFalse);
+    });
+
+    test('sendFile while already sending is a no-op (second call ignored)', () async {
+      core.sessionState = SessionStateKind.established;
+      // startSendFile nunca resolve — simula envio longo em andamento
+      final completer = Completer<SendFileStartedDto>();
+      core.startSendFileHandler = (_) => completer.future;
+      controller = makeController();
+      await controller.initialize();
+
+      // Inicia o primeiro envio sem await (fica pendente)
+      unawaited(controller.sendFile('/tmp/a.bin'));
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.isSendingFile, isTrue);
+
+      // Segunda chamada deve ser ignorada silenciosamente
+      await controller.sendFile('/tmp/b.bin');
+      expect(core.startSendFileCalls, hasLength(1), reason: 'só a primeira chamada chegou ao Core');
+
+      // Limpa — resolve a future pendente para não vazar
+      completer.completeError(StateError('cancelado pelo teste'));
+      await Future<void>.delayed(Duration.zero);
+    });
+
+    test(
+      'incoming file chunks complete with FILE_COMPLETE sent back and path cached',
+      () async {
+        core.sessionState = SessionStateKind.established;
+        final fileId = Uint8List.fromList(List.filled(16, 6));
+        core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
+              fileId: fileId,
+              progress: TransferProgressDto(
+                blocksDone: 1,
+                totalBlocks: 1,
+                bytesDone: BigInt.from(50),
+                isComplete: true,
+              ),
+            );
+        // Configura como arquivo genérico (não áudio): finishReceiveAudio vai
+        // falhar (não há entrada de áudio) e o controller cai em
+        // _finishReceivingFile.
+        core.pendingFileOffersToReturn = [
+          FileOfferDto(
+            fileId: fileId,
+            name: 'relatorio.pdf',
+            fileSize: BigInt.from(50),
+          ),
+        ];
+        controller = makeController();
+        await controller.initialize();
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        // Aguarda o event loop processar _handleIncomingFileBytes e
+        // _finishReceivingFile (que são assíncronos).
+        for (var i = 0; i < 50 && core.finishReceiveFileCalls.isEmpty; i++) {
+          await pumpEventQueue(times: 10);
+        }
+
+        expect(core.finishReceiveFileCalls, hasLength(1),
+            reason: 'finishReceiveFile deve ter sido chamado uma vez');
+        // O destPath usa o nome sanitizado do arquivo.
+        expect(core.finishReceiveFileCalls.single, contains('relatorio.pdf'));
+        // FILE_COMPLETE (bytes [5,5,5] do fake) vai pelo canal control.
+        expect(
+          transport.sendCalls,
+          [Uint8List.fromList([5, 5, 5])],
+          reason: 'FILE_COMPLETE deve ser enviado de volta pelo canal control',
+        );
+
+        // isFileReady deve ser true para uma mensagem com esse fileId.
+        final msg = MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.file,
+          body: 'relatorio.pdf',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 0,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        );
+        expect(controller.isFileReady(msg), isTrue,
+            reason: 'caminho deve estar cacheado após recebimento completo');
+        expect(controller.getReceivedFilePath(msg), isNotNull);
+      },
+    );
+
+    test('incoming file with unknown fileId is silently ignored', () async {
+      core.sessionState = SessionStateKind.established;
+      final fileId = Uint8List.fromList(List.filled(16, 7));
+      core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
+            fileId: fileId,
+            progress: TransferProgressDto(
+              blocksDone: 1,
+              totalBlocks: 1,
+              bytesDone: BigInt.from(10),
+              isComplete: true,
+            ),
+          );
+      // Nenhuma oferta pendente de arquivo ou áudio — ambos os caminhos
+      // devem falhar silenciosamente sem lançar exception.
+      core.pendingFileOffersToReturn = [];
+      controller = makeController();
+      await controller.initialize();
+
+      // Não deve lançar.
+      transport.emitIncomingFile(Uint8List.fromList([1]));
+      await pumpEventQueue(times: 20);
+
+      expect(controller.fileError, isNull);
+      expect(controller.connectionError, isNull);
     });
   });
 }
