@@ -331,6 +331,7 @@ class WebrtcTransport implements RawP2PChannel {
             await channel.send(RTCDataChannelMessage.fromBinary(bytes));
           },
           sampleJitter: _jitterProvider,
+          burstSize: 20,
         );
         channel.onMessage = (message) {
           if (message.isBinary) {

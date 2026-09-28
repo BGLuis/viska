@@ -26,6 +26,7 @@ dependencies:
   typed_data: ^1.4.0
   crypto: ^3.0.6
   collection: ^1.19.0
+  clock: ^1.1.2
   viska_core:
     path: rust_builder
 

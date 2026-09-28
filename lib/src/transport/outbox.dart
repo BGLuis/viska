@@ -1,10 +1,15 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+
 /// Fila de envio que aplica jitter antes de cada mensagem — `docs/protocol.md`
 /// §6.5, decisão 2.5 do relatório da Fase 3: o Rust só amostra o atraso
 /// (`sampleJitterDelayMs`, via FFI); quem efetivamente dorme é esta classe,
 /// porque só a camada de transporte sabe qual runtime assíncrono está em uso.
+///
+/// Para o canal de arquivos (P-02), o jitter pode ser aplicado por rajada
+/// (`burstSize` > 1), evitando limitar a vazão de símbolos de 16 KiB a ~1 MB/s.
 ///
 /// Existe separada de [WebrtcTransport] de propósito: nada aqui conhece
 /// `RTCDataChannel` — só uma função de envio (`rawSend`) e uma de
@@ -21,15 +26,22 @@ class JitteredOutbox {
   JitteredOutbox({
     required Future<void> Function(Uint8List envelope) rawSend,
     required Future<Duration> Function() sampleJitter,
+    this.burstSize = 1,
+    this.burstResetTimeout = const Duration(milliseconds: 200),
   })  : _rawSend = rawSend,
         _sampleJitter = sampleJitter;
 
   final Future<void> Function(Uint8List envelope) _rawSend;
   final Future<Duration> Function() _sampleJitter;
+  final int burstSize;
+  final Duration burstResetTimeout;
 
   final List<_QueuedEnvelope> _queue = [];
   bool _draining = false;
   bool _closed = false;
+
+  int _sentInBurst = 0;
+  DateTime? _lastSendTime;
 
   /// Enfileira `envelope` para envio. A promessa devolvida resolve quando
   /// **esta** mensagem específica terminar de ser enviada (ou rejeita se o
@@ -52,9 +64,21 @@ class JitteredOutbox {
     while (_queue.isNotEmpty) {
       final item = _queue.removeAt(0);
       try {
-        final delay = await _sampleJitter();
-        await Future<void>.delayed(delay);
+        final now = clock.now();
+        if (_lastSendTime != null && now.difference(_lastSendTime!) > burstResetTimeout) {
+          _sentInBurst = 0;
+        }
+
+        if (_sentInBurst == 0) {
+          final delay = await _sampleJitter();
+          if (delay > Duration.zero) {
+            await Future<void>.delayed(delay);
+          }
+        }
+
         await _rawSend(item.envelope);
+        _lastSendTime = clock.now();
+        _sentInBurst = (_sentInBurst + 1) % burstSize;
         item.completer.complete();
       } catch (error, stackTrace) {
         item.completer.completeError(error, stackTrace);
