@@ -412,6 +412,13 @@ class _FakeCore implements Core {
   }) async {}
 
   @override
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  }) async => true;
+
+  @override
   Future<void> configureDuressPin({
     required String duressPin,
     required int actionMode,

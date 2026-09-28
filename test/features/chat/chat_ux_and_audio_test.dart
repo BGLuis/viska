@@ -447,6 +447,34 @@ void main() {
       expect(decoded['emoji'], '🔥');
     });
 
+    test('sendReaction resolves targetMessageId to globalId when message is present', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 42,
+          globalId: 'global-msg-uuid-1234',
+          direction: MessageDirectionDto.incoming,
+          deliveryState: DeliveryStateDto.delivered,
+          kind: MessageKindDto.text,
+          body: 'Hello',
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: [],
+        ),
+      ];
+      await controller.initialize();
+
+      await controller.sendReaction(targetMessageId: 42, emoji: '❤️');
+
+      expect(core.sealOutgoingTextCalls, hasLength(1));
+      final payload = core.sealOutgoingTextCalls.single;
+      final decoded = jsonDecode(payload) as Map<String, dynamic>;
+
+      expect(decoded['type'], 'reaction');
+      expect(decoded['targetId'], 'global-msg-uuid-1234');
+      expect(decoded['emoji'], '❤️');
+    });
+
     test('cancelRecording stops recorder and removes temp file without sending', () async {
       await controller.initialize();
 
