@@ -327,6 +327,10 @@ pub fn mark_message_read(
 }
 
 /// Destrói chaves de mensagens efêmeras vencidas (crypto-shredding por mensagem).
+///
+/// Ao remover chaves com `PRAGMA secure_delete = ON`, o SQLite zera o conteúdo
+/// das células liberadas. O `wal_checkpoint(TRUNCATE)` sincroniza as páginas e
+/// trunca o WAL para não reter cópias antigas das chaves (S-14).
 pub fn sweep_expired_ephemeral_messages(
     conn: &rusqlite::Connection,
     unix_now: i64,
@@ -337,6 +341,10 @@ pub fn sweep_expired_ephemeral_messages(
             [unix_now],
         )
         .map_err(|_| Error::Store)?;
+    if deleted > 0 {
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|_| Error::Store)?;
+    }
     Ok(deleted)
 }
 

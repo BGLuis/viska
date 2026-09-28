@@ -46,6 +46,7 @@ impl Store {
 
         let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
         apply_key(&conn, &db_key)?;
+        apply_pragmas(&conn)?;
 
         schema::migrate(&conn).map_err(|_| Error::Store)?;
 
@@ -76,6 +77,7 @@ impl Store {
         let conn = rusqlite::Connection::open(path).map_err(|_| Error::Store)?;
         let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
         apply_key(&conn, &db_key)?;
+        apply_pragmas(&conn)?;
         schema::migrate(&conn).map_err(|_| Error::Store)?;
         *guard = Some(conn);
         Ok(())
@@ -373,6 +375,18 @@ fn apply_key(conn: &rusqlite::Connection, key: &kdf::Key) -> Result<()> {
         .map_err(|_| Error::Store)
 }
 
+/// Configura os pragmas obrigatórios da conexão:
+/// - `journal_mode = WAL`: concorrência e flush determinístico via checkpoint (D13).
+/// - `secure_delete = ON`: sobrescreve com zeros as páginas/células liberadas por DELETE,
+///   impedindo que chaves efêmeras destruídas continuem legíveis nas páginas livres (S-14).
+fn apply_pragmas(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA secure_delete = ON;",
+    )
+    .map_err(|_| Error::Store)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,5 +557,85 @@ mod tests {
         assert_eq!(store.get_config("my_nickname").unwrap().as_deref(), Some("Luis"));
         store.set_config("my_nickname", "Luis H.").unwrap();
         assert_eq!(store.get_config("my_nickname").unwrap().as_deref(), Some("Luis H."));
+    }
+
+    #[test]
+    fn ephemeral_key_shredded_and_not_in_decrypted_db_or_wal() {
+        use crate::wire::packet_type::PacketType;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(42);
+
+        let contact = LocalIdentity::generate().unwrap().public();
+        let (k_msg, _msg_id) = {
+            let store = Store::open(&path, &k).unwrap();
+            let sd: i64 = store
+                .with_conn(|conn| {
+                    conn.query_row("PRAGMA secure_delete;", [], |r| r.get(0))
+                        .map_err(|_| Error::Store)
+                })
+                .unwrap();
+            assert_eq!(sd, 1, "PRAGMA secure_delete deve estar ativado (1)");
+
+            store.insert_contact(&contact, 1_000, None).unwrap();
+            store.set_ephemeral_ttl(&contact.device_id, 60).unwrap();
+
+            let msg_id = store
+                .insert_incoming_message(&contact.device_id, PacketType::MsgText, "segredo efêmero", 1000)
+                .unwrap();
+
+            let k_msg: Vec<u8> = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT key FROM ephemeral_message_keys WHERE message_id = ?1",
+                        [msg_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| Error::Store)
+                })
+                .unwrap();
+            assert_eq!(k_msg.len(), 32);
+
+            store.mark_message_read(msg_id, 1010).unwrap();
+            let swept = store.sweep_expired_ephemeral_messages(1071).unwrap();
+            assert_eq!(swept, 1);
+
+            store.close().unwrap();
+            (k_msg, msg_id)
+        };
+
+        // Decifra o banco usando sqlcipher_export para validar o conteúdo exportado em claro.
+        let plaintext_path = dir.path().join("plaintext.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS plaintext KEY '';
+                 SELECT sqlcipher_export('plaintext');
+                 DETACH DATABASE plaintext;",
+                plaintext_path.to_str().unwrap()
+            ))
+            .unwrap();
+        }
+
+        // Lê todo o conteúdo das páginas do banco decifrado.
+        let decrypted_db_bytes = std::fs::read(&plaintext_path).unwrap();
+        assert!(
+            !decrypted_db_bytes.windows(k_msg.len()).any(|w| w == k_msg.as_slice()),
+            "K_msg ainda encontrada nas páginas livres do banco decifrado!"
+        );
+
+        // Verifica o arquivo WAL: se existir, deve estar vazio ou não conter K_msg.
+        let wal_path = dir.path().join("viska.sqlite3-wal");
+        if wal_path.exists() {
+            let wal_bytes = std::fs::read(&wal_path).unwrap();
+            assert!(
+                !wal_bytes.windows(k_msg.len()).any(|w| w == k_msg.as_slice()),
+                "K_msg ainda encontrada no WAL!"
+            );
+            assert_eq!(wal_bytes.len(), 0, "WAL deve estar truncado após sweep");
+        }
     }
 }
