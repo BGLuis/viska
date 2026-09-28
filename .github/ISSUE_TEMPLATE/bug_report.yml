@@ -1,7 +1,7 @@
 name: Relato de Bug
 description: Reporte um comportamento inesperado ou falha no Viska
 title: "[Bug]: "
-labels: ["bug", "triage"]
+labels: ["type:bug", "status:triage"]
 body:
   - type: markdown
     attributes:
@@ -9,6 +9,8 @@ body:
         Obrigado por relatar este problema! Por favor, forneça o máximo de informações possível para nos ajudar a reproduzir e solucionar o bug.
         
         **Atenção de Segurança:** NUNCA compartilhe chaves privadas, segredos criptográficos ou dados de pareamento confidenciais.
+
+        **Vulnerabilidade?** Não abra issue pública — use o [relato privado](https://github.com/BGLuis/viska/security/advisories/new) descrito em `SECURITY.md`.
   - type: textarea
     id: description
     attributes:

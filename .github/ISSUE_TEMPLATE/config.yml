@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Relatar uma vulnerabilidade (privado)
+    url: https://github.com/BGLuis/viska/security/advisories/new
+    about: Falhas de segurança nunca vão em issue pública. Veja SECURITY.md.
+  - name: Especificação do protocolo
+    url: https://github.com/BGLuis/viska/blob/main/docs/protocol.md
+    about: Antes de relatar divergência de protocolo, confira a especificação normativa.

@@ -1,0 +1,76 @@
+name: Achado Técnico
+description: Defeito encontrado em revisão ou auditoria, com local no código, correção e critério de aceite
+title: "[Achado]: "
+labels: ["status:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use este modelo para achados de revisão de código, auditoria ou medição — não para bugs de uso (use "Relato de Bug").
+
+        **Achado de segurança explorável?** Não abra aqui: use o [relato privado](https://github.com/BGLuis/viska/security/advisories/new).
+  - type: dropdown
+    id: category
+    attributes:
+      label: Categoria
+      options:
+        - Segurança (baixo impacto, sem exploração)
+        - Desempenho
+        - Usabilidade / funcionalidade incompleta
+        - Conformidade código × documentação
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severidade
+      options:
+        - Crítica
+        - Alta
+        - Média
+        - Baixa
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Local no código
+      description: "`arquivo:linha` ou intervalo, no commit indicado abaixo."
+      placeholder: "rust/logic/src/session/mod.rs:358-412"
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit analisado
+      placeholder: "2f226bc"
+    validations:
+      required: true
+  - type: textarea
+    id: mechanism
+    attributes:
+      label: Mecanismo
+      description: Por que o defeito acontece — a causa, não só o sintoma. Cite a seção de `docs/protocol.md` ou o desvio de `docs/deviations.md` afetado, se houver.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reprodução
+      description: Entrada, ambiente, sequência e o que observar. Se veio só da leitura do código, diga isso.
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Correção proposta
+      description: Aponte precedente no próprio código ou a fonte que a sustenta. Mudança de protocolo, dependência nova ou desvio precisa de decisão do mantenedor.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Critério de aceite
+      description: Falsificável — um comando, uma asserção de teste, uma medição com protocolo declarado.
+    validations:
+      required: true
