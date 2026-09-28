@@ -16,6 +16,7 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/rust/frb_generated.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
+import 'package:viska/src/transport/message_reception_service.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 
@@ -100,14 +101,29 @@ Future<void> main(List<String> args) async {
   // Um único router para o app inteiro: ele cria (e conecta) um transporte
   // por contato sob demanda — Fase 3, F5.
   final router = P2PTransportRouter(core: core);
+  final receptionService = MessageReceptionService(
+    core: core,
+    router: router,
+  );
+  await receptionService.start();
+
   final lockController = LockController(
     core: core,
     appDirPath: appDir.path,
   );
 
+  lockController.isLocked.addListener(() {
+    if (lockController.isLocked.value) {
+      receptionService.pause();
+    } else {
+      receptionService.resume();
+    }
+  });
+
   runApp(MainApp(
     core: core,
     router: router,
+    receptionService: receptionService,
     lockController: lockController,
     profileName: profile,
   ));
@@ -119,12 +135,14 @@ class MainApp extends StatelessWidget {
     required this.core,
     required this.router,
     required this.lockController,
+    this.receptionService,
     this.profileName,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final LockController lockController;
+  final MessageReceptionService? receptionService;
   final String? profileName;
 
   @override
@@ -144,6 +162,7 @@ class MainApp extends StatelessWidget {
 
           final currentCore = lockController.activeCore;
           final currentRouter = currentCore == core ? router : P2PTransportRouter(core: currentCore);
+          final currentReception = currentCore == core ? receptionService : null;
 
           return InactivityDetector(
             controller: lockController,
@@ -151,6 +170,7 @@ class MainApp extends StatelessWidget {
               key: ValueKey(currentCore),
               core: currentCore,
               router: currentRouter,
+              receptionService: currentReception,
               lockController: lockController,
               profileName: profileName,
             ),
@@ -169,12 +189,14 @@ class PairingHomeScreen extends StatefulWidget {
     required this.core,
     required this.router,
     required this.lockController,
+    this.receptionService,
     this.profileName,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final LockController lockController;
+  final MessageReceptionService? receptionService;
   final String? profileName;
 
   @override
@@ -214,6 +236,7 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
 
   void _refreshContacts() {
     final next = widget.core.listContacts();
+    widget.receptionService?.syncContacts();
     setState(() {
       _contacts = next;
     });
@@ -303,6 +326,7 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
           builder: (_) => ChatScreen(
             core: widget.core,
             router: widget.router,
+            receptionService: widget.receptionService,
             contactId: ContactId(contact.deviceId),
             contactLabel: contact.nickname,
           ),

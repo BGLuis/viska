@@ -75,14 +75,25 @@ class P2PTransportRouter {
     }
   }
 
+  /// Callback opcional invocado quando um transporte novo é criado para um contato.
+  /// Usado pelo serviço de recepção para iniciar escuta contínua assim que
+  /// qualquer transporte for instanciado.
+  void Function(ContactId contactId)? onTransportCreated;
+
   _RoutedTransport _ensure(ContactId contact) {
-    return _routed.putIfAbsent(contact, () {
+    var created = false;
+    final routed = _routed.putIfAbsent(contact, () {
+      created = true;
       final transport = _transportFactory(_core, contact);
       final connectFuture = transport.connect();
       // Evita exceção não tratada na zona se connect() falhar antes de um envio explícito
       connectFuture.ignore();
       return _RoutedTransport(transport, connectFuture);
     });
+    if (created) {
+      onTransportCreated?.call(contact);
+    }
+    return routed;
   }
 
   static P2PTransport _defaultFactory(Core core, ContactId contactId) =>

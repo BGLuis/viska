@@ -1046,9 +1046,11 @@ void main() {
         await controller.initialize();
 
         transport.emitIncomingFile(Uint8List.fromList([1]));
-        // Aguarda o event loop processar _handleIncomingFileBytes e
-        // _finishReceivingFile (que são assíncronos).
-        for (var i = 0; i < 50 && core.finishReceiveFileCalls.isEmpty; i++) {
+        // Aguarda o event loop processar _handleIncomingFileBytes,
+        // _finishReceivingFile e o envio de FILE_COMPLETE (que são assíncronos).
+        for (var i = 0;
+            i < 50 && (core.finishReceiveFileCalls.isEmpty || transport.sendCalls.isEmpty);
+            i++) {
           await pumpEventQueue(times: 10);
         }
 

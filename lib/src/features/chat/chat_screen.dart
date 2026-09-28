@@ -8,6 +8,7 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
+import '../../transport/message_reception_service.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
 import '../pairing/widgets/safety_number_qr_dialog.dart';
@@ -27,12 +28,14 @@ class ChatScreen extends StatefulWidget {
     required this.core,
     required this.router,
     required this.contactId,
+    this.receptionService,
     this.contactLabel,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final ContactId contactId;
+  final MessageReceptionService? receptionService;
   final String? contactLabel;
 
   @override
@@ -67,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> {
         core: widget.core,
         router: widget.router,
         contactId: widget.contactId,
+        receptionService: widget.receptionService,
       );
       _controller = controller;
       controller.addListener(_onControllerChanged);
