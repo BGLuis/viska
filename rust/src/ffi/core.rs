@@ -675,7 +675,7 @@ mod tests {
             signing: fake_public.signing,
             dh: fake_public.dh,
         };
-        core_a.store.insert_contact(&fake_contact_with_same_id, 2000, Some("Bob")).unwrap();
+        core_a.store.update_contact_keys(&fake_contact_with_same_id).unwrap();
 
         // Agora is_verified foi revogado para false e is_key_changed deve detectar true!
         assert!(!core_a.is_contact_verified(contact.device_id.clone()).unwrap());
@@ -716,5 +716,42 @@ mod tests {
         core.add_reaction(dev_id, msg_id, "❤️".to_string()).unwrap();
         let reactions = core.store.get_reactions(msg_id).unwrap();
         assert_eq!(reactions, vec!["❤️".to_string()]);
+    }
+
+    #[test]
+    fn pair_from_qr_rejects_new_keys_for_existing_device_id() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        // Pareamento inicial legítimo de Bob no dispositivo de Alice
+        let bob_payload = core_b.my_qr_payload();
+        let bob_contact = core_a.pair_from_qr(bob_payload, Some("Bob".to_string())).unwrap();
+        let original_signing = bob_contact.signing_pubkey.clone();
+        let original_dh = bob_contact.dh_pubkey.clone();
+
+        // Atacante tenta re-parear com o mesmo device_id de Bob, mas com chaves geradas por outro nó
+        let bob_dev_id: [u8; 16] = bob_contact.device_id.clone().try_into().unwrap();
+        let attacker_identity = viska_proto::crypto::identity::LocalIdentity::from_parts(
+            bob_dev_id,
+            [0x42; 32],
+            [0x24; 32],
+        );
+        let forged_payload = viska_proto::crypto::pairing::encode_qr(&attacker_identity);
+
+        // Alice tenta parear com o payload forjado com novas chaves para o mesmo device_id
+        let err = core_a
+            .pair_from_qr(forged_payload.to_vec(), Some("Atacante".to_string()))
+            .unwrap_err();
+        assert_eq!(err, FfiError::ContactKeyMismatch);
+
+        // Garante que as chaves antigas de Bob foram mantidas intactas no banco
+        let contacts = core_a.list_contacts().unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].device_id, bob_contact.device_id);
+        assert_eq!(contacts[0].signing_pubkey, original_signing);
+        assert_eq!(contacts[0].dh_pubkey, original_dh);
+        assert_eq!(contacts[0].nickname.as_deref(), Some("Bob"));
     }
 }

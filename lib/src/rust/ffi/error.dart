@@ -56,6 +56,10 @@ enum FfiError {
   /// Formato inválido ou corrompido.
   malformed,
 
+  /// Um contato com o mesmo `device_id` já existe mas com chaves criptográficas
+  /// diferentes. Requer confirmação explícita para evitar substituição de identidade.
+  contactKeyMismatch,
+
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,
 }

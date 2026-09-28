@@ -44,6 +44,9 @@ pub enum FfiError {
     AeadFailure,
     /// Formato inválido ou corrompido.
     Malformed,
+    /// Um contato com o mesmo `device_id` já existe mas com chaves criptográficas
+    /// diferentes. Requer confirmação explícita para evitar substituição de identidade.
+    ContactKeyMismatch,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -61,6 +64,7 @@ impl From<viska_proto::Error> for FfiError {
             Error::LowOrderPoint => FfiError::ForgedKey,
             Error::Store => FfiError::StoreFailure,
             Error::ContactNotFound => FfiError::ContactNotFound,
+            Error::ContactKeyMismatch => FfiError::ContactKeyMismatch,
             Error::NeedsRehandshake => FfiError::SessionExpired,
             Error::MerkleMismatch => FfiError::FileCorrupted,
             Error::Locked => FfiError::Locked,
@@ -118,6 +122,10 @@ mod tests {
         assert_eq!(
             FfiError::from(Error::ContactNotFound),
             FfiError::ContactNotFound
+        );
+        assert_eq!(
+            FfiError::from(Error::ContactKeyMismatch),
+            FfiError::ContactKeyMismatch
         );
         assert_eq!(
             FfiError::from(Error::NeedsRehandshake),

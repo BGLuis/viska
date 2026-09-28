@@ -118,6 +118,11 @@ impl Store {
         self.with_conn(|conn| contacts::update_nickname(conn, device_id, nickname))
     }
 
+    /// Atualiza explicitamente as chaves criptográficas de um contato (reseta verificação).
+    pub fn update_contact_keys(&self, contact: &PublicIdentity) -> Result<()> {
+        self.with_conn(|conn| contacts::update_keys(conn, contact))
+    }
+
     /// Lista todos os contatos pareados.
     pub fn list_contacts(&self) -> Result<Vec<contacts::StoredContact>> {
         self.with_conn(contacts::list)
