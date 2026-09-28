@@ -6,4 +6,7 @@
 
 pub mod beacon;
 
-pub use beacon::{beacon_id, beacon_ids_for_window, instance_name_hex, BEACON_LEN};
+pub use beacon::{
+    beacon_id, beacon_ids_for_window, instance_name_hex, preamble_id, preamble_ids_for_window,
+    BEACON_LEN, PREAMBLE_LEN,
+};

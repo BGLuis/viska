@@ -123,7 +123,7 @@ class MqttSignalingBackend implements SignalingBackend {
 
   static String _randomClientIdentifier() {
     final random = Random.secure();
-    final suffix = List.generate(16, (_) => random.nextInt(16).toRadixString(16)).join();
-    return 'viska-$suffix';
+    final chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    return List.generate(24, (_) => chars[random.nextInt(chars.length)]).join();
   }
 }

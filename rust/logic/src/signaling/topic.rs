@@ -29,7 +29,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    fn as_bytes(self) -> &'static [u8] {
+    pub fn as_bytes(self) -> &'static [u8] {
         match self {
             Direction::A2B => b"a2b",
             Direction::B2A => b"b2a",

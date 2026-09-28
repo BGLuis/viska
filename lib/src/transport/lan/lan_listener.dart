@@ -86,12 +86,21 @@ class LanListener {
 
   /// Espera a próxima conexão entrante para `(deviceId, channel)` — o lado
   /// ativo desse par já deve estar discando com o preâmbulo correspondente.
+  /// `alternativeIdentifiers` permite registrar também janelas de épocas
+  /// adjacentes (e-1, e+1) para o mesmo contato.
   Future<LanConnection> waitForConnection({
     required Uint8List deviceId,
     required LanChannel channel,
+    List<Uint8List>? alternativeIdentifiers,
   }) {
     final key = _waitKey(deviceId, channel);
     final completer = _waiting.putIfAbsent(key, () => Completer<LanConnection>());
+    if (alternativeIdentifiers != null) {
+      for (final alt in alternativeIdentifiers) {
+        final altKey = _waitKey(alt, channel);
+        _waiting[altKey] = completer;
+      }
+    }
     return completer.future;
   }
 
@@ -106,10 +115,13 @@ class LanListener {
   /// abandonado pelo `timeout()` da camada acima.
   void cancelWait({required Uint8List deviceId, required LanChannel channel}) {
     final completer = _waiting.remove(_waitKey(deviceId, channel));
-    if (completer != null && !completer.isCompleted) {
-      completer.completeError(
-        StateError('cancelWait: espera cancelada por fechamento do transporte'),
-      );
+    if (completer != null) {
+      _waiting.removeWhere((_, c) => c == completer);
+      if (!completer.isCompleted) {
+        completer.completeError(
+          StateError('cancelWait: espera cancelada por fechamento do transporte'),
+        );
+      }
     }
   }
 
@@ -148,6 +160,7 @@ class LanListener {
         socket.destroy();
         return;
       }
+      _waiting.removeWhere((_, c) => c == completer);
       completer.complete(LanConnection(socket: socket, incoming: peeled.rest));
     } catch (_) {
       try {

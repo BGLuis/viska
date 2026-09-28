@@ -3071,9 +3071,13 @@ impl SseDecode for crate::ffi::types::DiscoveryBeaconsDto {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_advertiseBeacon = <Vec<u8>>::sse_decode(deserializer);
         let mut var_scanBeacons = <Vec<Vec<u8>>>::sse_decode(deserializer);
+        let mut var_dialPreamble = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_listenPreambles = <Vec<Vec<u8>>>::sse_decode(deserializer);
         return crate::ffi::types::DiscoveryBeaconsDto {
             advertise_beacon: var_advertiseBeacon,
             scan_beacons: var_scanBeacons,
+            dial_preamble: var_dialPreamble,
+            listen_preambles: var_listenPreambles,
         };
     }
 }
@@ -3804,6 +3808,8 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::DiscoveryBeaconsDto {
         [
             self.advertise_beacon.into_into_dart().into_dart(),
             self.scan_beacons.into_into_dart().into_dart(),
+            self.dial_preamble.into_into_dart().into_dart(),
+            self.listen_preambles.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4228,6 +4234,8 @@ impl SseEncode for crate::ffi::types::DiscoveryBeaconsDto {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Vec<u8>>::sse_encode(self.advertise_beacon, serializer);
         <Vec<Vec<u8>>>::sse_encode(self.scan_beacons, serializer);
+        <Vec<u8>>::sse_encode(self.dial_preamble, serializer);
+        <Vec<Vec<u8>>>::sse_encode(self.listen_preambles, serializer);
     }
 }
 

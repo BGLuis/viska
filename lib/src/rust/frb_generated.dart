@@ -2603,11 +2603,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return DiscoveryBeaconsDto(
       advertiseBeacon: dco_decode_list_prim_u_8_strict(arr[0]),
       scanBeacons: dco_decode_list_list_prim_u_8_strict(arr[1]),
+      dialPreamble: dco_decode_list_prim_u_8_strict(arr[2]),
+      listenPreambles: dco_decode_list_list_prim_u_8_strict(arr[3]),
     );
   }
 
@@ -3076,9 +3078,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_advertiseBeacon = sse_decode_list_prim_u_8_strict(deserializer);
     var var_scanBeacons = sse_decode_list_list_prim_u_8_strict(deserializer);
+    var var_dialPreamble = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_listenPreambles = sse_decode_list_list_prim_u_8_strict(
+      deserializer,
+    );
     return DiscoveryBeaconsDto(
       advertiseBeacon: var_advertiseBeacon,
       scanBeacons: var_scanBeacons,
+      dialPreamble: var_dialPreamble,
+      listenPreambles: var_listenPreambles,
     );
   }
 
@@ -3652,6 +3660,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.advertiseBeacon, serializer);
     sse_encode_list_list_prim_u_8_strict(self.scanBeacons, serializer);
+    sse_encode_list_prim_u_8_strict(self.dialPreamble, serializer);
+    sse_encode_list_list_prim_u_8_strict(self.listenPreambles, serializer);
   }
 
   @protected
@@ -4158,9 +4168,10 @@ class CoreImpl extends RustOpaque implements Core {
     envelope: envelope,
   );
 
-  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
+  /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
+  /// `docs/protocol.md` §9.1 e §9.3. Direcional (a2b/b2a), evitando ligar os pares (S-10).
   Future<DiscoveryBeaconsDto> discoveryBeacons({
     required List<int> peerDeviceId,
   }) => RustLib.instance.api.crateFfiCoreCoreDiscoveryBeacons(
@@ -4359,9 +4370,8 @@ class CoreImpl extends RustOpaque implements Core {
         beacon: beacon,
       );
 
-  /// `device_id` desta identidade local — dado já público (trocado no QR,
-  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// `device_id` desta identidade local — dado já público (trocado no QR).
+  /// Só existe nesta fronteira porque nada em `ffi::core` precisava
   /// dele até a descoberta local.
   Future<Uint8List> myDeviceId() =>
       RustLib.instance.api.crateFfiCoreCoreMyDeviceId(that: this);
@@ -4389,10 +4399,9 @@ class CoreImpl extends RustOpaque implements Core {
 
   /// Decifra um payload de sinalização recebido do broker.
   ///
-  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-  /// inválida — sem distinguir a causa, mesma política de
-  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-  /// confiável.
+  /// Valida o AAD contra a direção do par e a janela de épocas aceitáveis
+  /// (anterior, atual e seguinte). Se o broker refletir nossa própria mensagem
+  /// ou retransmitir épocas antigas, a abertura falha e devolve `Ok(None)` (S-12).
   Future<Uint8List?> openSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> sealed,
@@ -4481,6 +4490,8 @@ class CoreImpl extends RustOpaque implements Core {
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já
   /// serializado) para publicar — sempre exatamente 1024 B.
+  ///
+  /// O AAD amarra o payload à direção deste lado e à época atual (S-12).
   Future<Uint8List> sealSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> payloadBytes,

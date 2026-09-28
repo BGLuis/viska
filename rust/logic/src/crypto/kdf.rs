@@ -52,6 +52,7 @@ pub mod context {
     pub const REKEM: &str = "viska-rekem-v1";
     pub const SIGNALING: &str = "viska-signaling-v1";
     pub const BEACON: &str = "viska-beacon-v1";
+    pub const PREAMBLE: &str = "viska-preamble-v1";
     pub const FILE_KEY: &str = "viska-file-key-v1";
     pub const STAGING: &str = "viska-staging-v1";
     /// Cifra o nome original do arquivo dentro do corpo do manifesto (§7.1).

@@ -55,24 +55,36 @@ class ContactDto {
 /// `MSG_RECEIPT` e relato de falha de transporte existirem).
 enum DeliveryStateDto { pending, sent, delivered, failed }
 
-/// `BeaconID`s de descoberta local para um contato — `docs/protocol.md` §9.1.
-/// Os dois lados calculam o mesmo `advertise_beacon`, ao contrário dos
-/// tópicos de sinalização (que têm direção).
+/// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
+/// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.
 class DiscoveryBeaconsDto {
-  /// Beacon para anunciar agora — só a época corrente.
+  /// Beacon para anunciar agora — só a época corrente, nossa direção.
   final Uint8List advertiseBeacon;
 
   /// Os três beacons aceitáveis para procurar — épocas
-  /// anterior/atual/seguinte.
+  /// anterior/atual/seguinte, na direção do par.
   final List<Uint8List> scanBeacons;
+
+  /// Preâmbulo TCP para discar agora — época corrente, nossa direção.
+  final Uint8List dialPreamble;
+
+  /// Os três preâmbulos TCP aceitáveis para receber — épocas
+  /// anterior/atual/seguinte, direção do par.
+  final List<Uint8List> listenPreambles;
 
   const DiscoveryBeaconsDto({
     required this.advertiseBeacon,
     required this.scanBeacons,
+    required this.dialPreamble,
+    required this.listenPreambles,
   });
 
   @override
-  int get hashCode => advertiseBeacon.hashCode ^ scanBeacons.hashCode;
+  int get hashCode =>
+      advertiseBeacon.hashCode ^
+      scanBeacons.hashCode ^
+      dialPreamble.hashCode ^
+      listenPreambles.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -80,7 +92,9 @@ class DiscoveryBeaconsDto {
       other is DiscoveryBeaconsDto &&
           runtimeType == other.runtimeType &&
           advertiseBeacon == other.advertiseBeacon &&
-          scanBeacons == other.scanBeacons;
+          scanBeacons == other.scanBeacons &&
+          dialPreamble == other.dialPreamble &&
+          listenPreambles == other.listenPreambles;
 }
 
 /// Uma oferta de arquivo recebida, pronta para a UI perguntar "aceitar?" —

@@ -152,4 +152,27 @@ void main() {
 
     await expectation;
   });
+
+  test('connection with alternative identifier is routed to waiter and cleans up', () async {
+    final port = await listener.ensureListening();
+    final primaryId = _deviceId(0x10);
+    final altId1 = _deviceId(0x11);
+    final altId2 = _deviceId(0x12);
+
+    final waitFuture = listener.waitForConnection(
+      deviceId: primaryId,
+      channel: LanChannel.control,
+      alternativeIdentifiers: [altId1, altId2],
+    );
+
+    final dialSocket = await _dial(port, deviceId: altId2, channel: LanChannel.control);
+    addTearDown(dialSocket.destroy);
+
+    final connection = await waitFuture.timeout(const Duration(seconds: 5));
+    dialSocket.add(Uint8List.fromList([42]));
+    await dialSocket.flush();
+
+    final received = await connection.incoming.first.timeout(const Duration(seconds: 5));
+    expect(received, [42]);
+  });
 }
