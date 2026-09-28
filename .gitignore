@@ -54,3 +54,4 @@ app.*.map.json
 # Viska
 *.staging
 /rust/viska_core/src/frb_generated.rs.bak
+.worktrees/
