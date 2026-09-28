@@ -261,7 +261,7 @@ class ChatController extends ChangeNotifier {
       await _core.ensureSession(peerDeviceId: _contactId.deviceId);
       await refreshTrustState();
     } catch (e, stack) {
-      debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
           ? 'Aplicativo bloqueado. Desbloqueie para conversar.'
           : 'Falha ao inicializar transporte: $e';

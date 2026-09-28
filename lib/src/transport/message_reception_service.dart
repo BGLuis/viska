@@ -130,13 +130,13 @@ class MessageReceptionService {
     final controlSub = _router.incomingFor(contactId).listen(
       (bytes) => _handleIncomingRaw(contactId, bytes),
       onError: (e) {
-        debugPrint('[MessageReceptionService] Erro no canal de controle de $contactId: $e');
+        if (kDebugMode) debugPrint('[MessageReceptionService] Erro no canal de controle de $contactId: $e');
       },
     );
     final fileSub = _router.incomingFileFor(contactId).listen(
       (bytes) => _handleIncomingFileBytes(contactId, bytes),
       onError: (e) {
-        debugPrint('[MessageReceptionService] Erro no canal de arquivo de $contactId: $e');
+        if (kDebugMode) debugPrint('[MessageReceptionService] Erro no canal de arquivo de $contactId: $e');
       },
     );
 
@@ -180,7 +180,7 @@ class MessageReceptionService {
       // de arquivo salvos como efeito colateral no Rust).
       _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
     } catch (e, stack) {
-      debugPrint('[MessageReceptionService] Erro ao decifrar pacote de $contactId: $e\n$stack');
+      if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao decifrar pacote de $contactId: $e\n$stack');
     }
   }
 
@@ -234,7 +234,7 @@ class MessageReceptionService {
 
       await _finishReceivingVoiceNote(contactId, ingested.fileId);
     } catch (e, stack) {
-      debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
+      if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
     }
   }
 
@@ -298,7 +298,7 @@ class MessageReceptionService {
         await _router.sendToContact(contactId, outgoing);
       }
     } catch (e) {
-      debugPrint('[MessageReceptionService] Falha ao enviar handshake inicial para $contactId: $e');
+      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao enviar handshake inicial para $contactId: $e');
     }
   }
 
@@ -326,7 +326,7 @@ class MessageReceptionService {
         _eventsController.add(MessageReceivedEvent(contactId));
       }
     } catch (e) {
-      debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');
+      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');
     }
   }
 

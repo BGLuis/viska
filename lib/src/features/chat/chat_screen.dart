@@ -76,7 +76,7 @@ class _ChatScreenState extends State<ChatScreen> {
       controller.addListener(_onControllerChanged);
       controller.initialize();
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao instanciar ChatController: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao instanciar ChatController: $e\n$stack');
     }
     _loadEphemeralTtl();
   }
@@ -173,7 +173,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       await _controller?.refreshTrustState();
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -197,7 +197,7 @@ class _ChatScreenState extends State<ChatScreen> {
         contactDeviceId: widget.contactId.deviceId,
       );
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao calcular Safety Number para detalhes: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao calcular Safety Number para detalhes: $e\n$stack');
     }
     if (!mounted) return;
 

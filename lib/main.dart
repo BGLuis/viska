@@ -26,9 +26,7 @@ Future<void> main(List<String> args) async {
   // Barreira defensiva contra exceções assíncronas não capturadas (MethodChannels, Streams, Sockets).
   // Retornar true confirma o tratamento e impede que a máquina virtual encerre o processo do app.
   PlatformDispatcher.instance.onError = (error, stack) {
-    if (kDebugMode) {
-      debugPrint('[Viska CrashBarrier] Erro assíncrono interceptado: $error');
-    }
+    if (kDebugMode) debugPrint('[Viska CrashBarrier] Erro assíncrono interceptado: $error');
     return true;
   };
 
@@ -334,7 +332,7 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
       );
       _refreshContacts();
     } catch (e, stack) {
-      debugPrint('[PairingHomeScreen] Erro ao abrir conversa: $e\n$stack');
+      if (kDebugMode) debugPrint('[PairingHomeScreen] Erro ao abrir conversa: $e\n$stack');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -371,7 +369,7 @@ class _PairingHomeScreenState extends State<PairingHomeScreen> {
       );
       _refreshContacts();
     } catch (e, stack) {
-      debugPrint('[PairingHomeScreen] Erro ao carregar Safety Number: $e\n$stack');
+      if (kDebugMode) debugPrint('[PairingHomeScreen] Erro ao carregar Safety Number: $e\n$stack');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
