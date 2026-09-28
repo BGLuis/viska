@@ -114,7 +114,7 @@ impl Core {
     }
 
     /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-    /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+    /// remoção física dos arquivos do banco SQLite e limpeza dos diretórios staging e received.
     pub fn emergency_erase(&self) -> Result<(), FfiError> {
         let _ = self.lock();
         keyring::delete_master_secret(&self.app_dir)?;
@@ -124,6 +124,9 @@ impl Core {
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
         let _ = std::fs::remove_dir_all(&self.staging_dir);
         let _ = std::fs::create_dir_all(&self.staging_dir);
+        let received_dir = self.app_dir.join("received");
+        let _ = std::fs::remove_dir_all(&received_dir);
+        let _ = std::fs::create_dir_all(&received_dir);
         Ok(())
     }
 
@@ -578,10 +581,17 @@ mod tests {
         let db_path = dir.path().join("viska.sqlite3");
         assert!(db_path.exists());
 
+        let received_dir = dir.path().join("received");
+        std::fs::create_dir_all(&received_dir).unwrap();
+        let test_file = received_dir.join("viska-recv-123.bin");
+        std::fs::write(&test_file, b"secret content").unwrap();
+        assert!(test_file.exists());
+
         core.emergency_erase().unwrap();
 
         assert!(core.is_locked());
         assert!(!db_path.exists());
+        assert!(!test_file.exists());
         assert_eq!(core.list_contacts(), Err(FfiError::Locked));
     }
 

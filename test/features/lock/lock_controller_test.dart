@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -293,6 +294,32 @@ void main() {
 
       expect(core.emergencyEraseCalls, 1);
       expect(controller.isLocked.value, isTrue);
+    });
+
+    test('emergencyErase removes files starting with viska-recv-* and received directory', () async {
+      final tempDir = Directory.systemTemp.createTempSync('viska_recv_test');
+      final receivedDir = Directory('${tempDir.path}/received')..createSync(recursive: true);
+      final recvFile = File('${receivedDir.path}/viska-recv-12345-photo.jpg')..writeAsStringSync('cleartext content');
+      final appDirRecvFile = File('${tempDir.path}/viska-recv-direct.dat')..writeAsStringSync('cleartext content 2');
+
+      final controller = LockController(
+        core: core,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+      );
+      addTearDown(() {
+        controller.dispose();
+        if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+      });
+
+      expect(recvFile.existsSync(), isTrue);
+      expect(appDirRecvFile.existsSync(), isTrue);
+
+      await controller.emergencyErase();
+
+      expect(recvFile.existsSync(), isFalse);
+      expect(appDirRecvFile.existsSync(), isFalse);
+      expect(receivedDir.existsSync(), isFalse);
     });
   });
 

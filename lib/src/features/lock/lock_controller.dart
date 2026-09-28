@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:path/path.dart' as p;
 import 'package:viska/src/features/lock/security_channel.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 
@@ -366,6 +367,34 @@ class LockController with WidgetsBindingObserver {
     try {
       final decoyDir = Directory('$appDirPath/decoy');
       if (decoyDir.existsSync()) decoyDir.deleteSync(recursive: true);
+    } catch (_) {}
+
+    // Arquivos recebidos em claro sob o diretório de dados ou resíduos de
+    // transferências precisam ser destruídos no apagamento de emergência para
+    // que nenhum plaintext sem dono sobreviva (S-08).
+    try {
+      final receivedDir = Directory('$appDirPath/received');
+      if (receivedDir.existsSync()) receivedDir.deleteSync(recursive: true);
+    } catch (_) {}
+
+    try {
+      final appDir = Directory(appDirPath);
+      if (appDir.existsSync()) {
+        for (final entity in appDir.listSync(recursive: true)) {
+          if (entity is File && p.basename(entity.path).startsWith('viska-recv-')) {
+            entity.deleteSync();
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final tempDir = Directory.systemTemp;
+      for (final entity in tempDir.listSync()) {
+        if (entity is File && p.basename(entity.path).startsWith('viska-recv-')) {
+          entity.deleteSync();
+        }
+      }
     } catch (_) {}
 
     // 2. Destrói chave no Android KeyStore e arquivo cifrado
