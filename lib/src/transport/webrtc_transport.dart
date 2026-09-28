@@ -304,9 +304,30 @@ class WebrtcTransport implements RawP2PChannel {
         };
       case DataChannelKind.file:
         _fileChannel = channel;
+        channel.bufferedAmountLowThreshold = 64 * 1024;
+        Completer<void>? lowBufferCompleter;
+        channel.onBufferedAmountLow = (_) {
+          if (lowBufferCompleter != null && !lowBufferCompleter!.isCompleted) {
+            lowBufferCompleter!.complete();
+            lowBufferCompleter = null;
+          }
+        };
         _fileOutbox = JitteredOutbox(
           rawSend: (bytes) async {
             await _fileChannelOpen.future;
+            // Controle de fluxo / ritmo (P-03): se o buffer do canal de dados
+            // estiver acima de 256 KiB, aguarda o evento onBufferedAmountLow
+            // antes de enviar novos chunks para não estourar o buffer nativo.
+            final currentBuffer = channel.bufferedAmount ?? 0;
+            if (currentBuffer > 256 * 1024) {
+              lowBufferCompleter ??= Completer<void>();
+              await lowBufferCompleter!.future.timeout(
+                const Duration(milliseconds: 250),
+                onTimeout: () {
+                  lowBufferCompleter = null;
+                },
+              );
+            }
             await channel.send(RTCDataChannelMessage.fromBinary(bytes));
           },
           sampleJitter: _jitterProvider,
