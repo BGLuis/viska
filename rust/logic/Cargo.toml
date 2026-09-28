@@ -32,6 +32,8 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-
 # ativamente (ao contrário de serde_cbor, hoje sem manutenção).
 ciborium = "0.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
 # Código de fonte RaptorQ (RFC 6330) para o canal não confiável (D6, §7.3).
 raptorq = "2.0.1"
 # Decodificador Opus 100% puro em Rust (sem unsafe, sem C/FFI, D18)

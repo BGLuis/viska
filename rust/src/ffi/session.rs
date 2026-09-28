@@ -630,4 +630,44 @@ mod tests {
         let result = p.core_b.decrypt_incoming(p.device_id_a, sealed).unwrap();
         assert!(result.is_none());
     }
+
+    #[test]
+    fn view_once_message_is_destroyed_on_mark_message_read() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+
+        let view_once_payload = r#"{"v":1,"type":"text","text":"segredo efêmero","viewOnce":true}"#;
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), view_once_payload.to_string())
+            .unwrap();
+        let incoming = p
+            .core_b
+            .decrypt_incoming(p.device_id_a.clone(), sealed.bytes.unwrap())
+            .unwrap()
+            .expect("mensagem válida deve ser decifrada");
+
+        let msg_id = incoming.message_id.expect("deve ter message_id");
+
+        // Antes de ler: corpo íntegro e flag view_once ativo
+        let history = p.core_b.list_messages(p.device_id_a.clone()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].view_once);
+        assert_eq!(history[0].body, view_once_payload);
+
+        // Marca como lida
+        p.core_b.mark_message_read(msg_id).unwrap();
+
+        // Após leitura: list_messages devolve o marcador de expirada
+        let history_after = p.core_b.list_messages(p.device_id_a).unwrap();
+        assert_eq!(history_after.len(), 1);
+        assert!(history_after[0].view_once);
+        assert_eq!(history_after[0].body, "<mensagem expirada e destruída>");
+    }
 }
+

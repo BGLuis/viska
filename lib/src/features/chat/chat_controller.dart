@@ -232,12 +232,29 @@ class ChatController extends ChangeNotifier {
   /// Mensagens de visualização única abertas nesta sessão.
   final Set<int> _openedViewOnceMessageIds = {};
 
-  bool isViewOnceOpened(int messageId) => _openedViewOnceMessageIds.contains(messageId);
+  bool isViewOnceOpened(int messageId) {
+    if (_openedViewOnceMessageIds.contains(messageId)) return true;
+    final msg = _messages.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (msg != null && (msg.viewOnce || msg.isEphemeral) && msg.body == '<mensagem expirada e destruída>') {
+      return true;
+    }
+    return false;
+  }
 
-  void markViewOnceOpened(int messageId) {
+  Future<void> markViewOnceOpened(int messageId) async {
     _openedViewOnceMessageIds.add(messageId);
+    try {
+      await _core.markMessageRead(messageId: messageId);
+      await _refreshMessages();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao marcar visualização única como lida: $e');
+    }
     notifyListeners();
   }
+
 
   Map<String, int> reactionsFor(int messageId) => _reactions[messageId] ?? const {};
 
@@ -553,7 +570,11 @@ class ChatController extends ChangeNotifier {
     _aggregateReactions();
     for (final m in loaded) {
       if (m.direction == MessageDirectionDto.incoming) {
-        _core.markMessageRead(messageId: m.id).catchError((_) {});
+        // Mensagens de visualização única só são marcadas como lidas quando o usuário
+        // explicitamente as abrir na tela (U-04), para não destruir a chave antes da leitura.
+        if (!m.viewOnce) {
+          _core.markMessageRead(messageId: m.id).catchError((_) {});
+        }
       }
     }
     notifyListeners();
