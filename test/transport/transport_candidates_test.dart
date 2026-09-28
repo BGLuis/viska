@@ -4,6 +4,7 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/transport/lan/lan_transport.dart';
 import 'package:viska/src/transport/multipeer/multipeer_transport.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
+import 'package:viska/src/transport/signaling/proxy_config.dart';
 import 'package:viska/src/transport/transport_candidates.dart';
 import 'package:viska/src/transport/webrtc_p2p_transport.dart';
 import 'package:viska/src/transport/wifi_aware/wifi_aware_transport.dart';
@@ -14,6 +15,14 @@ class _FakeCore implements Core {
 }
 
 void main() {
+  setUp(() {
+    ProxyConfigStore.current = const ProxyConfig();
+  });
+
+  tearDown(() {
+    ProxyConfigStore.current = const ProxyConfig();
+  });
+
   test('buildDefaultCandidates orders candidates by priority with WebRTC fallback last', () {
     final core = _FakeCore();
     final contactId = ContactId([1, 2, 3, 4]);
@@ -41,4 +50,15 @@ void main() {
       expect(candidates.any((c) => c is MultipeerTransport), isFalse);
     }
   });
+
+  test('buildDefaultCandidates omits WebrtcP2PTransport when proxy is enabled and disableWebrtc is true', () {
+    final core = _FakeCore();
+    final contactId = ContactId([1, 2, 3, 4]);
+
+    ProxyConfigStore.current = const ProxyConfig(enabled: true, disableWebrtc: true);
+    final candidates = buildDefaultCandidates(core, contactId);
+
+    expect(candidates.any((c) => c is WebrtcP2PTransport), isFalse);
+  });
 }
+
