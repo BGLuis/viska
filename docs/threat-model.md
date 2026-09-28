@@ -113,12 +113,24 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
 
 ## 4. Segurança em repouso
 
-Resumo de D13 (`docs/deviations.md`): chave mestra embrulhada no KeyStore/Secure Enclave e
-desembrulhada só dentro do Rust; `zeroize` em todo segredo que passa por buffer temporário;
-`allowBackup=false`; `FLAG_SECURE`; bloqueio por biometria com auto-lock; apagamento de emergência por
-destruição de chave (crypto-shredding); staging de arquivo cifrado com chave descartável por
-transferência; teclado sem autocorreção nem sugestões; zero SDK de analytics, crash reporting ou
-publicidade; build reproduzível.
+O desvio D13 (`docs/deviations.md`) define o conjunto de defesas para o adversário que tem o
+aparelho em mãos. Para manter a fidelidade e não superestimar as defesas reais do sistema, a
+tabela abaixo discrimina o estado de cada medida entre o que foi **planejado** e o que está
+efetivamente **implementado**, com remissão ao relatório de endurecimento
+(`docs/reports/FASE-7-ENDURECIMENTO.md`).
+
+| Medida | Estado | Detalhes e Evidência no Código |
+|---|:---:|---|
+| **`zeroize` em buffers e segredos** | ✅ | Implementado em todo o núcleo Rust (`crypto/`, `wire/`, `store/`). |
+| **`android:allowBackup="false"`** | ✅ | Ativo no manifesto Android (`android/app/src/main/AndroidManifest.xml`). Impede extração via `adb backup`. |
+| **Staging cifrado descartável** | ✅ | Transferências de arquivos e notas de voz usam chave efêmera e montagem em `.staging`. |
+| **Teclado sem autocorreção/sugestões** | ✅ | Ativo nos campos de entrada de texto (`autocorrect: false`) em `chat_screen.dart`. |
+| **Zero SDK de telemetria / analytics** | ✅ | Zero dependências de rastreamento no `Cargo.toml` e `pubspec.yaml`. |
+| **Apagamento de emergência (crypto-shredding)** | ✅ | `Core::emergency_erase` destrói o banco SQLite, remove a chave mestra em disco e remove o alias no Android KeyStore. |
+| **`FLAG_SECURE` contra captura de tela** | 🟡 | Implementado no Android (`SecurityPlugin.kt`, `MainActivity.kt`), bloqueando gravação e miniaturas da janela de recentes. Equivalente no iOS (blur em `applicationWillResignActive`) pendente de validação. |
+| **Chave mestra no KeyStore / Secure Enclave** | 🟡 | Android implementa geração com StrongBox/TEE via `SecurityPlugin.kt` e injeção direta no Rust (`set_injected_master_secret`). Em plataformas sem suporte ou desktop, utiliza arquivo interino `master.key` com permissão restrita `0600` (`rust/logic/src/store/keyring.rs`). Secure Enclave no iOS não implementado. |
+| **Bloqueio por biometria e auto-lock** | 🟡 | Tela e controlador Dart (`lock_controller.dart`) com suporte a biometria (`local_auth`) e temporizador de inatividade. O despejo total de chaves de sessões ativas da memória RAM do Rust ao bloquear o app ainda é parcial. |
+| **Build reproduzível** | ❌ | Não implementado. Planejado na etapa F6 da Fase 7 (`FASE-7-ENDURECIMENTO.md`). |
 
 ---
 

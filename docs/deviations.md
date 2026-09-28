@@ -204,11 +204,12 @@ Decisão do projeto: aceitar e declarar, em vez de sugerir uma proteção que n�
 A spec trata com profundidade o adversário de rede e quase não trata o adversário que tem o aparelho
 na mão — que, para a maior parte dos usuários reais, é o mais provável dos dois.
 
-Resumo: chave mestra embrulhada no KeyStore/Secure Enclave e desembrulhada só dentro do Rust;
-`zeroize` em todo segredo; `allowBackup=false`; `FLAG_SECURE`; bloqueio por biometria com auto-lock;
-apagamento de emergência por destruição de chave (crypto-shredding); staging cifrado com chave
-descartável; teclado sem autocorreção nem sugestões; zero SDK de analytics, crash reporting ou
-publicidade; build reproduzível.
+Resumo: conjunto explícito de medidas detalhado no §4 de `docs/threat-model.md` com status
+de implementação por item (ver também `docs/reports/FASE-7-ENDURECIMENTO.md`): chave mestra
+embrulhada no KeyStore/Secure Enclave (🟡), `zeroize` em todo segredo (✅), `allowBackup=false` (✅),
+`FLAG_SECURE` (🟡), bloqueio por biometria com auto-lock (🟡), apagamento de emergência por
+crypto-shredding (✅), staging cifrado com chave descartável (✅), teclado sem autocorreção nem
+sugestões (✅), zero telemetria (✅) e build reproduzível (❌).
 
 **Custo de reverter:** o adversário mais provável passa a ser o menos tratado.
 
