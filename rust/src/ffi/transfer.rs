@@ -406,6 +406,41 @@ impl Core {
         self.finish_receive(peer_device_id, file_id, destination_path)
     }
 
+    /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
+    /// indicado, refletindo o progresso atual do `ReceiveTransfer` (U-02).
+    /// Devolve o payload selado pronto para envio pelo canal de controle.
+    pub fn file_feedback(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_id: Vec<u8>,
+    ) -> Result<Vec<u8>, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        let file_id = to_file_id(file_id)?;
+
+        let feedback_body = {
+            let transfers = self.lock_transfers()?;
+            let Some(TransferHandle::Receive(recv)) = transfers.get(&file_id) else {
+                return Err(FfiError::Internal);
+            };
+            recv.feedback().encode()
+        };
+
+        let mut sessions = self.lock_sessions()?;
+        let session = sessions
+            .get_mut(&device_id)
+            .ok_or(FfiError::NoActiveSession)?;
+        if !session.is_established() {
+            return Err(FfiError::NoActiveSession);
+        }
+
+        let sealed = session.encrypt_outgoing(
+            PacketType::FileFeedback,
+            feedback_body,
+            Transport::DataChannel,
+        )?;
+        Ok(sealed)
+    }
+
     fn finish_receive(
         &self,
         peer_device_id: Vec<u8>,
@@ -649,10 +684,6 @@ mod tests {
         bytes.try_into().unwrap()
     }
 
-    fn did(bytes: &[u8]) -> [u8; DEVICE_ID_LEN] {
-        bytes.try_into().unwrap()
-    }
-
     fn write_temp_file(dir: &tempfile::TempDir, name: &str, content: &[u8]) -> String {
         let path = dir.path().join(name);
         std::fs::File::create(&path)
@@ -734,23 +765,10 @@ mod tests {
 
             // Feedback esparso de verdade seria a cada ~500ms; aqui, a cada
             // símbolo, para o teste não depender de tempo real.
-            let feedback_body = {
-                let transfers = pair.core_b.lock_transfers().unwrap();
-                let Some(TransferHandle::Receive(recv)) = transfers.get(&fid(&started.file_id)) else {
-                    panic!("receive transfer deveria existir");
-                };
-                recv.feedback().encode()
-            };
-            let mut sessions_b = pair.core_b.lock_sessions().unwrap();
-            let session_b = sessions_b.get_mut(&did(&pair.device_id_a)).unwrap();
-            let sealed_feedback = session_b
-                .encrypt_outgoing(
-                    viska_proto::wire::packet_type::PacketType::FileFeedback,
-                    feedback_body,
-                    Transport::DataChannel,
-                )
+            let sealed_feedback = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
                 .unwrap();
-            drop(sessions_b);
 
             pair.core_a
                 .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
@@ -909,23 +927,10 @@ mod tests {
                 .unwrap()
                 .expect("file_id vem em claro no próprio pacote — deveria ser reconhecido");
 
-            let feedback_body = {
-                let transfers = pair.core_b.lock_transfers().unwrap();
-                let Some(TransferHandle::Receive(recv)) = transfers.get(&fid(&started.file_id)) else {
-                    panic!("receive transfer deveria existir");
-                };
-                recv.feedback().encode()
-            };
-            let mut sessions_b = pair.core_b.lock_sessions().unwrap();
-            let session_b = sessions_b.get_mut(&did(&pair.device_id_a)).unwrap();
-            let sealed_feedback = session_b
-                .encrypt_outgoing(
-                    viska_proto::wire::packet_type::PacketType::FileFeedback,
-                    feedback_body,
-                    Transport::DataChannel,
-                )
+            let sealed_feedback = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
                 .unwrap();
-            drop(sessions_b);
 
             pair.core_a
                 .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
@@ -1035,19 +1040,10 @@ mod tests {
                     "ingest_incoming_wire_bytes roteou o pacote para o file_id errado"
                 );
 
-                let feedback_body = {
-                    let transfers = pair.core_b.lock_transfers().unwrap();
-                    let Some(TransferHandle::Receive(recv)) = transfers.get(&fid(file_id)) else {
-                        panic!("receive transfer deveria existir");
-                    };
-                    recv.feedback().encode()
-                };
-                let mut sessions_b = pair.core_b.lock_sessions().unwrap();
-                let session_b = sessions_b.get_mut(&did(&pair.device_id_a)).unwrap();
-                let sealed_feedback = session_b
-                    .encrypt_outgoing(PacketType::FileFeedback, feedback_body, Transport::DataChannel)
+                let sealed_feedback = pair
+                    .core_b
+                    .file_feedback(pair.device_id_a.clone(), file_id.clone())
                     .unwrap();
-                drop(sessions_b);
                 pair.core_a
                     .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
                     .unwrap();
@@ -1104,5 +1100,144 @@ mod tests {
 
         // `file_id` desconhecido: não deveria errar.
         pair.core_a.cancel_transfer(vec![0u8; 16]).unwrap();
+    }
+
+    /// Testa que transferência multibloko (> 16 MiB no DataChannel WebRTC, D6)
+    /// pausa sem feedback e completa com sucesso após envio de FILE_FEEDBACK (U-02).
+    #[test]
+    fn multiblock_file_completes_with_file_feedback() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        // 16 MiB + 4096 B => 2 blocos: Bloco 0 (1024 símbolos) e Bloco 1 (1 símbolo).
+        let file_len = (16 * 1024 * 1024) + 4096;
+        let mut original = vec![0u8; file_len];
+        for (i, byte) in original.iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+        let src_path = write_temp_file(&dir_src, "arquivo_grande.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let offers = pair
+            .core_b
+            .pending_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].file_id, started.file_id);
+
+        // 1. Transmite os símbolos-fonte do bloco 0 (1024 símbolos).
+        for _ in 0..1024 {
+            let wire_chunk = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+                .expect("símbolo-fonte do bloco 0 deve existir");
+            pair.core_b
+                .ingest_incoming_wire_bytes(wire_chunk)
+                .unwrap()
+                .expect("wire chunk de bloco 0 deve ser aceito");
+        }
+
+        let progress_b = pair
+            .core_b
+            .transfer_progress(started.file_id.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress_b.blocks_done, 1);
+        assert_eq!(progress_b.total_blocks, 2);
+        assert!(!progress_b.is_complete);
+
+        // Sem feedback, o emissor ainda considera o bloco 0 em andamento (U-02):
+        // o progresso do emissor mostra blocks_done == 0.
+        let progress_a = pair
+            .core_a
+            .transfer_progress(started.file_id.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            progress_a.blocks_done, 0,
+            "emissor sem feedback não deve avançar para bloco 1"
+        );
+
+        // 2. Receptor envia FILE_FEEDBACK (§7.4, U-02).
+        let sealed_feedback = pair
+            .core_b
+            .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            .unwrap();
+
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
+            .unwrap();
+
+        // 3. Com o feedback ingerido, o emissor avança para o bloco 1!
+        let progress_a_after = pair
+            .core_a
+            .transfer_progress(started.file_id.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            progress_a_after.blocks_done, 1,
+            "emissor deve avançar para o bloco 1 após feedback"
+        );
+
+        // Transmite o bloco 1 (1 símbolo).
+        let wire_chunk_b1 = pair
+            .core_a
+            .next_outgoing_wire_chunk(started.file_id.clone())
+            .unwrap()
+            .expect("símbolo do bloco 1 deve existir");
+        pair.core_b
+            .ingest_incoming_wire_bytes(wire_chunk_b1)
+            .unwrap()
+            .expect("wire chunk de bloco 1 deve ser aceito");
+
+        let final_progress = pair
+            .core_b
+            .transfer_progress(started.file_id.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_progress.blocks_done, 2);
+        assert_eq!(final_progress.total_blocks, 2);
+        assert!(final_progress.is_complete);
+
+        let dst_path = dir_dst.path().join("arquivo_grande_recebido.bin");
+        let sealed_complete = pair
+            .core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+
+        let received = std::fs::read(&dst_path).unwrap();
+        assert_eq!(received.len(), original.len());
+        assert_eq!(received, original);
+
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .unwrap();
+
+        assert!(pair
+            .core_a
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_none());
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_none());
     }
 }

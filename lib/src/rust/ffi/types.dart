@@ -241,10 +241,11 @@ class MessageDto {
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
-/// Fase 5. Espelha os dois valores de `packet_type` que hoje entram em
-/// `messages` (`MSG_TEXT`/`AUDIO_CHUNK`); qualquer outro `packet_type`
-/// nunca é persistido nesta tabela (`store::messages::reject_typing` e o
-/// resto do desenho da Fase 3).
+/// Fase 5. Espelha os tipos de pacote que entram em `messages` (`MSG_TEXT`/
+/// `AUDIO_CHUNK`/`FILE_METADATA` — arquivo genérico adicionado na Fase 4
+/// para timeline unificada); qualquer outro `packet_type` nunca é persistido
+/// nesta tabela (`store::messages::reject_typing` e o resto do desenho da
+/// Fase 3).
 enum MessageKindDto { text, voiceNote, file }
 
 /// O safety number entre a identidade local e um contato, nas duas
@@ -326,6 +327,10 @@ class SendAudioStartedDto {
 }
 
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
+/// Carrega o `message_id` da linha `Pending` já inserida na timeline
+/// (para exibição imediata no chat enquanto os chunks são enviados), para
+/// quem chama poder marcá-la `Sent` depois (`Core::mark_message_sent`) —
+/// mesmo padrão de `SendAudioStartedDto`.
 class SendFileStartedDto {
   /// Identifica a transferência nas chamadas seguintes
   /// (`next_outgoing_wire_chunk`, `transfer_progress`).

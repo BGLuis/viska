@@ -148,6 +148,13 @@ class _FakeCore implements Core {
   Future<void> cancelTransfer({required List<int> fileId}) => throw UnimplementedError();
 
   @override
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) =>
+      throw UnimplementedError();
+
+  @override
   Future<Uint8List> finishReceiveAudio({
     required List<int> peerDeviceId,
     required List<int> fileId,

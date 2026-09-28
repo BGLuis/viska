@@ -112,6 +112,14 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> bytes,
   });
 
+  /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
+  /// indicado, refletindo o progresso atual do `ReceiveTransfer` (U-02).
+  /// Devolve o payload selado pronto para envio pelo canal de controle.
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  });
+
   /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
   /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
   /// chama remonta o contêiner para reprodução (ver
