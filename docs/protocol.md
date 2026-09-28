@@ -479,7 +479,10 @@ inscreve as épocas `e-1`, `e` e `e+1` para tolerar desvio de relógio.
 ### 8.2 Payload
 
 SDP e candidatos ICE são cifrados com **XChaCha20-Poly1305** sob `K_sig`, com nonce aleatório de
-24 B prefixado, e preenchidos até 1024 B.
+24 B prefixado, e preenchidos até 1024 B. O AAD amarra o selo ao contexto, à direção e à época:
+`"viska-sig-v1" ‖ dir ‖ u64_be(epoch)` (o mesmo material de `topic_hex`, §8.1). O plaintext inclui
+um carimbo de tempo Unix (u64 BE, 8 B) seguido do comprimento do payload (u16 BE, 2 B) e uma janela
+de aceitação temporal para impedir repetição e reflexão pelo broker (§1.1, S-12).
 
 > A escolha do XChaCha aqui não é estética. O ChaCha20-Poly1305 comum precisaria de um nonce
 > aleatório de 12 B, que seria um terceiro esquema de nonce no protocolo — nem determinístico por

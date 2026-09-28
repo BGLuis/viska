@@ -68,13 +68,19 @@ pub fn direction(local: &PublicIdentity, peer: &PublicIdentity) -> Direction {
     }
 }
 
-/// Tópico para uma direção e época específicas.
-pub fn topic_hex(k_sig: &Key, dir: Direction, epoch: u64) -> String {
+/// Material de domínio, direção e época usado como AAD no payload e como
+/// entrada para topic_hex — S-12.
+pub fn aad(dir: Direction, epoch: u64) -> Vec<u8> {
     let mut material = Vec::with_capacity(TOPIC_CONTEXT.len() + 3 + 8);
     material.extend_from_slice(TOPIC_CONTEXT);
     material.extend_from_slice(dir.as_bytes());
     material.extend_from_slice(&epoch.to_be_bytes());
+    material
+}
 
+/// Tópico para uma direção e época específicas.
+pub fn topic_hex(k_sig: &Key, dir: Direction, epoch: u64) -> String {
+    let material = aad(dir, epoch);
     hex::encode(kdf::keyed(k_sig, &material))
 }
 
