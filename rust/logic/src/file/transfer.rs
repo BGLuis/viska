@@ -421,6 +421,7 @@ pub struct SendTransfer<R: Read> {
     current_encoder: Option<BlockEncoder>,
     current_source_symbols: Vec<Vec<u8>>,
     next_repair_symbol_id: u32,
+    repair_limit: u32,
 }
 
 impl<R: Read> core::fmt::Debug for SendTransfer<R> {
@@ -449,6 +450,7 @@ impl<R: Read> SendTransfer<R> {
             current_encoder: None,
             current_source_symbols: Vec::new(),
             next_repair_symbol_id: 0,
+            repair_limit: 0,
         }
     }
 
@@ -482,6 +484,9 @@ impl<R: Read> SendTransfer<R> {
         // Materializa os símbolos-fonte uma única vez por bloco. Chamar `source_symbols()`
         // por símbolo alocava e copiava o bloco inteiro k vezes — custo O(k²) (P-01).
         self.current_source_symbols = encoder.source_symbols();
+        let k = encoder.source_symbol_count();
+        // Limite de emissão sem feedback: k símbolos-fonte + 10% de reparo (P-03).
+        self.repair_limit = (k as f64 * 1.1).ceil() as u32;
         self.current_encoder = Some(encoder);
         self.next_repair_symbol_id = 0;
         Ok(())
@@ -496,6 +501,11 @@ impl<R: Read> SendTransfer<R> {
         let Some(encoder) = &self.current_encoder else {
             return Ok(None);
         };
+
+        // Se atingiu o teto de reparo sem feedback, pausa a emissão para não congestionar o enlace (P-03).
+        if self.next_repair_symbol_id >= self.repair_limit {
+            return Ok(None);
+        }
 
         let k = encoder.source_symbol_count();
         let data = if self.next_repair_symbol_id < k {
@@ -552,6 +562,13 @@ impl<R: Read> SendTransfer<R> {
             self.current_encoder = None;
             self.current_source_symbols.clear();
             self.current_block_index += 1;
+            self.repair_limit = 0;
+        } else if let Some(encoder) = &self.current_encoder {
+            // Se recebeu feedback para o bloco corrente e ele ainda não terminou,
+            // estende o teto de reparo para permitir nova rajada proporcional (P-03).
+            let k = encoder.source_symbol_count();
+            let step = (k as f64 * 0.1).ceil().max(1.0) as u32;
+            self.repair_limit = self.next_repair_symbol_id.saturating_add(step);
         }
     }
 }
@@ -1083,6 +1100,39 @@ mod tests {
             FileFeedback::decode(&encoded, 20),
             Err(Error::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn send_transfer_returns_none_after_k_times_1_1_symbols_without_feedback() {
+        // Bloco com k = 20 símbolos (10 KiB com symbol_size = 512, 1 bloco de 20 símbolos).
+        let (manifest, original) = manifesto_de_teste(20 * 512, 512, 20);
+        let transfer_secret = b"segredo-sem-feedback";
+
+        let mut sender = SendTransfer::new(
+            manifest,
+            TransferKind::File,
+            transfer_secret,
+            Cursor::new(original),
+        );
+
+        // k = 20. Sem feedback, exatamente ceil(20 * 1.1) = 22 símbolos são emitidos.
+        let expected_symbols = (20.0 * 1.1f64).ceil() as usize;
+        assert_eq!(expected_symbols, 22);
+
+        for i in 0..expected_symbols {
+            let symbol = sender.next_symbol().unwrap();
+            assert!(
+                symbol.is_some(),
+                "Deveria ter emitido o símbolo {i} antes de esgotar o teto de 1,1 * k"
+            );
+        }
+
+        // O símbolo seguinte sem feedback DEVE devolver None (P-03).
+        let over_limit = sender.next_symbol().unwrap();
+        assert!(
+            over_limit.is_none(),
+            "next_symbol deve devolver None depois de k * 1.1 símbolos sem feedback"
+        );
     }
 
     proptest::proptest! {
