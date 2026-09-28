@@ -975,6 +975,7 @@ class _MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final outgoing = message.direction == MessageDirectionDto.outgoing;
     final parsed = ParsedMessageContent.parse(message.body);
+    final isViewOnce = message.viewOnce || parsed.isViewOnce;
     final reactions = controller.reactionsFor(message.id);
     final userReactions = controller.userReactionsFor(message.id);
 
@@ -1018,7 +1019,7 @@ class _MessageBubble extends StatelessWidget {
                 _buildVoiceNoteContent(context)
               else if (message.kind == MessageKindDto.file)
                 _buildFileContent(context)
-              else if (parsed.isViewOnce)
+              else if (isViewOnce)
                 _buildViewOnceContent(context, parsed.text)
               else
                 Text(
@@ -1033,7 +1034,7 @@ class _MessageBubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (parsed.isViewOnce) ...[
+                  if (isViewOnce) ...[
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                       decoration: BoxDecoration(

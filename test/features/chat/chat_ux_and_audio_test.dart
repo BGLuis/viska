@@ -113,8 +113,12 @@ class _FakeCore implements Core {
   @override
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
 
+  final List<int> markReadCalls = [];
+
   @override
-  Future<void> markMessageRead({required int messageId}) async {}
+  Future<void> markMessageRead({required int messageId}) async {
+    markReadCalls.add(messageId);
+  }
 
   @override
   Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId}) async => 0;
@@ -460,10 +464,29 @@ void main() {
       expect(core.sealOutgoingTextCalls, isEmpty);
     });
 
-    test('viewOnce tracking marks message as opened', () {
+    test('viewOnce tracking marks message as opened and invokes core markMessageRead', () async {
       expect(controller.isViewOnceOpened(100), isFalse);
-      controller.markViewOnceOpened(100);
+      await controller.markViewOnceOpened(100);
       expect(controller.isViewOnceOpened(100), isTrue);
+      expect(core.markReadCalls, contains(100));
+    });
+
+    test('isViewOnceOpened recognizes already destroyed message from storage', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 200,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.text,
+          body: '<mensagem expirada e destruída>',
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 1000,
+          isEphemeral: true,
+          viewOnce: true,
+          reactions: const [],
+        ),
+      ];
+      await controller.initialize();
+      expect(controller.isViewOnceOpened(200), isTrue);
     });
 
     test('ParsedMessageContent handles plain text, json quoted reply, and reactions', () {

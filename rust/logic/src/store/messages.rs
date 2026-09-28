@@ -103,6 +103,33 @@ pub fn insert_pending(
     )
 }
 
+#[derive(serde::Deserialize)]
+struct BodyMetadataHelper {
+    #[serde(rename = "viewOnce")]
+    view_once: Option<bool>,
+    reply: Option<ReplyMetadataHelper>,
+}
+
+#[derive(serde::Deserialize)]
+struct ReplyMetadataHelper {
+    id: Option<i64>,
+}
+
+/// Extrai metadados estruturados (reply_to_id, view_once) do payload JSON da mensagem, se presente.
+fn parse_body_metadata(body: &str) -> (Option<i64>, bool) {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') {
+        return (None, false);
+    }
+    if let Ok(parsed) = serde_json::from_str::<BodyMetadataHelper>(trimmed) {
+        let view_once = parsed.view_once.unwrap_or(false);
+        let reply_to_id = parsed.reply.and_then(|r| r.id);
+        (reply_to_id, view_once)
+    } else {
+        (None, false)
+    }
+}
+
 /// Persiste uma mensagem de saída como `Pending` com opções de resposta e visualização única.
 pub fn insert_pending_opts(
     conn: &rusqlite::Connection,
@@ -114,6 +141,9 @@ pub fn insert_pending_opts(
     view_once: bool,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
+    let (meta_reply, meta_view_once) = parse_body_metadata(body);
+    let final_reply = reply_to_id.or(meta_reply);
+    let final_view_once = view_once || meta_view_once;
     let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
     insert_with_options(
         conn,
@@ -124,8 +154,8 @@ pub fn insert_pending_opts(
         DeliveryState::Pending,
         created_at_unix_secs,
         ttl,
-        reply_to_id,
-        view_once,
+        final_reply,
+        final_view_once,
     )
 }
 
@@ -159,6 +189,9 @@ pub fn insert_incoming_opts(
     view_once: bool,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
+    let (meta_reply, meta_view_once) = parse_body_metadata(body);
+    let final_reply = reply_to_id.or(meta_reply);
+    let final_view_once = view_once || meta_view_once;
     let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
     insert_with_options(
         conn,
@@ -169,8 +202,8 @@ pub fn insert_incoming_opts(
         DeliveryState::Delivered,
         received_at_unix_secs,
         ttl,
-        reply_to_id,
-        view_once,
+        final_reply,
+        final_view_once,
     )
 }
 
@@ -295,24 +328,40 @@ pub fn insert_with_options(
 
 /// Marca uma mensagem efêmera como lida, disparando o temporizador regressivo
 /// a partir do carimbo de data/hora atual (`unix_now`).
+///
+/// Para mensagens de visualização única (`view_once == true`), destrói a chave efêmera
+/// imediatamente no primeiro `mark_message_read` (U-04 / crypto-shredding imediato).
 pub fn mark_message_read(
     conn: &rusqlite::Connection,
     message_id: i64,
     unix_now: i64,
 ) -> Result<()> {
-    let ttl: Option<i64> = conn
+    let row_info: Option<(i64, i64)> = conn
         .query_row(
-            "SELECT c.ephemeral_ttl FROM messages m
-             JOIN contacts c ON m.contact_device_id = c.device_id
+            "SELECT m.view_once, COALESCE(c.ephemeral_ttl, 0) FROM messages m
+             LEFT JOIN contacts c ON m.contact_device_id = c.device_id
              WHERE m.id = ?1",
             [message_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0).unwrap_or(0), row.get(1).unwrap_or(0))),
         )
         .optional()
         .map_err(|_| Error::Store)?;
 
-    if let Some(ttl) = ttl {
-        if ttl > 0 {
+    if let Some((view_once, ttl)) = row_info {
+        if view_once != 0 {
+            // Visualização única: destrói a chave individual K_msg e trunca o WAL para não
+            // deixar vestígios em disco.
+            let deleted = conn
+                .execute(
+                    "DELETE FROM ephemeral_message_keys WHERE message_id = ?1",
+                    [message_id],
+                )
+                .map_err(|_| Error::Store)?;
+            if deleted > 0 {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                    .map_err(|_| Error::Store)?;
+            }
+        } else if ttl > 0 {
             let expires_at = unix_now.saturating_add(ttl);
             conn.execute(
                 "UPDATE ephemeral_message_keys
@@ -799,4 +848,28 @@ mod tests {
         let listed = list_for_contact(&conn, &contact).unwrap();
         assert_eq!(listed[0].reactions, vec!["🔥"]);
     }
+
+    #[test]
+    fn view_once_message_destroyed_on_mark_message_read() {
+        let contact = [18u8; 16];
+        let conn = conn_with_contact(contact);
+
+        let json_body = r#"{"v":1,"type":"text","text":"segredo descartavel","viewOnce":true}"#;
+        let id = insert_incoming(&conn, &contact, PacketType::MsgText, json_body, 1000).unwrap();
+
+        let listed = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].view_once);
+        assert!(listed[0].is_ephemeral);
+        assert_eq!(listed[0].body, json_body);
+
+        // Marca mensagem como lida
+        mark_message_read(&conn, id, 1010).unwrap();
+
+        // Chave efêmera K_msg foi destruída imediatamente
+        let listed_after = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed_after[0].body, EXPIRED_BODY_PLACEHOLDER);
+        assert!(listed_after[0].view_once);
+    }
 }
+
