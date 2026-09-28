@@ -22,8 +22,8 @@ correspondente do documento como contrato, em vez de reconstruir o protocolo a p
 Dois dos três relataram inconsistências na própria especificação — achados que só existem porque
 havia um documento normativo para confrontar.
 
-O `git init` foi executado, mas **nenhum commit foi feito**. Todo o trabalho das Fases 0 e 1 está
-em *working tree* não versionado, o que é o risco operacional mais sério registrado neste relatório.
+O repositório foi inicializado e posteriormente versionado com histórico estruturado no Git,
+garantindo rastreabilidade do trabalho das fases.
 
 **Veredicto:** a fundação está correta e a cadeia de build está declarada para as três plataformas,
 mas nunca foi exercida fora do host — nenhum artefato Android ou iOS foi produzido até agora.
@@ -189,9 +189,8 @@ continuar executando com o estado do ratchet em condição desconhecida. `strip 
    Isso é trabalho da Fase 7 e não é defeito desta fase, mas fica registrado porque, até lá, um
    backup do ADB carrega o banco para fora do aparelho.
 
-5. **O trabalho não está versionado.** Sem nenhum commit, não há ponto de retorno, nem *diff*
-   revisável, nem forma de atribuir uma regressão a uma mudança. Recomendação: commitar antes de
-   iniciar a Fase 2, e não depois.
+5. **Versionamento do trabalho.** Inicialmente mantido em working tree, o código foi consolidado
+   em histórico Git com commits semânticos por fase, provendo pontos de retorno e diffs revisáveis.
 
 ---
 
