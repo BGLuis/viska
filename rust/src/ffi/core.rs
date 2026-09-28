@@ -62,13 +62,15 @@ impl Core {
         let identity = store.load_or_create_identity()?;
 
         let staging_dir = dir.join(STAGING_DIR_NAME);
-        // Varre `.staging` órfão de uma execução anterior (crash, força
-        // bruta do processo) — nunca apaga o de uma transferência que o
-        // banco ainda considera ativa (armadilha da Fase 4: "`.staging`
-        // sobrevive a crash e vaza espaço em disco").
-        let active_ids: std::collections::HashSet<[u8; 16]> =
-            store.list_active_file_transfer_ids()?.into_iter().collect();
-        viska_proto::file::staging::sweep_orphaned(&staging_dir, &active_ids)?;
+        // Na abertura a frio ou recuperação de crash, transferências sem handle
+        // ativo em memória são tratadas como abortadas (U-03). Destrói os segredos
+        // no banco e remove os arquivos de staging correspondentes.
+        let active_ids = store.list_active_file_transfer_ids()?;
+        for id in &active_ids {
+            let _ = store.delete_file_transfer(id);
+        }
+        let surviving = std::collections::HashSet::new();
+        viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
 
         Ok(Core {
             identity: RwLock::new(identity),
@@ -81,11 +83,25 @@ impl Core {
     }
 
     /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-    /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+    /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
     /// limpa a chave mestra nativa injetada.
     pub fn lock(&self) -> Result<(), FfiError> {
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
-        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
+        {
+            let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
+            for file_id in transfers.keys() {
+                let _ = self.store.delete_file_transfer(file_id);
+            }
+            transfers.clear();
+        }
+        if let Ok(active_ids) = self.store.list_active_file_transfer_ids() {
+            for id in &active_ids {
+                let _ = self.store.delete_file_transfer(id);
+            }
+        }
+        let surviving = std::collections::HashSet::new();
+        let _ = viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving);
+
         self.store.close()?;
         keyring::clear_injected_master_secret();
         Ok(())
@@ -97,6 +113,20 @@ impl Core {
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
         self.store
             .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
+
+        // Qualquer transferência sem handle em memória é tratada como abortada (U-03),
+        // limpando registros órfãos e arquivos .staging.
+        let active_ids = self.store.list_active_file_transfer_ids()?;
+        let transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
+        let mut surviving = std::collections::HashSet::new();
+        for id in active_ids {
+            if !transfers.contains_key(&id) {
+                let _ = self.store.delete_file_transfer(&id);
+            } else {
+                surviving.insert(id);
+            }
+        }
+        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving)?;
         Ok(())
     }
 

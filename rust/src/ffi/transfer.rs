@@ -522,6 +522,13 @@ impl Core {
         Ok(())
     }
 
+    /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
+    pub fn list_active_file_transfer_ids(&self) -> Result<Vec<Vec<u8>>, FfiError> {
+        self.ensure_not_locked()?;
+        let ids = self.store.list_active_file_transfer_ids()?;
+        Ok(ids.into_iter().map(|id| id.to_vec()).collect())
+    }
+
     fn lock_transfers(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], TransferHandle>>, FfiError>
@@ -1239,5 +1246,45 @@ mod tests {
             .find_file_transfer(&fid(&started.file_id))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn transfer_interrupted_by_lock_and_unlock_cleans_active_ids_and_staging() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "test_abort.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let active_b_before = pair.core_b.list_active_file_transfer_ids().unwrap();
+        assert_eq!(active_b_before.len(), 1);
+        assert_eq!(active_b_before[0], started.file_id);
+
+        let staging_file = pair
+            .core_b
+            .staging_dir
+            .join(format!("{}.staging", hex::encode(&started.file_id)));
+        assert!(staging_file.exists(), ".staging deve existir enquanto ativa");
+
+        pair.core_b.lock().unwrap();
+        pair.core_b.unlock().unwrap();
+
+        let active_b_after = pair.core_b.list_active_file_transfer_ids().unwrap();
+        assert!(
+            active_b_after.is_empty(),
+            "transferências sem handle devem ser tratadas como abortadas após lock/unlock"
+        );
+        assert!(
+            !staging_file.exists(),
+            ".staging deve sumir após aborto por lock/unlock"
+        );
     }
 }

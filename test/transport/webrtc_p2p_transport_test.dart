@@ -228,6 +228,9 @@ class _FakeCore implements Core {
   Future<bool> isLocked() => throw UnimplementedError();
 
   @override
+  Future<List<Uint8List>> listActiveFileTransferIds() => throw UnimplementedError();
+
+  @override
   Future<void> lock() => throw UnimplementedError();
 
   @override
