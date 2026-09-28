@@ -30,7 +30,12 @@ class _FakeCore implements Core {
     final beacon = beaconsByContact.entries
         .firstWhere((e) => _sameBytes(e.key.deviceId, peerDeviceId))
         .value;
-    return DiscoveryBeaconsDto(advertiseBeacon: beacon, scanBeacons: [beacon]);
+    return DiscoveryBeaconsDto(
+      advertiseBeacon: beacon,
+      scanBeacons: [beacon],
+      dialPreamble: beacon,
+      listenPreambles: [beacon],
+    );
   }
 
   @override

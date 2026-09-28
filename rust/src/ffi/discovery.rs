@@ -10,7 +10,10 @@ use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{ContactDto, DiscoveryBeaconsDto};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
-use viska_proto::discovery::{beacon_id, beacon_ids_for_window};
+use viska_proto::discovery::{
+    beacon_id, beacon_ids_for_window, preamble_id, preamble_ids_for_window,
+};
+use viska_proto::signaling::topic::direction;
 use viska_proto::signaling::signaling_key;
 use viska_proto::util::time::current_epoch;
 
@@ -19,17 +22,17 @@ fn to_device_id(bytes: Vec<u8>) -> Result<[u8; DEVICE_ID_LEN], FfiError> {
 }
 
 impl Core {
-    /// `device_id` desta identidade local — dado já público (trocado no QR,
-    /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-    /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+    /// `device_id` desta identidade local — dado já público (trocado no QR).
+    /// Só existe nesta fronteira porque nada em `ffi::core` precisava
     /// dele até a descoberta local.
     pub fn my_device_id(&self) -> Vec<u8> {
         self.identity.read().unwrap().public().device_id.to_vec()
     }
 
-    /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-    /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-    /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+    /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
+    /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
+    /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
+    /// `docs/protocol.md` §9.1 e §9.3. Direcional (a2b/b2a), evitando ligar os pares (S-10).
     pub fn discovery_beacons(&self, peer_device_id: Vec<u8>) -> Result<DiscoveryBeaconsDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         let (peer, _, _, _) = self
@@ -38,10 +41,16 @@ impl Core {
             .ok_or(FfiError::ContactNotFound)?;
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
         let k_sig = signaling_key(&id, &peer)?;
+        let dir = direction(&id.public(), &peer);
 
         Ok(DiscoveryBeaconsDto {
-            advertise_beacon: beacon_id(&k_sig, current_epoch()).to_vec(),
-            scan_beacons: beacon_ids_for_window(&k_sig)
+            advertise_beacon: beacon_id(&k_sig, dir, current_epoch()).to_vec(),
+            scan_beacons: beacon_ids_for_window(&k_sig, dir.flip())
+                .into_iter()
+                .map(|b| b.to_vec())
+                .collect(),
+            dial_preamble: preamble_id(&k_sig, dir, current_epoch()).to_vec(),
+            listen_preambles: preamble_ids_for_window(&k_sig, dir.flip())
                 .into_iter()
                 .map(|b| b.to_vec())
                 .collect(),
@@ -59,7 +68,8 @@ impl Core {
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
         for (peer, paired_at, nickname, is_verified) in self.store.list_contacts()? {
             let k_sig = signaling_key(&id, &peer)?;
-            if beacon_ids_for_window(&k_sig).contains(&beacon) {
+            let dir = direction(&id.public(), &peer);
+            if beacon_ids_for_window(&k_sig, dir.flip()).contains(&beacon) {
                 return Ok(Some(ContactDto::from_identity(&peer, paired_at, nickname, is_verified)));
             }
         }
@@ -108,8 +118,42 @@ mod tests {
 
         assert!(beacons_b.scan_beacons.contains(&beacons_a.advertise_beacon));
         assert!(beacons_a.scan_beacons.contains(&beacons_b.advertise_beacon));
-        // Sem distinção de direção — os dois lados anunciam o mesmo beacon.
-        assert_eq!(beacons_a.advertise_beacon, beacons_b.advertise_beacon);
+        // Beacons direcionais: os dois lados anunciam valores diferentes (S-10).
+        assert_ne!(beacons_a.advertise_beacon, beacons_b.advertise_beacon);
+
+        // Preâmbulos TCP: discar e receber casam na direção oposta e diferem entre os dois lados.
+        assert!(beacons_b.listen_preambles.contains(&beacons_a.dial_preamble));
+        assert!(beacons_a.listen_preambles.contains(&beacons_b.dial_preamble));
+        assert_ne!(beacons_a.dial_preamble, beacons_b.dial_preamble);
+    }
+
+    #[test]
+    fn preamble_identifier_differs_between_two_contacts_and_between_two_epochs() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+        let core_c = open_core(&dir_c);
+
+        let contact_b = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        let contact_c = core_a.pair_from_qr(core_c.my_qr_payload(), None).unwrap();
+
+        let beacons_b = core_a.discovery_beacons(contact_b.device_id).unwrap();
+        let beacons_c = core_a.discovery_beacons(contact_c.device_id).unwrap();
+
+        // Difere entre dois contatos
+        assert_ne!(beacons_b.dial_preamble, beacons_c.dial_preamble);
+
+        // Difere entre duas épocas
+        assert_ne!(
+            beacons_b.listen_preambles[0],
+            beacons_b.listen_preambles[1]
+        );
+        assert_ne!(
+            beacons_b.listen_preambles[1],
+            beacons_b.listen_preambles[2]
+        );
     }
 
     #[test]

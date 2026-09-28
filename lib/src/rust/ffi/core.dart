@@ -72,9 +72,10 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> envelope,
   });
 
-  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
+  /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
+  /// `docs/protocol.md` §9.1 e §9.3. Direcional (a2b/b2a), evitando ligar os pares (S-10).
   Future<DiscoveryBeaconsDto> discoveryBeacons({
     required List<int> peerDeviceId,
   });
@@ -208,9 +209,8 @@ abstract class Core implements RustOpaqueInterface {
   /// Dart nunca vê `K_sig`, só o resultado do casamento.
   Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon});
 
-  /// `device_id` desta identidade local — dado já público (trocado no QR,
-  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// `device_id` desta identidade local — dado já público (trocado no QR).
+  /// Só existe nesta fronteira porque nada em `ffi::core` precisava
   /// dele até a descoberta local.
   Future<Uint8List> myDeviceId();
 
@@ -236,10 +236,9 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Decifra um payload de sinalização recebido do broker.
   ///
-  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-  /// inválida — sem distinguir a causa, mesma política de
-  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-  /// confiável.
+  /// Valida o AAD contra a direção do par e a janela de épocas aceitáveis
+  /// (anterior, atual e seguinte). Se o broker refletir nossa própria mensagem
+  /// ou retransmitir épocas antigas, a abertura falha e devolve `Ok(None)` (S-12).
   Future<Uint8List?> openSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> sealed,
@@ -295,6 +294,8 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já
   /// serializado) para publicar — sempre exatamente 1024 B.
+  ///
+  /// O AAD amarra o payload à direção deste lado e à época atual (S-12).
   Future<Uint8List> sealSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> payloadBytes,

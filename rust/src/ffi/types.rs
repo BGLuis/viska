@@ -224,15 +224,19 @@ pub struct SignalingTopicsDto {
     pub subscribe_topics: Vec<String>,
 }
 
-/// `BeaconID`s de descoberta local para um contato — `docs/protocol.md` §9.1.
-/// Os dois lados calculam o mesmo `advertise_beacon`, ao contrário dos
-/// tópicos de sinalização (que têm direção).
+/// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
+/// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryBeaconsDto {
-    /// Beacon para anunciar agora — só a época corrente.
+    /// Beacon para anunciar agora — só a época corrente, nossa direção.
     pub advertise_beacon: Vec<u8>,
     /// Os três beacons aceitáveis para procurar — épocas
-    /// anterior/atual/seguinte.
+    /// anterior/atual/seguinte, na direção do par.
     pub scan_beacons: Vec<Vec<u8>>,
+    /// Preâmbulo TCP para discar agora — época corrente, nossa direção.
+    pub dial_preamble: Vec<u8>,
+    /// Os três preâmbulos TCP aceitáveis para receber — épocas
+    /// anterior/atual/seguinte, direção do par.
+    pub listen_preambles: Vec<Vec<u8>>,
 }
 

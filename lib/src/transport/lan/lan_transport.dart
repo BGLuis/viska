@@ -131,7 +131,6 @@ class LanTransport implements P2PTransport, TransportReadiness {
       await MulticastLock.acquire();
       try {
         final beacons = await _core.discoveryBeacons(peerDeviceId: _contactId.deviceId);
-        final myDeviceId = await _core.myDeviceId();
         final port = await _listener.ensureListening();
 
         final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
@@ -141,8 +140,9 @@ class LanTransport implements P2PTransport, TransportReadiness {
         if (weAreActive) {
           final peer = await _findPeer(beacons.scanBeacons);
           if (kDebugMode) debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
-          _control = await _dial(peer, LanChannel.control, myDeviceId);
-          _file = await _dial(peer, LanChannel.file, myDeviceId);
+          final dialPreamble = Uint8List.fromList(beacons.dialPreamble);
+          _control = await _dial(peer, LanChannel.control, dialPreamble);
+          _file = await _dial(peer, LanChannel.file, dialPreamble);
         } else {
           if (!_policy.shouldAdvertise(_contactId)) {
             // Sem anúncio, o lado ativo nunca vai nos achar por mDNS — falha
@@ -155,13 +155,16 @@ class LanTransport implements P2PTransport, TransportReadiness {
           final instanceName = toHexInstanceName(beacons.advertiseBeacon);
           await _discovery.advertise(instanceName: instanceName, port: port);
           if (kDebugMode) debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
+          final listenPreambles = beacons.listenPreambles.map(Uint8List.fromList).toList();
           _control = await _listener.waitForConnection(
-            deviceId: _contactId.deviceId,
+            deviceId: listenPreambles.first,
             channel: LanChannel.control,
+            alternativeIdentifiers: listenPreambles.length > 1 ? listenPreambles.sublist(1) : null,
           );
           _file = await _listener.waitForConnection(
-            deviceId: _contactId.deviceId,
+            deviceId: listenPreambles.first,
             channel: LanChannel.file,
+            alternativeIdentifiers: listenPreambles.length > 1 ? listenPreambles.sublist(1) : null,
           );
         }
       } finally {
@@ -204,9 +207,9 @@ class LanTransport implements P2PTransport, TransportReadiness {
     }
   }
 
-  Future<LanConnection> _dial(LanPeer peer, LanChannel channel, Uint8List myDeviceId) async {
+  Future<LanConnection> _dial(LanPeer peer, LanChannel channel, Uint8List preambleId) async {
     final socket = await Socket.connect(peer.host, peer.port);
-    socket.add(encodePreamble(deviceId: myDeviceId, channel: channel));
+    socket.add(encodePreamble(deviceId: preambleId, channel: channel));
     await socket.flush();
     return LanConnection(socket: socket, incoming: socket);
   }

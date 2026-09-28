@@ -25,7 +25,12 @@ class _FakeCore implements Core {
 
   @override
   Future<DiscoveryBeaconsDto> discoveryBeacons({required List<int> peerDeviceId}) async =>
-      DiscoveryBeaconsDto(advertiseBeacon: _beacon, scanBeacons: [_beacon]);
+      DiscoveryBeaconsDto(
+        advertiseBeacon: _beacon,
+        scanBeacons: [_beacon],
+        dialPreamble: _beacon,
+        listenPreambles: [_beacon],
+      );
 
   @override
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>

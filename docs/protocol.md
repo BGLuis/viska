@@ -523,13 +523,16 @@ Interface plugável, na ordem de tentativa: MQTT público → relay Nostr → tr
 
 ```
 epoch    = floor(unix_time / 3600)
-beacon   = BLAKE3_keyed(K_sig, "viska-beacon-v1" ‖ u64_be(epoch))[0..16]
+beacon   = BLAKE3_keyed(K_sig, "viska-beacon-v1" ‖ dir ‖ u64_be(epoch))[0..16]
 ```
 
 Os 16 bytes são o **UUID de serviço BLE de 128 bits** anunciado — e não manufacturer data, porque
 o iOS em background não anuncia esse campo e move os service UUIDs para a overflow area, onde só
-são encontrados por um scanner que procure exatamente aquele UUID. O scanner procura os UUIDs das
-épocas `e-1`, `e` e `e+1`.
+são encontrados por um scanner que procure exatamente aquele UUID. Tanto o anúncio quanto a varredura
+são direcionais (`dir` sendo `a2b` ou `b2a`, com base em `PublicIdentity::is_before`): quem anuncia
+usa sua própria direção, e quem procura varre a direção oposta (`dir.flip()`) nas épocas `e-1`, `e` e
+`e+1`. Isso garante que os beacons de A e B para o mesmo par sejam distintos no ar, impedindo que um
+observador passivo ligue os dois aparelhos (S-10).
 
 Endereço MAC: aleatorização de endereço privado resolvível habilitada. Nenhum dado de identidade
 é anunciado.
@@ -541,18 +544,26 @@ Serviço `_viska._tcp` com nome de instância igual ao `beacon` em hex. Mesma ro
 ### 9.3 Multiplexação de canais no socket TCP local
 
 ```
-preâmbulo (17 B) = device_id (16 B) ‖ canal (1 B: 0x00 control, 0x01 file)
+preâmbulo (17 B) = preamble_id (16 B) ‖ canal (1 B: 0x00 control, 0x01 file)
 ```
 
 `wire::framing` (§6.4) não carrega identificador de canal — só o prefixo de comprimento. No socket
 TCP local, cada conexão recebe esse preâmbulo uma vez, antes do primeiro quadro, enviado por quem
-discou. `device_id` é dado já público (trocado no QR); varia por contato, então não vira uma
-impressão digital fixa de DPI (mesma motivação de D4). Cada canal lógico (`control`/`file`) usa uma
-conexão TCP própria — duas conexões por par ativo.
+discou. `preamble_id` é derivado de `K_sig` por contato, direção e época:
+
+```
+epoch       = floor(unix_time / 3600)
+preamble_id = BLAKE3_keyed(K_sig, "viska-preamble-v1" ‖ dir ‖ u64_be(epoch))[0..16]
+```
+
+Diferente do `device_id` de longo prazo (que é fixo por aparelho e permitiria rastreamento entre
+redes), o `preamble_id` varia por contato e por época (S-10), não virando uma impressão digital
+fixa de DPI (mesma motivação de D4). Cada canal lógico (`control`/`file`) usa uma conexão TCP
+própria — duas conexões por par ativo.
 
 Papel ativo/passivo: a mesma regra de §4 (`PublicIdentity::is_before`) que decide quem inicia o
 handshake decide quem disca a conexão TCP; o outro lado escuta. Um único `ServerSocket` por
-processo atende a todos os contatos, roteando cada conexão entrante pelo `device_id` do preâmbulo.
+processo atende a todos os contatos, roteando cada conexão entrante pelo `preamble_id` do preâmbulo.
 
 ### 9.4 Wi-Fi Aware (Android)
 
