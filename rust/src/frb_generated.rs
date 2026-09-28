@@ -3045,7 +3045,8 @@ impl SseDecode for crate::ffi::error::FfiError {
             9 => crate::ffi::error::FfiError::Locked,
             10 => crate::ffi::error::FfiError::AeadFailure,
             11 => crate::ffi::error::FfiError::Malformed,
-            12 => crate::ffi::error::FfiError::Internal,
+            12 => crate::ffi::error::FfiError::ContactKeyMismatch,
+            13 => crate::ffi::error::FfiError::Internal,
             _ => unreachable!("Invalid variant for FfiError: {}", inner),
         };
     }
@@ -3778,7 +3779,8 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::error::FfiError {
             Self::Locked => 9.into_dart(),
             Self::AeadFailure => 10.into_dart(),
             Self::Malformed => 11.into_dart(),
-            Self::Internal => 12.into_dart(),
+            Self::ContactKeyMismatch => 12.into_dart(),
+            Self::Internal => 13.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4190,7 +4192,8 @@ impl SseEncode for crate::ffi::error::FfiError {
                 crate::ffi::error::FfiError::Locked => 9,
                 crate::ffi::error::FfiError::AeadFailure => 10,
                 crate::ffi::error::FfiError::Malformed => 11,
-                crate::ffi::error::FfiError::Internal => 12,
+                crate::ffi::error::FfiError::ContactKeyMismatch => 12,
+                crate::ffi::error::FfiError::Internal => 13,
                 _ => {
                     unimplemented!("");
                 }

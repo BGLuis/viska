@@ -20,6 +20,8 @@ String pairingErrorMessage(FfiError error) {
       return 'Não foi possível salvar o contato. Tente novamente.';
     case FfiError.contactNotFound:
       return 'Contato não encontrado.';
+    case FfiError.contactKeyMismatch:
+      return 'Este contato já existe mas apresentou chaves criptográficas diferentes. O pareamento foi recusado por segurança.';
     // As variantes abaixo não são produzidas pelo fluxo de pareamento — só
     // por chamadas de sessão/mensagem (Fase 3) ou de transferência de
     // arquivo/áudio (Fase 4/5) — mas o switch precisa ser exaustivo sobre o

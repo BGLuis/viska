@@ -81,6 +81,9 @@ pub enum Error {
     #[error("contato não encontrado")]
     ContactNotFound,
 
+    #[error("o contato já existe mas possui chaves criptográficas diferentes")]
+    ContactKeyMismatch,
+
     #[error("núcleo ou banco de dados trancado")]
     Locked,
 }

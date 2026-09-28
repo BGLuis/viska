@@ -16,18 +16,26 @@ pub fn insert(
     paired_at_unix_secs: i64,
     nickname: Option<&str>,
 ) -> Result<()> {
+    if let Some((existing_id, _, _, _)) = find_by_device_id(conn, &contact.device_id)? {
+        // Se o device_id já existe mas as chaves diferem, recusa a substituição para
+        // evitar que um atacante troque silenciosamente a identidade do contato (S-13).
+        if existing_id.signing != contact.signing || existing_id.dh != contact.dh {
+            return Err(Error::ContactKeyMismatch);
+        }
+        // Se as chaves são as mesmas, preserva o contato e atualiza o apelido se fornecido.
+        if let Some(nick) = nickname {
+            conn.execute(
+                "UPDATE contacts SET nickname = ?1 WHERE device_id = ?2",
+                rusqlite::params![nick, contact.device_id.as_slice()],
+            )
+            .map_err(|_| Error::Store)?;
+        }
+        return Ok(());
+    }
+
     conn.execute(
         "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (device_id) DO UPDATE SET
-            is_verified = CASE
-                WHEN contacts.signing_pubkey != excluded.signing_pubkey OR contacts.dh_pubkey != excluded.dh_pubkey THEN 0
-                ELSE contacts.is_verified
-            END,
-            signing_pubkey = excluded.signing_pubkey,
-            dh_pubkey = excluded.dh_pubkey,
-            paired_at = excluded.paired_at,
-            nickname = COALESCE(excluded.nickname, contacts.nickname)",
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
             contact.device_id.as_slice(),
             contact.signing.as_slice(),
@@ -38,6 +46,32 @@ pub fn insert(
     )
     .map_err(|_| Error::Store)?;
 
+    Ok(())
+}
+
+/// Atualiza explicitamente as chaves criptográficas de um contato existente após
+/// consentimento do usuário. Reseta a marcação de verificação (`is_verified = 0`).
+pub fn update_keys(
+    conn: &rusqlite::Connection,
+    contact: &PublicIdentity,
+) -> Result<()> {
+    let count = conn.execute(
+        "UPDATE contacts SET
+            signing_pubkey = ?1,
+            dh_pubkey = ?2,
+            is_verified = 0
+         WHERE device_id = ?3",
+        rusqlite::params![
+            contact.signing.as_slice(),
+            contact.dh.as_bytes().as_slice(),
+            contact.device_id.as_slice(),
+        ],
+    )
+    .map_err(|_| Error::Store)?;
+
+    if count == 0 {
+        return Err(Error::ContactNotFound);
+    }
     Ok(())
 }
 
@@ -246,11 +280,11 @@ mod tests {
     }
 
     #[test]
-    fn insert_conflict_updates_keys_and_preserves_existing_nickname() {
+    fn insert_rejects_new_keys_for_existing_device_id() {
         let conn = setup_test_db();
         let id1 = LocalIdentity::generate().unwrap().public();
         let id2 = LocalIdentity::generate().unwrap().public();
-        // Mesma identidade de contato (mesmo device_id), mas com chaves atualizadas
+        // Mesma identidade de contato (mesmo device_id), mas com chaves diferentes
         let updated_contact = PublicIdentity {
             device_id: id1.device_id,
             signing: id2.signing,
@@ -258,19 +292,22 @@ mod tests {
         };
 
         insert(&conn, &id1, 1000, Some("Amigo Original")).unwrap();
-        // Re-insere com nickname None: COALESCE deve manter "Amigo Original"
-        insert(&conn, &updated_contact, 2000, None).unwrap();
 
+        // Tentar inserir com chaves diferentes deve falhar com ContactKeyMismatch
+        let err = insert(&conn, &updated_contact, 2000, None).unwrap_err();
+        assert!(matches!(err, Error::ContactKeyMismatch));
+
+        // Dados originais devem permanecer inalterados
         let found = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
-        assert_eq!(found.0.signing, id2.signing);
-        assert_eq!(found.0.dh, id2.dh);
-        assert_eq!(found.1, 2000);
+        assert_eq!(found.0.signing, id1.signing);
+        assert_eq!(found.0.dh, id1.dh);
+        assert_eq!(found.1, 1000);
         assert_eq!(found.2.as_deref(), Some("Amigo Original"));
 
-        // Re-insere com novo nickname: deve sobrescrever
-        insert(&conn, &updated_contact, 3000, Some("Amigo Renomeado")).unwrap();
+        // Re-inserir com as MESMAS chaves e novo apelido deve ter sucesso
+        insert(&conn, &id1, 1500, Some("Amigo Renomeado")).unwrap();
         let found2 = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
-        assert_eq!(found2.1, 3000);
+        assert_eq!(found2.0.signing, id1.signing);
         assert_eq!(found2.2.as_deref(), Some("Amigo Renomeado"));
     }
 
@@ -293,14 +330,14 @@ mod tests {
         assert!(verified);
         assert_eq!(sn.as_deref(), Some("12345 67890"));
 
-        // Se chaves mudarem no re-pareamento, is_verified deve ser resetado para false
+        // Se chaves forem atualizadas explicitamente via update_keys, is_verified deve ser resetado para false
         let id2 = LocalIdentity::generate().unwrap().public();
         let updated_contact = PublicIdentity {
             device_id: id1.device_id,
             signing: id2.signing,
             dh: id2.dh,
         };
-        insert(&conn, &updated_contact, 2000, None).unwrap();
+        update_keys(&conn, &updated_contact).unwrap();
         let (verified_after, sn_after) = get_verified_status(&conn, &id1.device_id).unwrap();
         assert!(!verified_after);
         // O Safety Number anterior permanece preservado para alertar sobre mudança de chave!
