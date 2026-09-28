@@ -419,6 +419,7 @@ pub struct SendTransfer<R: Read> {
     file: R,
     current_block_index: u32,
     current_encoder: Option<BlockEncoder>,
+    current_source_symbols: Vec<Vec<u8>>,
     next_repair_symbol_id: u32,
 }
 
@@ -446,6 +447,7 @@ impl<R: Read> SendTransfer<R> {
             file,
             current_block_index: 0,
             current_encoder: None,
+            current_source_symbols: Vec::new(),
             next_repair_symbol_id: 0,
         }
     }
@@ -476,7 +478,11 @@ impl<R: Read> SendTransfer<R> {
         self.file
             .read_exact(&mut buf)
             .map_err(|_| Error::Malformed("falha lendo o arquivo para montar o source block"))?;
-        self.current_encoder = Some(BlockEncoder::new(self.manifest.symbol_size, &buf)?);
+        let encoder = BlockEncoder::new(self.manifest.symbol_size, &buf)?;
+        // Materializa os símbolos-fonte uma única vez por bloco. Chamar `source_symbols()`
+        // por símbolo alocava e copiava o bloco inteiro k vezes — custo O(k²) (P-01).
+        self.current_source_symbols = encoder.source_symbols();
+        self.current_encoder = Some(encoder);
         self.next_repair_symbol_id = 0;
         Ok(())
     }
@@ -493,7 +499,10 @@ impl<R: Read> SendTransfer<R> {
 
         let k = encoder.source_symbol_count();
         let data = if self.next_repair_symbol_id < k {
-            encoder.source_symbols()[self.next_repair_symbol_id as usize].clone()
+            self.current_source_symbols
+                .get(self.next_repair_symbol_id as usize)
+                .cloned()
+                .ok_or(Error::Malformed("índice de símbolo-fonte fora dos limites"))?
         } else {
             let repair_offset = self.next_repair_symbol_id - k;
             encoder
@@ -541,6 +550,7 @@ impl<R: Read> SendTransfer<R> {
             .unwrap_or(false)
         {
             self.current_encoder = None;
+            self.current_source_symbols.clear();
             self.current_block_index += 1;
         }
     }
