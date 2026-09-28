@@ -270,6 +270,19 @@ impl Store {
         })
     }
 
+    /// Adiciona uma reação emoji a uma mensagem buscando pelo identificador global ou rowid local.
+    pub fn add_reaction_by_target(
+        &self,
+        target_id_str: &str,
+        contact_device_id: &[u8; 16],
+        emoji: &str,
+        created_at_unix_secs: i64,
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| {
+            messages::add_reaction_by_target(conn, target_id_str, contact_device_id, emoji, created_at_unix_secs)
+        })
+    }
+
     /// Consulta as reações emoji vinculadas a uma mensagem.
     pub fn get_reactions(&self, message_id: i64) -> Result<Vec<String>> {
         self.with_conn(|conn| messages::get_reactions_for_message(conn, message_id))

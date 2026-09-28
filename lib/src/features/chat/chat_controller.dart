@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -320,6 +321,7 @@ class ChatController extends ChangeNotifier {
           ? jsonEncode({
               'v': 1,
               'type': 'text',
+              'id': _generateGlobalId(),
               'text': body,
               if (replyTo != null) 'reply': replyTo.toJson(),
               if (isViewOnce) 'viewOnce': true,
@@ -345,10 +347,16 @@ class ChatController extends ChangeNotifier {
     required int targetMessageId,
     required String emoji,
   }) async {
+    final target = _messages.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == targetMessageId,
+          orElse: () => null,
+        );
+    final targetId = target?.globalId ?? targetMessageId;
+
     final payload = jsonEncode({
       'v': 1,
       'type': 'reaction',
-      'targetId': targetMessageId,
+      'targetId': targetId,
       'emoji': emoji,
     });
 
@@ -584,19 +592,39 @@ class ChatController extends ChangeNotifier {
     _reactions.clear();
     _userReactions.clear();
 
+    // 1. Reações carregadas diretamente da tabela message_reactions no banco (via Rust)
+    for (final message in _messages) {
+      for (final emoji in message.reactions) {
+        final map = _reactions.putIfAbsent(message.id, () => <String, int>{});
+        map[emoji] = (map[emoji] ?? 0) + 1;
+      }
+    }
+
+    // 2. Compatibilidade com mensagens legadas de comando de reação
     for (final message in _messages) {
       if (message.kind != MessageKindDto.text) continue;
       final parsed = ParsedMessageContent.parse(message.body);
-      if (parsed.isReaction && parsed.targetReactionId != null && parsed.reactionEmoji != null) {
-        final targetId = parsed.targetReactionId!;
+      if (parsed.isReaction && parsed.reactionEmoji != null) {
         final emoji = parsed.reactionEmoji!;
+        int? targetLocalId = parsed.targetReactionId;
+        if (targetLocalId == null && parsed.targetReactionGlobalId != null) {
+          final target = _messages.cast<MessageDto?>().firstWhere(
+                (m) => m?.globalId == parsed.targetReactionGlobalId,
+                orElse: () => null,
+              );
+          targetLocalId = target?.id;
+        }
 
-        final map = _reactions.putIfAbsent(targetId, () => <String, int>{});
-        map[emoji] = (map[emoji] ?? 0) + 1;
+        if (targetLocalId != null) {
+          final map = _reactions.putIfAbsent(targetLocalId, () => <String, int>{});
+          if (!(map.containsKey(emoji) && map[emoji]! > 0)) {
+            map[emoji] = (map[emoji] ?? 0) + 1;
+          }
 
-        if (message.direction == MessageDirectionDto.outgoing) {
-          final userSet = _userReactions.putIfAbsent(targetId, () => <String>{});
-          userSet.add(emoji);
+          if (message.direction == MessageDirectionDto.outgoing) {
+            final userSet = _userReactions.putIfAbsent(targetLocalId, () => <String>{});
+            userSet.add(emoji);
+          }
         }
       }
     }
@@ -616,23 +644,36 @@ class ChatController extends ChangeNotifier {
 String _hex(Uint8List bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
+String _generateGlobalId() {
+  final rng = Random.secure();
+  final bytes = Uint8List(16);
+  for (var i = 0; i < 16; i++) {
+    bytes[i] = rng.nextInt(256);
+  }
+  return _hex(bytes);
+}
+
 /// Conteúdo estruturado de mensagem persistida, suportando texto puro,
 /// respostas citadas, reações com emojis e mensagens de visualização única.
 class ParsedMessageContent {
   const ParsedMessageContent({
     required this.text,
+    this.id,
     this.reply,
     this.isViewOnce = false,
     this.isReaction = false,
     this.targetReactionId,
+    this.targetReactionGlobalId,
     this.reactionEmoji,
   });
 
   final String text;
+  final String? id;
   final QuotedReply? reply;
   final bool isViewOnce;
   final bool isReaction;
   final int? targetReactionId;
+  final String? targetReactionGlobalId;
   final String? reactionEmoji;
 
   static ParsedMessageContent parse(String rawBody) {
@@ -647,21 +688,27 @@ class ParsedMessageContent {
 
       final type = decoded['type'] as String?;
       if (type == 'reaction') {
+        final rawTarget = decoded['targetId'];
+        final targetInt = rawTarget is int ? rawTarget : int.tryParse(rawTarget?.toString() ?? '');
+        final targetStr = rawTarget is String ? rawTarget : rawTarget?.toString();
         return ParsedMessageContent(
           text: '',
           isReaction: true,
-          targetReactionId: decoded['targetId'] as int?,
+          targetReactionId: targetInt,
+          targetReactionGlobalId: targetStr,
           reactionEmoji: decoded['emoji'] as String?,
         );
       }
 
       if (type == 'text') {
         final text = decoded['text'] as String? ?? '';
+        final id = decoded['id'] as String?;
         final replyMap = decoded['reply'] as Map<String, dynamic>?;
         final reply = replyMap != null ? QuotedReply.fromJson(replyMap) : null;
         final viewOnce = decoded['viewOnce'] as bool? ?? false;
         return ParsedMessageContent(
           text: text,
+          id: id,
           reply: reply,
           isViewOnce: viewOnce,
         );

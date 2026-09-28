@@ -258,6 +258,14 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  }) =>
+      throw UnimplementedError();
+
+  @override
   Future<void> configureDuressPin({
     required String duressPin,
     required int actionMode,

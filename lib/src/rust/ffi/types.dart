@@ -190,6 +190,7 @@ enum MessageDirectionDto { outgoing, incoming }
 /// usuário, não escolha técnica deste código).
 class MessageDto {
   final PlatformInt64 id;
+  final String? globalId;
   final MessageDirectionDto direction;
   final MessageKindDto kind;
 
@@ -210,6 +211,7 @@ class MessageDto {
 
   const MessageDto({
     required this.id,
+    this.globalId,
     required this.direction,
     required this.kind,
     required this.body,
@@ -225,6 +227,7 @@ class MessageDto {
   @override
   int get hashCode =>
       id.hashCode ^
+      globalId.hashCode ^
       direction.hashCode ^
       kind.hashCode ^
       body.hashCode ^
@@ -242,6 +245,7 @@ class MessageDto {
       other is MessageDto &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          globalId == other.globalId &&
           direction == other.direction &&
           kind == other.kind &&
           body == other.body &&

@@ -140,6 +140,7 @@ pub enum MessageKindDto {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageDto {
     pub id: i64,
+    pub global_id: Option<String>,
     pub direction: MessageDirectionDto,
     pub kind: MessageKindDto,
     /// Corpo de texto — só significa algo quando `kind == Text`. Vazio para

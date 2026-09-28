@@ -95,6 +95,12 @@ impl Core {
     ) -> Result<SealedMessageDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
+
+        // Se o corpo for uma reação, vincula à mensagem no banco local:
+        if let Some((target_id, emoji)) = viska_proto::store::messages::parse_reaction_metadata(&body) {
+            let _ = self.store.add_reaction_by_target(&target_id, &device_id, &emoji, created_at);
+        }
+
         let message_id = self.store.insert_pending_message(
             &device_id,
             PacketType::MsgText,
@@ -158,6 +164,18 @@ impl Core {
         match inner.packet_type {
             PacketType::MsgText => {
                 let body = String::from_utf8(inner.body).map_err(|_| FfiError::Internal)?;
+
+                // Se o corpo for uma reação, vincula à mensagem no banco local:
+                if let Some((target_id, emoji)) = viska_proto::store::messages::parse_reaction_metadata(&body) {
+                    let _ = self.store.add_reaction_by_target(&target_id, &device_id, &emoji, received_at);
+                    return Ok(Some(IncomingMessageDto {
+                        message_id: None,
+                        body,
+                        is_typing: false,
+                        received_at_unix_secs: received_at,
+                    }));
+                }
+
                 let message_id = self.store.insert_incoming_message(
                     &device_id,
                     PacketType::MsgText,
@@ -297,6 +315,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
 
     MessageDto {
         id: message.id,
+        global_id: message.global_id,
         direction,
         kind,
         body,
@@ -668,6 +687,98 @@ mod tests {
         assert_eq!(history_after.len(), 1);
         assert!(history_after[0].view_once);
         assert_eq!(history_after[0].body, "<mensagem expirada e destruída>");
+    }
+
+    #[test]
+    fn reactions_target_global_id_across_cores_with_different_message_counts() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+
+        let dev_b: [u8; 16] = p.device_id_b.clone().try_into().unwrap();
+        let dev_a: [u8; 16] = p.device_id_a.clone().try_into().unwrap();
+
+        // 1. Cria contagens diferentes de mensagens prévias nos dois bancos
+        for i in 1..=2 {
+            p.core_a.store.insert_pending_message(
+                &dev_b,
+                PacketType::MsgText,
+                &format!("msg prévia A {}", i),
+                1000 + i,
+            ).unwrap();
+        }
+
+        for i in 1..=5 {
+            p.core_b.store.insert_pending_message(
+                &dev_a,
+                PacketType::MsgText,
+                &format!("msg prévia B {}", i),
+                1000 + i,
+            ).unwrap();
+        }
+
+        // 2. A envia uma mensagem com identificador global único no corpo
+        let global_id = "msg-global-uuid-12345678";
+        let message_payload = format!(
+            r#"{{"v":1,"type":"text","id":"{}","text":"Mensagem alvo de reação"}}"#,
+            global_id
+        );
+
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), message_payload)
+            .unwrap();
+        let incoming = p
+            .core_b
+            .decrypt_incoming(p.device_id_a.clone(), sealed.bytes.unwrap())
+            .unwrap()
+            .expect("mensagem válida deve ser decifrada");
+
+        let msg_b_id = incoming.message_id.expect("deve ter rowid no receptor");
+        let msg_a_id = sealed.message_id;
+
+        // Garante que os rowids locais dos dois bancos são comprovadamente divergentes
+        assert_ne!(
+            msg_a_id, msg_b_id,
+            "rowids locais devem ser diferentes entre os bancos"
+        );
+
+        // 3. A envia uma reação apontando para o identificador global da mensagem
+        let reaction_payload = format!(
+            r#"{{"v":1,"type":"reaction","targetId":"{}","emoji":"❤️"}}"#,
+            global_id
+        );
+
+        let sealed_reaction = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), reaction_payload)
+            .unwrap();
+
+        p.core_b
+            .decrypt_incoming(p.device_id_a.clone(), sealed_reaction.bytes.unwrap())
+            .unwrap();
+
+        // 4. Critério de aceite: a reação de A aparece na mesma mensagem nos dois bancos
+        let history_a = p.core_a.list_messages(p.device_id_b.clone()).unwrap();
+        let history_b = p.core_b.list_messages(p.device_id_a.clone()).unwrap();
+
+        let target_in_a = history_a
+            .iter()
+            .find(|m| m.global_id.as_deref() == Some(global_id))
+            .expect("mensagem alvo deve existir no banco de A");
+        let target_in_b = history_b
+            .iter()
+            .find(|m| m.global_id.as_deref() == Some(global_id))
+            .expect("mensagem alvo deve existir no banco de B");
+
+        assert_eq!(target_in_a.id, msg_a_id);
+        assert_eq!(target_in_b.id, msg_b_id);
+        assert_eq!(target_in_a.reactions, vec!["❤️".to_string()]);
+        assert_eq!(target_in_b.reactions, vec!["❤️".to_string()]);
     }
 }
 

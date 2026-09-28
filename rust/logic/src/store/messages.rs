@@ -58,6 +58,7 @@ impl DeliveryState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredMessage {
     pub id: i64,
+    pub global_id: Option<String>,
     pub direction: Direction,
     /// `MsgText` ou `AudioChunk` (Fase 5) — os únicos dois tipos que chegam
     /// a esta tabela. Para `AudioChunk`, `body` é `hex(file_id)`, não texto
@@ -105,6 +106,7 @@ pub fn insert_pending(
 
 #[derive(serde::Deserialize)]
 struct BodyMetadataHelper {
+    id: Option<String>,
     #[serde(rename = "viewOnce")]
     view_once: Option<bool>,
     reply: Option<ReplyMetadataHelper>,
@@ -112,21 +114,109 @@ struct BodyMetadataHelper {
 
 #[derive(serde::Deserialize)]
 struct ReplyMetadataHelper {
-    id: Option<i64>,
+    id: Option<serde_json::Value>,
+    #[serde(rename = "globalId")]
+    global_id: Option<String>,
 }
 
-/// Extrai metadados estruturados (reply_to_id, view_once) do payload JSON da mensagem, se presente.
-fn parse_body_metadata(body: &str) -> (Option<i64>, bool) {
+#[derive(serde::Deserialize)]
+struct ReactionMetadataHelper {
+    #[serde(rename = "type")]
+    msg_type: Option<String>,
+    #[serde(rename = "targetId")]
+    target_id: Option<serde_json::Value>,
+    emoji: Option<String>,
+}
+
+/// Identifica se o corpo transporta um comando estruturado de reação com emoji e destino.
+pub fn parse_reaction_metadata(body: &str) -> Option<(String, String)> {
     let trimmed = body.trim_start();
     if !trimmed.starts_with('{') {
-        return (None, false);
+        return None;
+    }
+    if let Ok(parsed) = serde_json::from_str::<ReactionMetadataHelper>(trimmed) {
+        if parsed.msg_type.as_deref() == Some("reaction") {
+            let target_str = match parsed.target_id? {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => return None,
+            };
+            let emoji = parsed.emoji?;
+            return Some((target_str, emoji));
+        }
+    }
+    None
+}
+
+/// Extrai metadados estruturados (global_id, reply_to_id, view_once) do payload JSON da mensagem.
+fn parse_body_metadata(conn: &rusqlite::Connection, body: &str) -> (Option<String>, Option<i64>, bool) {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') {
+        return (None, None, false);
     }
     if let Ok(parsed) = serde_json::from_str::<BodyMetadataHelper>(trimmed) {
+        let global_id = parsed.id;
         let view_once = parsed.view_once.unwrap_or(false);
-        let reply_to_id = parsed.reply.and_then(|r| r.id);
-        (reply_to_id, view_once)
+        let mut reply_to_id = None;
+
+        if let Some(r) = parsed.reply {
+            // Tenta resolver primeiro via identificador global único
+            if let Some(gid) = r.global_id {
+                reply_to_id = conn
+                    .query_row(
+                        "SELECT id FROM messages WHERE global_id = ?1",
+                        [gid],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .unwrap_or(None);
+            }
+            if reply_to_id.is_none() {
+                if let Some(val) = r.id {
+                    match val {
+                        serde_json::Value::String(s) => {
+                            reply_to_id = conn
+                                .query_row(
+                                    "SELECT id FROM messages WHERE global_id = ?1",
+                                    [&s],
+                                    |row| row.get(0),
+                                )
+                                .optional()
+                                .unwrap_or(None);
+                            if reply_to_id.is_none() {
+                                if let Ok(num) = s.parse::<i64>() {
+                                    reply_to_id = conn
+                                        .query_row(
+                                            "SELECT id FROM messages WHERE id = ?1",
+                                            [num],
+                                            |row| row.get(0),
+                                        )
+                                        .optional()
+                                        .unwrap_or(None);
+                                }
+                            }
+                        }
+                        serde_json::Value::Number(n) => {
+                            if let Some(num) = n.as_i64() {
+                                reply_to_id = conn
+                                    .query_row(
+                                        "SELECT id FROM messages WHERE id = ?1",
+                                        [num],
+                                        |row| row.get(0),
+                                    )
+                                    .optional()
+                                    .unwrap_or(None);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        (global_id, reply_to_id, view_once)
     } else {
-        (None, false)
+        (None, None, false)
     }
 }
 
@@ -141,11 +231,11 @@ pub fn insert_pending_opts(
     view_once: bool,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
-    let (meta_reply, meta_view_once) = parse_body_metadata(body);
+    let (meta_global_id, meta_reply, meta_view_once) = parse_body_metadata(conn, body);
     let final_reply = reply_to_id.or(meta_reply);
     let final_view_once = view_once || meta_view_once;
     let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
-    insert_with_options(
+    insert_with_options_internal(
         conn,
         contact_device_id,
         Direction::Outgoing,
@@ -156,6 +246,7 @@ pub fn insert_pending_opts(
         ttl,
         final_reply,
         final_view_once,
+        meta_global_id,
     )
 }
 
@@ -189,11 +280,11 @@ pub fn insert_incoming_opts(
     view_once: bool,
 ) -> Result<i64> {
     reject_typing(packet_type)?;
-    let (meta_reply, meta_view_once) = parse_body_metadata(body);
+    let (meta_global_id, meta_reply, meta_view_once) = parse_body_metadata(conn, body);
     let final_reply = reply_to_id.or(meta_reply);
     let final_view_once = view_once || meta_view_once;
     let ttl = crate::store::contacts::get_ephemeral_ttl(conn, contact_device_id).unwrap_or(0);
-    insert_with_options(
+    insert_with_options_internal(
         conn,
         contact_device_id,
         Direction::Incoming,
@@ -204,6 +295,7 @@ pub fn insert_incoming_opts(
         ttl,
         final_reply,
         final_view_once,
+        meta_global_id,
     )
 }
 
@@ -247,7 +339,44 @@ pub fn insert_with_options(
     reply_to_id: Option<i64>,
     view_once: bool,
 ) -> Result<i64> {
+    let (meta_global_id, meta_reply, meta_view_once) = parse_body_metadata(conn, body);
+    let final_reply = reply_to_id.or(meta_reply);
+    let final_view_once = view_once || meta_view_once;
+    insert_with_options_internal(
+        conn,
+        contact_device_id,
+        direction,
+        packet_type,
+        body,
+        delivery_state,
+        created_at_unix_secs,
+        ttl_secs,
+        final_reply,
+        final_view_once,
+        meta_global_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_with_options_internal(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+    direction: Direction,
+    packet_type: PacketType,
+    body: &str,
+    delivery_state: DeliveryState,
+    created_at_unix_secs: i64,
+    ttl_secs: i64,
+    reply_to_id: Option<i64>,
+    view_once: bool,
+    global_id: Option<String>,
+) -> Result<i64> {
     reject_typing(packet_type)?;
+
+    let final_global_id = match global_id {
+        Some(gid) if !gid.is_empty() => gid,
+        _ => hex::encode(crate::util::rng::array::<16>()?),
+    };
 
     let is_ephemeral = ttl_secs > 0 || view_once;
     let view_once_int = if view_once { 1 } else { 0 };
@@ -262,8 +391,8 @@ pub fn insert_with_options(
 
         conn.execute(
             "INSERT INTO messages
-                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?8)",
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?8, ?9)",
             rusqlite::params![
                 contact_device_id.as_slice(),
                 direction as i64,
@@ -273,6 +402,7 @@ pub fn insert_with_options(
                 created_at_unix_secs,
                 reply_to_id,
                 view_once_int,
+                final_global_id,
             ],
         )
         .map_err(|_| Error::Store)?;
@@ -307,8 +437,8 @@ pub fn insert_with_options(
     } else {
         conn.execute(
             "INSERT INTO messages
-                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 0, ?7, ?8)",
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 0, ?7, ?8, ?9)",
             rusqlite::params![
                 contact_device_id.as_slice(),
                 direction as i64,
@@ -318,6 +448,7 @@ pub fn insert_with_options(
                 created_at_unix_secs,
                 reply_to_id,
                 view_once_int,
+                final_global_id,
             ],
         )
         .map_err(|_| Error::Store)?;
@@ -414,7 +545,7 @@ pub fn list_for_contact(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id
              FROM messages
              WHERE contact_device_id = ?1
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -432,14 +563,20 @@ pub fn list_for_contact(
             let is_ephemeral: i64 = row.get(6)?;
             let reply_to_id: Option<i64> = row.get(7)?;
             let view_once: i64 = row.get(8).unwrap_or(0);
-            Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once))
+            let global_id: Option<String> = row.get(9).unwrap_or(None);
+            Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id))
         })
         .map_err(|_| Error::Store)?;
 
     let mut messages = Vec::new();
     for row in rows {
-        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once) =
+        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id) =
             row.map_err(|_| Error::Store)?;
+
+        // Mensagens que transportam apenas comandos de reação não devem poluir a timeline de balões
+        if parse_reaction_metadata(&raw_body).is_some() {
+            continue;
+        }
 
         let direction = match direction {
             0 => Direction::Outgoing,
@@ -457,6 +594,7 @@ pub fn list_for_contact(
 
         messages.push(StoredMessage {
             id,
+            global_id,
             direction,
             packet_type,
             body,
@@ -478,7 +616,7 @@ pub fn list_pending(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once
+            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id
              FROM messages
              WHERE contact_device_id = ?1 AND direction = ?2 AND delivery_state = ?3
              ORDER BY created_at_unix_secs ASC, id ASC",
@@ -502,14 +640,15 @@ pub fn list_pending(
                 let is_ephemeral: i64 = row.get(6)?;
                 let reply_to_id: Option<i64> = row.get(7)?;
                 let view_once: i64 = row.get(8).unwrap_or(0);
-                Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once))
+                let global_id: Option<String> = row.get(9).unwrap_or(None);
+                Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id))
             },
         )
         .map_err(|_| Error::Store)?;
 
     let mut messages = Vec::new();
     for row in rows {
-        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once) =
+        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id) =
             row.map_err(|_| Error::Store)?;
 
         let direction = match direction {
@@ -527,6 +666,7 @@ pub fn list_pending(
 
         messages.push(StoredMessage {
             id,
+            global_id,
             direction,
             packet_type,
             body,
@@ -564,6 +704,48 @@ pub fn add_reaction(
     )
     .map_err(|_| Error::Store)?;
     Ok(())
+}
+
+/// Adiciona uma reação buscando a mensagem alvo pelo seu identificador global ou rowid local.
+pub fn add_reaction_by_target(
+    conn: &rusqlite::Connection,
+    target_id_str: &str,
+    contact_device_id: &[u8; 16],
+    emoji: &str,
+    created_at_unix_secs: i64,
+) -> Result<Option<i64>> {
+    let rowid: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM messages WHERE global_id = ?1",
+            [target_id_str],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+
+    let final_id = match rowid {
+        Some(id) => Some(id),
+        None => {
+            if let Ok(numeric_id) = target_id_str.parse::<i64>() {
+                conn.query_row(
+                    "SELECT id FROM messages WHERE id = ?1",
+                    [numeric_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| Error::Store)?
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(msg_id) = final_id {
+        add_reaction(conn, msg_id, contact_device_id, emoji, created_at_unix_secs)?;
+        Ok(Some(msg_id))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Consulta todas as reações emoji vinculadas a uma mensagem.
@@ -870,6 +1052,26 @@ mod tests {
         let listed_after = list_for_contact(&conn, &contact).unwrap();
         assert_eq!(listed_after[0].body, EXPIRED_BODY_PLACEHOLDER);
         assert!(listed_after[0].view_once);
+    }
+
+    #[test]
+    fn add_reaction_by_target_with_global_id() {
+        let contact = [19u8; 16];
+        let conn = conn_with_contact(contact);
+
+        let json_body = r#"{"v":1,"type":"text","id":"uuid-abc-123","text":"mensagem original"}"#;
+        let id = insert_incoming(&conn, &contact, PacketType::MsgText, json_body, 1000).unwrap();
+
+        // Adiciona reação apontando para o identificador global
+        let matched = add_reaction_by_target(&conn, "uuid-abc-123", &contact, "👏", 1005).unwrap();
+        assert_eq!(matched, Some(id));
+
+        let reactions = get_reactions_for_message(&conn, id).unwrap();
+        assert_eq!(reactions, vec!["👏"]);
+
+        let listed = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed[0].global_id.as_deref(), Some("uuid-abc-123"));
+        assert_eq!(listed[0].reactions, vec!["👏"]);
     }
 }
 

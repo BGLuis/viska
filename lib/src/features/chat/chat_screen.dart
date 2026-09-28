@@ -446,6 +446,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _replyingTo = QuotedReply(
         id: message.id,
+        globalId: message.globalId,
         sender: senderName,
         snippet: snippet,
         isVoice: isVoice,

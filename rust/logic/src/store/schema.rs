@@ -78,6 +78,9 @@ const MIGRATIONS: &[&str] = &[
         duress_pin    TEXT,
         action_mode   INTEGER NOT NULL DEFAULT 0
     );",
+    "\
+    ALTER TABLE messages ADD COLUMN global_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_messages_global_id ON messages (global_id);",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.

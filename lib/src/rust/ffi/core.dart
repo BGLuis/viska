@@ -21,6 +21,13 @@ abstract class Core implements RustOpaqueInterface {
     required String emoji,
   });
 
+  /// Adiciona uma reação emoji a uma mensagem persistida buscando pelo identificador global (Fase 9).
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  });
+
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`. Do lado receptor, também apaga o
   /// `.staging` — mesma garantia de "abortar destrói a chave" de

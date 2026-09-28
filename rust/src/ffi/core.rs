@@ -357,6 +357,19 @@ impl Core {
         Ok(())
     }
 
+    /// Adiciona uma reação emoji a uma mensagem persistida buscando pelo identificador global (Fase 9).
+    pub fn add_reaction_by_global_id(
+        &self,
+        contact_device_id: [u8; 16],
+        target_global_id: String,
+        emoji: String,
+    ) -> Result<bool, FfiError> {
+        self.ensure_not_locked()?;
+        let now = viska_proto::util::time::unix_seconds() as i64;
+        let matched = self.store.add_reaction_by_target(&target_global_id, &contact_device_id, &emoji, now)?;
+        Ok(matched.is_some())
+    }
+
     /// Exporta backup cifrado com frase mnemônica de 24 palavras (BIP-39).
     pub fn export_encrypted_backup(&self, dest_path: String) -> Result<String, FfiError> {
         self.ensure_not_locked()?;
