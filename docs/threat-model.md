@@ -95,6 +95,12 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
 - **Volume e frequência de mensagens/arquivos.** O feedback de transferência de arquivo (`FILE_FEEDBACK`,
   §7.4) e o próprio ato de trocar mensagens revelam volume aproximado a quem observa o tráfego cifrado;
   o protocolo não tenta esconder isso (é tratado como já observável de qualquer forma).
+- **Jitter por rajada no canal de arquivos (P-02).** Para permitir taxas de transferência condizentes
+  com arquivos grandes (≥ 10 MB/s), o jitter no canal `file` é aplicado por rajada (`burstSize` > 1),
+  e não serialmente antes de cada símbolo individual de 16 KiB. Como o volume e a duração de uma
+  transferência de arquivo já são inerentemente observáveis em trânsito (§3), a decisão de mitigar o
+  gargalo serial de jitter no canal `file` é uma escolha consciente de equilíbrio entre desempenho e
+  análise de tráfego.
 - **Duração aproximada de uma nota de voz, pela contagem de pacotes.** Os buckets de padding (§6.3, D5)
   limitam a granularidade do *tamanho* de cada `AUDIO_CHUNK`, mas não escondem *quantos* pacotes uma
   nota de voz gera — um observador do tráfego cifrado pode estimar a duração contando pacotes na
