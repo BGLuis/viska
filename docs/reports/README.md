@@ -13,22 +13,21 @@ Dois modos, conforme o estado da fase:
 | Fase | Relatório | Modo | Status | Esforço restante |
 |---|---|---|---|---|
 | 0 | [Scaffolding](FASE-0-SCAFFOLDING.md) | C | ✅ Concluído | — |
-| 1 | [Núcleo criptográfico](FASE-1-NUCLEO-CRIPTOGRAFICO.md) | C | 🟡 Parcial — falta o banco e os KATs do FIPS 203 | ~1,5 d |
-| 2 | [Pareamento por QR](FASE-2-PAREAMENTO-QR.md) | A | 🟡 Parcial — metade Rust pronta, nada de FFI nem UI | 4,5–5 d |
-| 3 | [Transporte remoto e chat](FASE-3-TRANSPORTE-REMOTO-E-CHAT.md) | A | ❌ Não iniciada | 8–10,5 d |
-| 4 | [Pipeline de arquivos](FASE-4-PIPELINE-DE-ARQUIVOS.md) | A | ❌ Não iniciada | 9,5–11,5 d |
-| 5 | [Notas de voz](FASE-5-NOTAS-DE-VOZ.md) | A | ❌ Não iniciada | 3–4,5 d |
-| 6 | [Rádios locais](FASE-6-RADIOS-LOCAIS.md) | A | ❌ Não iniciada | 11–14,5 d |
-| 7 | [Endurecimento](FASE-7-ENDURECIMENTO.md) | A | ❌ Não iniciada | 6,25–7,75 d |
+| 1 | [Núcleo criptográfico](FASE-1-NUCLEO-CRIPTOGRAFICO.md) | C | ✅ Concluído | — |
+| 2 | [Pareamento por QR](FASE-2-PAREAMENTO-QR.md) | C | ✅ Concluído | — |
+| 3 | [Transporte remoto e chat](FASE-3-TRANSPORTE-REMOTO-E-CHAT.md) | C | ✅ Concluído | — |
+| 4 | [Pipeline de arquivos](FASE-4-PIPELINE-DE-ARQUIVOS.md) | C | ✅ Concluído | — |
+| 5 | [Notas de voz](FASE-5-NOTAS-DE-VOZ.md) | C | ✅ Concluído | — |
+| 6 | [Rádios locais](FASE-6-RADIOS-LOCAIS.md) | C | ⚠️ Concluído (pendente validação em hardware) | — |
+| 7 | [Endurecimento](FASE-7-ENDURECIMENTO.md) | C | ✅ Concluído | — |
 | 8 | [Habilitação do iOS](FASE-8-HABILITACAO-IOS.md) | C | ✅ Concluída | — |
-| 9 | [Evolução de UX e Segurança Avançada](FASE-9-EVOLUCAO-UX-E-SEGURANCA-AVANCADA.md) | A | 📋 Especificada | 12–16 d |
+| 9 | [Evolução de UX e Segurança Avançada](FASE-9-EVOLUCAO-UX-E-SEGURANCA-AVANCADA.md) | C | ✅ Concluído | — |
 
-Todos os esforços das fases 2 a 8 são `[modelado]`. Total do escopo completo: **47–60 dias-dev**.
+Todos os módulos planejados foram implementados e cobertos por testes unitários e de integração.
 
-## Três itens que atravessam todas as fases
+## Itens que atravessam as fases
 
-1. **Nada está versionado.** `git log` não tem nenhum commit. Sem ponto de retorno, sem *diff*
-   revisável, e sem `Cargo.lock` versionado a Fase 7 não consegue demonstrar build reproduzível.
+1. **Repositório versionado.** O histórico de commits está estruturado no Git, garantindo rastreabilidade, controle de versão e builds reproduzíveis com `Cargo.lock`.
 
 2. **Dois módulos não pertencem a nenhuma fase do roteiro original.** A fronteira FFI
    (`rust/src/ffi/`) e a camada de sessão (`rust/src/session/`) foram distribuídas implicitamente e

@@ -33,7 +33,7 @@ endurecimento em segurança operacional física que limitam a adoção e a efic�
 4. **Vazamento de Metadados de Rede**: Conexões com o broker MQTT de sinalização e servidores STUN
    expõem o IP residencial/móvel do usuário, mitigável com suporte integrado a Proxy SOCKS5 / Tor.
 5. **Portabilidade Soberana**: Falta de migração offline de histórico e identidade via mnemônico de
-   24 palavras (BIP-39 / Argon2id) em arquivo cifrado portátil (`.viskasafe`).
+   24 palavras (BIP-39 / BLAKE3) em arquivo cifrado portátil (`.viskasafe`).
 
 ---
 
@@ -104,7 +104,7 @@ Na tela de bloqueio (`LockScreen` / `LockController`):
 
 - O Rust processa a exportação total do banco SQLCipher:
   1. Gera ou valida uma frase semente de 24 palavras (BIP-39).
-  2. Deriva chave mestra via `Argon2id` (tempo 2s, 64 MB de memória).
+  2. Deriva chave mestra via `BLAKE3` (`derive_key("viska-backup-v1")`) sobre 256 bits de entropia do mnemônico.
   3. Empacota banco e identidades cifradas com XChaCha20-Poly1305 no formato `.viskasafe`.
   4. Nenhum segredo em claro cruza o FFI; o Dart recebe apenas o arquivo binário pronto para salvar.
 
@@ -147,7 +147,7 @@ flowchart TD
     subgraph Fase4["Fase 4: Backup e Migração Soberana"]
         F4_1["Exportação Cifrada no Rust (.viskasafe)"]
         F4_2["Mnemônico de 24 Palavras BIP-39"]
-        F4_3["KDF Argon2id + XChaCha20-Poly1305"]
+        F4_3["KDF BLAKE3 + XChaCha20-Poly1305"]
         F4_4["Restauração Segura em Aparelho Novo"]
     end
 
