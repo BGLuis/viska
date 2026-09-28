@@ -136,14 +136,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
 
         final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
         final weAreActive = status.outgoingHandshake != null;
-        debugPrint(
-          '[LanTransport] connect(): porta=$port weAreActive=$weAreActive '
-          'peer=${_hex(_contactId.deviceId)}',
-        );
+        if (kDebugMode) debugPrint('[LanTransport] connect(): porta=$port weAreActive=$weAreActive peer=${_hex(_contactId.deviceId)}');
 
         if (weAreActive) {
           final peer = await _findPeer(beacons.scanBeacons);
-          debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
+          if (kDebugMode) debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
           _control = await _dial(peer, LanChannel.control, myDeviceId);
           _file = await _dial(peer, LanChannel.file, myDeviceId);
         } else {
@@ -157,7 +154,7 @@ class LanTransport implements P2PTransport, TransportReadiness {
           }
           final instanceName = toHexInstanceName(beacons.advertiseBeacon);
           await _discovery.advertise(instanceName: instanceName, port: port);
-          debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
+          if (kDebugMode) debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
           _control = await _listener.waitForConnection(
             deviceId: _contactId.deviceId,
             channel: LanChannel.control,
@@ -175,12 +172,12 @@ class LanTransport implements P2PTransport, TransportReadiness {
 
       _pump(_control!, _incomingController);
       _pump(_file!, _incomingFileController);
-      debugPrint('[LanTransport] conexão TCP estabelecida com ${_hex(_contactId.deviceId)}');
+      if (kDebugMode) debugPrint('[LanTransport] conexão TCP estabelecida com ${_hex(_contactId.deviceId)}');
       _connectionEventsController.add(
         const TransportConnectionEvent(TransportConnectionState.connected),
       );
     } catch (e) {
-      debugPrint('[LanTransport] FALHA em connect(): $e');
+      if (kDebugMode) debugPrint('[LanTransport] FALHA em connect(): $e');
       if (!_connectionEventsController.isClosed) {
         _connectionEventsController.add(
           TransportConnectionEvent(TransportConnectionState.failed, reason: e.toString()),
@@ -281,6 +278,6 @@ class LanTransport implements P2PTransport, TransportReadiness {
 }
 
 /// Formata bytes como string hexadecimal — usado exclusivamente em logs de
-/// diagnóstico (debugPrint), nunca em lógica de protocolo.
+/// diagnóstico (apenas sob kDebugMode), nunca em lógica de protocolo.
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
