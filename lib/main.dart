@@ -102,6 +102,7 @@ Future<void> main(List<String> args) async {
   final receptionService = MessageReceptionService(
     core: core,
     router: router,
+    appDirPath: appDir.path,
   );
   await receptionService.start();
 

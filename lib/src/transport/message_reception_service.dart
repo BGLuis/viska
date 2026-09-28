@@ -65,10 +65,14 @@ class MessageReceptionService {
   MessageReceptionService({
     required Core core,
     required P2PTransportRouter router,
+    String? appDirPath,
     Future<String> Function()? tempDirProvider,
+    Future<String> Function()? receivedDirProvider,
   })  : _core = core,
         _router = router,
-        _tempDirProvider = tempDirProvider {
+        _appDirPath = appDirPath,
+        _tempDirProvider = tempDirProvider,
+        _receivedDirProvider = receivedDirProvider {
     // Garante que qualquer transporte criado no roteador (por envio,
     // reconexão ou consulta) passe imediatamente a ser escutado por este serviço.
     _router.onTransportCreated = ensureListening;
@@ -76,7 +80,9 @@ class MessageReceptionService {
 
   final Core _core;
   final P2PTransportRouter _router;
+  final String? _appDirPath;
   final Future<String> Function()? _tempDirProvider;
+  final Future<String> Function()? _receivedDirProvider;
 
   final Set<ContactId> _registeredContacts = {};
   final Set<ContactId> _establishedContacts = {};
@@ -238,16 +244,39 @@ class MessageReceptionService {
     }
   }
 
+  Future<String> _getReceivedDirectory() async {
+    final receivedDirProvider = _receivedDirProvider;
+    if (receivedDirProvider != null) {
+      final dir = await receivedDirProvider();
+      final d = Directory(dir);
+      if (!d.existsSync()) d.createSync(recursive: true);
+      return dir;
+    }
+    if (_appDirPath != null) {
+      final dir = '$_appDirPath/received';
+      final d = Directory(dir);
+      if (!d.existsSync()) d.createSync(recursive: true);
+      return dir;
+    }
+    final tempDirProvider = _tempDirProvider;
+    if (tempDirProvider != null) {
+      return await tempDirProvider();
+    }
+    final tempDir = await getTemporaryDirectory();
+    final dir = '${tempDir.path}/received';
+    final d = Directory(dir);
+    if (!d.existsSync()) d.createSync(recursive: true);
+    return dir;
+  }
+
   Future<void> _finishReceivingFile(
     ContactId contactId,
     Uint8List fileId,
     FileOfferDto offer,
   ) async {
-    final tempDirPath = _tempDirProvider != null
-        ? await _tempDirProvider()
-        : (await getTemporaryDirectory()).path;
+    final receivedDirPath = await _getReceivedDirectory();
     final safeName = path.basename(offer.name);
-    final destPath = '$tempDirPath/viska-recv-${_hex(fileId)}-$safeName';
+    final destPath = '$receivedDirPath/viska-recv-${_hex(fileId)}-$safeName';
     try {
       final sealedComplete = await _core.finishReceiveFile(
         peerDeviceId: contactId.deviceId,
@@ -263,10 +292,8 @@ class MessageReceptionService {
   }
 
   Future<void> _finishReceivingVoiceNote(ContactId contactId, Uint8List fileId) async {
-    final tempDirPath = _tempDirProvider != null
-        ? await _tempDirProvider()
-        : (await getTemporaryDirectory()).path;
-    final internalPath = '$tempDirPath/nota-recebida-${_hex(fileId)}.viska-audio';
+    final receivedDirPath = await _getReceivedDirectory();
+    final internalPath = '$receivedDirPath/nota-recebida-${_hex(fileId)}.viska-audio';
     try {
       final sealedComplete = await _core.finishReceiveAudio(
         peerDeviceId: contactId.deviceId,
