@@ -399,6 +399,9 @@ class _FakeCore implements Core {
   Future<void> markMessageRead({required PlatformInt64 messageId}) async {}
 
   @override
+  Future<List<Uint8List>> listActiveFileTransferIds() async => [];
+
+  @override
   Future<int> sweepExpiredMessages() async => 0;
 
   @override

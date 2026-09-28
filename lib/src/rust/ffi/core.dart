@@ -80,7 +80,7 @@ abstract class Core implements RustOpaqueInterface {
   });
 
   /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-  /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+  /// remoção física dos arquivos do banco SQLite e limpeza dos diretórios staging e received.
   Future<void> emergencyErase();
 
   /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
@@ -178,6 +178,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Informa se a Core está trancada.
   Future<bool> isLocked();
 
+  /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
+  Future<List<Uint8List>> listActiveFileTransferIds();
+
   /// Todos os contatos já pareados.
   Future<List<ContactDto>> listContacts();
 
@@ -186,7 +189,7 @@ abstract class Core implements RustOpaqueInterface {
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId});
 
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-  /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+  /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.
   Future<void> lock();
 
