@@ -85,6 +85,8 @@ class MessageReceptionService {
 
   final Map<String, Uint8List> _voiceNoteAudio = {};
   final Map<String, String> _receivedFilePaths = {};
+  final Map<String, int> _lastFeedbackBlocksDone = {};
+  final Map<String, DateTime> _lastFeedbackTime = {};
 
   final _eventsController = StreamController<MessageReceptionEvent>.broadcast();
 
@@ -186,7 +188,40 @@ class MessageReceptionService {
     if (_isPaused || _disposed) return;
     try {
       final ingested = await _core.ingestIncomingWireBytes(wireBytes: wireBytes);
-      if (ingested == null || !ingested.progress.isComplete) return;
+      if (ingested == null) return;
+
+      final hexId = _hex(ingested.fileId);
+
+      if (!ingested.progress.isComplete) {
+        final currentBlocksDone = ingested.progress.blocksDone;
+        final lastBlocksDone = _lastFeedbackBlocksDone[hexId] ?? 0;
+        final lastTime = _lastFeedbackTime[hexId];
+        final now = DateTime.now();
+
+        // Envia FILE_FEEDBACK (§7.4, U-02):
+        // 1. A cada bloco concluído (avançar o emissor para o próximo bloco).
+        // 2. A cada 500 ms de transferência contínua dentro de um bloco.
+        final blockCompleted = currentBlocksDone > lastBlocksDone;
+        final intervalElapsed = lastTime == null || now.difference(lastTime) >= const Duration(milliseconds: 500);
+
+        if (blockCompleted || intervalElapsed) {
+          _lastFeedbackBlocksDone[hexId] = currentBlocksDone;
+          _lastFeedbackTime[hexId] = now;
+          try {
+            final sealedFeedback = await _core.fileFeedback(
+              peerDeviceId: contactId.deviceId,
+              fileId: ingested.fileId,
+            );
+            await _router.sendToContact(contactId, sealedFeedback);
+          } catch (_) {
+            // Falha temporária ao enviar feedback; retransmite no próximo chunk/intervalo.
+          }
+        }
+        return;
+      }
+
+      _lastFeedbackBlocksDone.remove(hexId);
+      _lastFeedbackTime.remove(hexId);
 
       try {
         final fileOffers = await _core.pendingFileOffers(peerDeviceId: contactId.deviceId);
@@ -337,6 +372,8 @@ class MessageReceptionService {
       await sub.cancel();
     }
     _incomingFileSubs.clear();
+    _lastFeedbackBlocksDone.clear();
+    _lastFeedbackTime.clear();
     _registeredContacts.clear();
     _establishedContacts.clear();
 

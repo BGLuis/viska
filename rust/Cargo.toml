@@ -40,3 +40,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.dev.package.raptorq]
+opt-level = 3
+
