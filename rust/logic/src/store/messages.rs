@@ -74,10 +74,15 @@ pub struct StoredMessage {
     pub reactions: Vec<String>,
 }
 
-fn reject_typing(packet_type: PacketType) -> Result<()> {
+fn reject_non_storable(packet_type: PacketType) -> Result<()> {
     if packet_type == PacketType::MsgTyping {
         return Err(Error::InvalidState(
             "MSG_TYPING é efêmero e nunca deve ser persistido",
+        ));
+    }
+    if packet_type == PacketType::MsgReceipt {
+        return Err(Error::InvalidState(
+            "MSG_RECEIPT é um sinalizador de controle de entrega e nunca deve ser persistido na timeline",
         ));
     }
     Ok(())
@@ -230,7 +235,7 @@ pub fn insert_pending_opts(
     reply_to_id: Option<i64>,
     view_once: bool,
 ) -> Result<i64> {
-    reject_typing(packet_type)?;
+    reject_non_storable(packet_type)?;
     let (meta_global_id, meta_reply, meta_view_once) = parse_body_metadata(conn, body);
     let final_reply = reply_to_id.or(meta_reply);
     let final_view_once = view_once || meta_view_once;
@@ -279,7 +284,7 @@ pub fn insert_incoming_opts(
     reply_to_id: Option<i64>,
     view_once: bool,
 ) -> Result<i64> {
-    reject_typing(packet_type)?;
+    reject_non_storable(packet_type)?;
     let (meta_global_id, meta_reply, meta_view_once) = parse_body_metadata(conn, body);
     let final_reply = reply_to_id.or(meta_reply);
     let final_view_once = view_once || meta_view_once;
@@ -371,7 +376,7 @@ fn insert_with_options_internal(
     view_once: bool,
     global_id: Option<String>,
 ) -> Result<i64> {
-    reject_typing(packet_type)?;
+    reject_non_storable(packet_type)?;
 
     let final_global_id = match global_id {
         Some(gid) if !gid.is_empty() => gid,
@@ -536,6 +541,125 @@ pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     )
     .map_err(|_| Error::Store)?;
     Ok(())
+}
+
+/// Marca uma mensagem de saída como confirmada/entregue ao destinatário (via MSG_RECEIPT).
+pub fn mark_delivered(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
+        rusqlite::params![DeliveryState::Delivered as i64, message_id],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Atualiza o ratchet_counter associado a uma mensagem enviada.
+pub fn update_ratchet_counter(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+    counter: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET ratchet_counter = ?1 WHERE id = ?2",
+        rusqlite::params![counter, message_id],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Consulta o identificador global (UUID) de uma mensagem pelo seu rowid local.
+pub fn get_message_global_id(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT global_id FROM messages WHERE id = ?1",
+        [message_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|_| Error::Store)
+}
+
+/// Marca uma mensagem como entregue buscando por identificador global, id numérico ou ratchet_counter.
+pub fn mark_delivered_by_target(
+    conn: &rusqlite::Connection,
+    target_id_str: &str,
+    contact_device_id: &[u8; 16],
+) -> Result<Option<i64>> {
+    let found_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM messages WHERE global_id = ?1 AND contact_device_id = ?2",
+            rusqlite::params![target_id_str, contact_device_id.as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+
+    let target_rowid = match found_id {
+        Some(id) => Some(id),
+        None => {
+            if let Ok(num) = target_id_str.parse::<i64>() {
+                let by_id: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM messages WHERE id = ?1 AND contact_device_id = ?2",
+                        rusqlite::params![num, contact_device_id.as_slice()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|_| Error::Store)?;
+
+                if by_id.is_some() {
+                    by_id
+                } else {
+                    conn.query_row(
+                        "SELECT id FROM messages WHERE ratchet_counter = ?1 AND contact_device_id = ?2 AND direction = 0",
+                        rusqlite::params![num, contact_device_id.as_slice()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|_| Error::Store)?
+                }
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(msg_id) = target_rowid {
+        conn.execute(
+            "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
+            rusqlite::params![DeliveryState::Delivered as i64, msg_id],
+        )
+        .map_err(|_| Error::Store)?;
+        Ok(Some(msg_id))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Extrai o identificador da mensagem de destino a partir do corpo de um pacote MSG_RECEIPT.
+///
+/// Aceita JSON estruturado (`{"targetId": "..."}`, `{"id": "..."}`) ou o ID diretamente em texto UTF-8.
+pub fn parse_receipt_target_id(body: &[u8]) -> Option<String> {
+    if let Ok(text) = std::str::from_utf8(body) {
+        let text = text.trim();
+        if text.starts_with('{') {
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(text) {
+                if let Some(target) = map.get("targetId").or_else(|| map.get("id")) {
+                    match target {
+                        serde_json::Value::String(s) => return Some(s.clone()),
+                        serde_json::Value::Number(n) => return Some(n.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+    None
 }
 
 /// Todas as mensagens de um contato, mais antigas primeiro.
@@ -1072,6 +1196,50 @@ mod tests {
         let listed = list_for_contact(&conn, &contact).unwrap();
         assert_eq!(listed[0].global_id.as_deref(), Some("uuid-abc-123"));
         assert_eq!(listed[0].reactions, vec!["👏"]);
+    }
+
+    #[test]
+    fn mark_delivered_changes_state_and_matches_targets() {
+        let contact = [20u8; 16];
+        let conn = conn_with_contact(contact);
+
+        let json_body = r#"{"v":1,"type":"text","id":"uuid-deliv-123","text":"mensagem para recibo"}"#;
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, json_body, 1000).unwrap();
+        update_ratchet_counter(&conn, id, 42).unwrap();
+
+        let msgs = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(msgs[0].delivery_state, DeliveryState::Pending);
+
+        // Marca como sent
+        mark_sent(&conn, id).unwrap();
+        let msgs = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(msgs[0].delivery_state, DeliveryState::Sent);
+
+        // Marca como delivered por global_id
+        let matched = mark_delivered_by_target(&conn, "uuid-deliv-123", &contact).unwrap();
+        assert_eq!(matched, Some(id));
+        let msgs = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(msgs[0].delivery_state, DeliveryState::Delivered);
+
+        // Testa busca por ratchet_counter em outra mensagem
+        let id2 = insert_pending(&conn, &contact, PacketType::MsgText, "segunda", 1002).unwrap();
+        update_ratchet_counter(&conn, id2, 99).unwrap();
+        let matched2 = mark_delivered_by_target(&conn, "99", &contact).unwrap();
+        assert_eq!(matched2, Some(id2));
+        let msgs = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(msgs[1].delivery_state, DeliveryState::Delivered);
+    }
+
+    #[test]
+    fn parse_receipt_target_id_handles_json_and_plain_text() {
+        let json_payload = br#"{"v":1,"type":"receipt","targetId":"uuid-target-777"}"#;
+        assert_eq!(parse_receipt_target_id(json_payload), Some("uuid-target-777".to_string()));
+
+        let json_num = br#"{"targetId":88}"#;
+        assert_eq!(parse_receipt_target_id(json_num), Some("88".to_string()));
+
+        let plain = b"direct-id-999";
+        assert_eq!(parse_receipt_target_id(plain), Some("direct-id-999".to_string()));
     }
 }
 

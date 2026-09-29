@@ -234,6 +234,30 @@ impl Store {
         self.with_conn(|conn| messages::mark_sent(conn, message_id))
     }
 
+    /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+    pub fn mark_message_delivered(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_delivered(conn, message_id))
+    }
+
+    /// Marca uma mensagem como entregue buscando por identificador global, id numérico ou ratchet_counter.
+    pub fn mark_delivered_by_target(
+        &self,
+        target_id_str: &str,
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| messages::mark_delivered_by_target(conn, target_id_str, contact_device_id))
+    }
+
+    /// Atualiza o ratchet_counter associado a uma mensagem enviada.
+    pub fn update_message_ratchet_counter(&self, message_id: i64, counter: i64) -> Result<()> {
+        self.with_conn(|conn| messages::update_ratchet_counter(conn, message_id, counter))
+    }
+
+    /// Obtém o identificador global (UUID) de uma mensagem pelo seu rowid local.
+    pub fn get_message_global_id(&self, message_id: i64) -> Result<Option<String>> {
+        self.with_conn(|conn| messages::get_message_global_id(conn, message_id))
+    }
+
     /// Marca mensagem efêmera como lida, disparando o temporizador regressivo.
     pub fn mark_message_read(&self, message_id: i64, unix_now: i64) -> Result<()> {
         self.with_conn(|conn| messages::mark_message_read(conn, message_id, unix_now))

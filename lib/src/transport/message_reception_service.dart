@@ -182,11 +182,30 @@ class MessageReceptionService {
         return;
       }
 
+      // Envia recibo de entrega (MSG_RECEIPT) se for mensagem de texto recebida válida
+      if (incoming?.messageId != null) {
+        unawaited(_sendReceipt(contactId, incoming!.messageId.toString()));
+      }
+
       // Notifica com a mensagem decifrada ou atualização de timeline (metadados
       // de arquivo salvos como efeito colateral no Rust).
       _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao decifrar pacote de $contactId: $e\n$stack');
+    }
+  }
+
+  Future<void> _sendReceipt(ContactId contactId, String targetId) async {
+    try {
+      final sealed = await _core.sealOutgoingReceipt(
+        peerDeviceId: contactId.deviceId,
+        targetId: targetId,
+      );
+      if (sealed.bytes != null) {
+        await _router.sendToContact(contactId, sealed.bytes!);
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao enviar recibo para $contactId: $e');
     }
   }
 
