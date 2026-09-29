@@ -113,6 +113,22 @@ class _FakeCore implements Core {
   @override
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
 
+  @override
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) async {
+    var res = messagesToReturn;
+    if (sinceId != null) {
+      res = res.where((m) => m.id > sinceId).toList();
+    }
+    if (limit != null) {
+      res = res.take(limit.toInt()).toList();
+    }
+    return res;
+  }
+
   final List<int> markReadCalls = [];
 
   @override
