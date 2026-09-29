@@ -662,59 +662,77 @@ pub fn parse_receipt_target_id(body: &[u8]) -> Option<String> {
     None
 }
 
-/// Todas as mensagens de um contato, mais antigas primeiro.
-pub fn list_for_contact(
+/// Todas as mensagens de um contato com paginação opcional (`since_id`, `limit`).
+pub fn list_for_contact_paginated(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
+    since_id: Option<i64>,
+    limit: Option<usize>,
 ) -> Result<Vec<StoredMessage>> {
+    let limit_param = limit.map(|l| l as i64).unwrap_or(-1);
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id
-             FROM messages
-             WHERE contact_device_id = ?1
-             ORDER BY created_at_unix_secs ASC, id ASC",
+            "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
+                    m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
+                    ek.key,
+                    rx.reactions
+             FROM messages m
+             LEFT JOIN ephemeral_message_keys ek ON (m.is_ephemeral = 1 AND ek.message_id = m.id)
+             LEFT JOIN (
+                 SELECT message_id, GROUP_CONCAT(emoji, CHAR(31)) AS reactions
+                 FROM message_reactions
+                 GROUP BY message_id
+             ) rx ON rx.message_id = m.id
+             WHERE m.contact_device_id = ?1
+               AND (?2 IS NULL OR m.id > ?2)
+             ORDER BY m.created_at_unix_secs ASC, m.id ASC
+             LIMIT ?3",
         )
         .map_err(|_| Error::Store)?;
 
-    let rows = statement
-        .query_map([contact_device_id.as_slice()], |row| {
-            let id: i64 = row.get(0)?;
-            let direction: i64 = row.get(1)?;
-            let packet_type: i64 = row.get(2)?;
-            let raw_body: String = row.get(3)?;
-            let delivery_state: i64 = row.get(4)?;
-            let created_at_unix_secs: i64 = row.get(5)?;
-            let is_ephemeral: i64 = row.get(6)?;
-            let reply_to_id: Option<i64> = row.get(7)?;
-            let view_once: i64 = row.get(8).unwrap_or(0);
-            let global_id: Option<String> = row.get(9).unwrap_or(None);
-            Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id))
-        })
+    let mut rows = statement
+        .query(rusqlite::params![
+            contact_device_id.as_slice(),
+            since_id,
+            limit_param,
+        ])
         .map_err(|_| Error::Store)?;
 
-    let mut messages = Vec::new();
-    for row in rows {
-        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id) =
-            row.map_err(|_| Error::Store)?;
-
-        // Mensagens que transportam apenas comandos de reação não devem poluir a timeline de balões
+    let mut messages = Vec::with_capacity(limit.unwrap_or(64));
+    while let Some(row) = rows.next().map_err(|_| Error::Store)? {
+        let raw_body: String = row.get(3).map_err(|_| Error::Store)?;
         if parse_reaction_metadata(&raw_body).is_some() {
             continue;
         }
 
-        let direction = match direction {
+        let id: i64 = row.get(0).map_err(|_| Error::Store)?;
+        let direction_raw: i64 = row.get(1).map_err(|_| Error::Store)?;
+        let packet_type_raw: i64 = row.get(2).map_err(|_| Error::Store)?;
+        let delivery_state_raw: i64 = row.get(4).map_err(|_| Error::Store)?;
+        let created_at_unix_secs: i64 = row.get(5).map_err(|_| Error::Store)?;
+        let is_ephemeral: i64 = row.get(6).map_err(|_| Error::Store)?;
+        let reply_to_id: Option<i64> = row.get(7).map_err(|_| Error::Store)?;
+        let view_once: i64 = row.get(8).unwrap_or(0);
+        let global_id: Option<String> = row.get(9).unwrap_or(None);
+        let ek_key: Option<Vec<u8>> = row.get(10).map_err(|_| Error::Store)?;
+        let reactions_concat: Option<String> = row.get(11).map_err(|_| Error::Store)?;
+
+        let direction = match direction_raw {
             0 => Direction::Outgoing,
             1 => Direction::Incoming,
             _ => return Err(Error::Store),
         };
         let packet_type =
-            PacketType::from_u8(packet_type as u8).map_err(|_| Error::Store)?;
+            PacketType::from_u8(packet_type_raw as u8).map_err(|_| Error::Store)?;
         let delivery_state =
-            DeliveryState::from_i64(delivery_state)?;
+            DeliveryState::from_i64(delivery_state_raw)?;
         let is_ephemeral = is_ephemeral != 0;
 
-        let body = decode_ephemeral_or_plain(conn, id, raw_body, is_ephemeral)?;
-        let reactions = get_reactions_for_message(conn, id)?;
+        let body = decode_ephemeral_body(raw_body, is_ephemeral, ek_key.as_deref());
+        let reactions = match reactions_concat {
+            Some(s) if !s.is_empty() => s.split('\u{001f}').map(|e| e.to_string()).collect(),
+            _ => Vec::new(),
+        };
 
         messages.push(StoredMessage {
             id,
@@ -733,6 +751,14 @@ pub fn list_for_contact(
     Ok(messages)
 }
 
+/// Todas as mensagens de um contato, mais antigas primeiro.
+pub fn list_for_contact(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<Vec<StoredMessage>> {
+    list_for_contact_paginated(conn, contact_device_id, None, None)
+}
+
 /// Mensagens de saída ainda não entregues, mais antigas primeiro.
 pub fn list_pending(
     conn: &rusqlite::Connection,
@@ -740,10 +766,13 @@ pub fn list_pending(
 ) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
-            "SELECT id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id
-             FROM messages
-             WHERE contact_device_id = ?1 AND direction = ?2 AND delivery_state = ?3
-             ORDER BY created_at_unix_secs ASC, id ASC",
+            "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
+                    m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
+                    ek.key
+             FROM messages m
+             LEFT JOIN ephemeral_message_keys ek ON ek.message_id = m.id
+             WHERE m.contact_device_id = ?1 AND m.direction = ?2 AND m.delivery_state = ?3
+             ORDER BY m.created_at_unix_secs ASC, m.id ASC",
         )
         .map_err(|_| Error::Store)?;
 
@@ -765,15 +794,39 @@ pub fn list_pending(
                 let reply_to_id: Option<i64> = row.get(7)?;
                 let view_once: i64 = row.get(8).unwrap_or(0);
                 let global_id: Option<String> = row.get(9).unwrap_or(None);
-                Ok((id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id))
+                let ek_key: Option<Vec<u8>> = row.get(10)?;
+                Ok((
+                    id,
+                    direction,
+                    packet_type,
+                    raw_body,
+                    delivery_state,
+                    created_at_unix_secs,
+                    is_ephemeral,
+                    reply_to_id,
+                    view_once,
+                    global_id,
+                    ek_key,
+                ))
             },
         )
         .map_err(|_| Error::Store)?;
 
     let mut messages = Vec::new();
     for row in rows {
-        let (id, direction, packet_type, raw_body, delivery_state, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id) =
-            row.map_err(|_| Error::Store)?;
+        let (
+            id,
+            direction,
+            packet_type,
+            raw_body,
+            delivery_state,
+            created_at_unix_secs,
+            is_ephemeral,
+            reply_to_id,
+            view_once,
+            global_id,
+            ek_key,
+        ) = row.map_err(|_| Error::Store)?;
 
         let direction = match direction {
             0 => Direction::Outgoing,
@@ -786,7 +839,7 @@ pub fn list_pending(
             DeliveryState::from_i64(delivery_state)?;
         let is_ephemeral = is_ephemeral != 0;
 
-        let body = decode_ephemeral_or_plain(conn, id, raw_body, is_ephemeral)?;
+        let body = decode_ephemeral_body(raw_body, is_ephemeral, ek_key.as_deref());
 
         messages.push(StoredMessage {
             id,
@@ -896,29 +949,19 @@ pub fn get_reactions_for_message(
     Ok(reactions)
 }
 
-fn decode_ephemeral_or_plain(
-    conn: &rusqlite::Connection,
-    message_id: i64,
+fn decode_ephemeral_body(
     raw_body: String,
     is_ephemeral: bool,
-) -> Result<String> {
+    key_opt: Option<&[u8]>,
+) -> String {
     if !is_ephemeral {
-        return Ok(raw_body);
+        return raw_body;
     }
-
-    let key_opt: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT key FROM ephemeral_message_keys WHERE message_id = ?1",
-            [message_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|_| Error::Store)?;
 
     match key_opt {
         Some(key_bytes) if key_bytes.len() == 32 => {
             let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&key_bytes);
+            key_arr.copy_from_slice(key_bytes);
             let key = crate::crypto::kdf::Key::from_bytes(key_arr);
             match hex::decode(&raw_body) {
                 Ok(mut cipher_buf) => {
@@ -931,14 +974,16 @@ fn decode_ephemeral_or_plain(
                         Err(_) => "<mensagem efêmera corrompida>".to_string(),
                     };
                     cipher_buf.zeroize();
-                    Ok(result)
+                    result
                 }
-                Err(_) => Ok("<mensagem efêmera malformada>".to_string()),
+                Err(_) => "<mensagem efêmera malformada>".to_string(),
             }
         }
-        _ => Ok(EXPIRED_BODY_PLACEHOLDER.to_string()),
+        _ => EXPIRED_BODY_PLACEHOLDER.to_string(),
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

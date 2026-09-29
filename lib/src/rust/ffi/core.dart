@@ -196,6 +196,13 @@ abstract class Core implements RustOpaqueInterface {
   /// — histórico completo para a tela de chat abrir com.
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId});
 
+  /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  });
+
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
   /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.

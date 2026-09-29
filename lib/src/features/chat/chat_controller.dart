@@ -289,18 +289,22 @@ class ChatController extends ChangeNotifier {
 
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
-      case MessageReceivedEvent():
-        _refreshMessages();
+      case MessageReceivedEvent(:final message):
+        if (message != null && message.messageId != null) {
+          _fetchIncrementalMessages();
+        } else {
+          _refreshMessages();
+        }
       case TypingIndicatorEvent():
         break;
       case SessionEstablishedEvent():
         _refreshEstablishedStateAndFlushIfNeeded();
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
-        _refreshMessages();
+        _fetchIncrementalMessages();
       case VoiceNoteReceivedEvent(:final fileId, :final wavBytes):
         _voiceNoteAudio[_hex(fileId)] = wavBytes;
-        _refreshMessages();
+        _fetchIncrementalMessages();
     }
   }
 
@@ -568,7 +572,52 @@ class ChatController extends ChangeNotifier {
   Future<void> _sendSealed(int messageId, Uint8List bytes) async {
     await _router.sendToContact(_contactId, bytes);
     await _core.markMessageSent(messageId: messageId);
-    await _refreshMessages();
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx != -1) {
+      final old = _messages[idx];
+      _messages[idx] = MessageDto(
+        id: old.id,
+        globalId: old.globalId,
+        direction: old.direction,
+        kind: old.kind,
+        body: old.body,
+        audioFileId: old.audioFileId,
+        deliveryState: DeliveryStateDto.sent,
+        createdAtUnixSecs: old.createdAtUnixSecs,
+        isEphemeral: old.isEphemeral,
+        replyToId: old.replyToId,
+        viewOnce: old.viewOnce,
+        reactions: old.reactions,
+      );
+      notifyListeners();
+    } else {
+      await _fetchIncrementalMessages();
+    }
+  }
+
+  Future<void> _fetchIncrementalMessages() async {
+    final lastId = _messages.isNotEmpty ? _messages.last.id : null;
+    if (lastId == null) {
+      await _refreshMessages();
+      return;
+    }
+    final newMessages = await _core.listMessagesPaginated(
+      peerDeviceId: _contactId.deviceId,
+      sinceId: lastId,
+    );
+    if (_disposed || newMessages.isEmpty) return;
+
+    for (final m in newMessages) {
+      _messages.add(m);
+      for (final emoji in m.reactions) {
+        final map = _reactions.putIfAbsent(m.id, () => <String, int>{});
+        map[emoji] = (map[emoji] ?? 0) + 1;
+      }
+      if (m.direction == MessageDirectionDto.incoming && !m.viewOnce) {
+        _core.markMessageRead(messageId: m.id).catchError((_) {});
+      }
+    }
+    notifyListeners();
   }
 
   Future<void> _refreshMessages() async {

@@ -268,9 +268,19 @@ impl Store {
         self.with_conn(|conn| messages::sweep_expired_ephemeral_messages(conn, unix_now))
     }
 
+    /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+    pub fn list_messages_paginated(
+        &self,
+        contact_device_id: &[u8; 16],
+        since_id: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<messages::StoredMessage>> {
+        self.with_conn(|conn| messages::list_for_contact_paginated(conn, contact_device_id, since_id, limit))
+    }
+
     /// Todas as mensagens de um contato, mais antigas primeiro.
     pub fn list_messages(&self, contact_device_id: &[u8; 16]) -> Result<Vec<messages::StoredMessage>> {
-        self.with_conn(|conn| messages::list_for_contact(conn, contact_device_id))
+        self.list_messages_paginated(contact_device_id, None, None)
     }
 
     /// Mensagens de saída ainda não entregues.

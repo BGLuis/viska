@@ -96,6 +96,14 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) =>
+      throw UnimplementedError();
+
+  @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) => throw UnimplementedError();
 
   @override

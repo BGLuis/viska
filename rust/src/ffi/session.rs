@@ -321,13 +321,23 @@ impl Core {
         Ok(sessions.get(&device_id).map(status_dto))
     }
 
+    /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+    pub fn list_messages_paginated(
+        &self,
+        peer_device_id: Vec<u8>,
+        since_id: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<MessageDto>, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id = to_device_id(peer_device_id)?;
+        let stored = self.store.list_messages_paginated(&device_id, since_id, limit)?;
+        Ok(stored.into_iter().map(message_dto).collect())
+    }
+
     /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
     /// — histórico completo para a tela de chat abrir com.
     pub fn list_messages(&self, peer_device_id: Vec<u8>) -> Result<Vec<MessageDto>, FfiError> {
-        self.ensure_not_locked()?;
-        let device_id = to_device_id(peer_device_id)?;
-        let stored = self.store.list_messages(&device_id)?;
-        Ok(stored.into_iter().map(message_dto).collect())
+        self.list_messages_paginated(peer_device_id, None, None)
     }
 
     pub(super) fn lock_sessions(&self) -> Result<MutexGuard<'_, HashMap<[u8; 16], Session>>, FfiError> {
