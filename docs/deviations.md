@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D18). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D22). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -347,3 +347,43 @@ plataformas de forma portátil e sem compilação nativa C via autotools.
 **Custo de reverter:** reintroduzir a ambiguidade de reprodução no iOS — provavelmente notas de voz
 mudas nesse aparelho, dependendo da versão. `rebuild_container`/`strip_container` continuam
 existindo (usados pelos testes do próprio demuxer), só não são mais o caminho de reprodução.
+
+---
+
+## D19 — Envio de `MSG_TYPING` diferido (apenas recepção ativa)
+**Spec:** §6.2, tipo de pacote `0x12 MSG_TYPING` para indicador efêmero de digitação.
+**Aqui:** a recepção e o descarte efêmero (sem persistência em banco) estão implementados no Rust e na UI, mas o gatilho de transmissão contínua enquanto o usuário digita no campo de texto foi diferido.
+
+O disparo contínuo de pacotes no canal de controle a cada tecla ou throttle na interface mobile introduz ruído de tráfego, consumo de bateria desnecessário e possíveis vazamentos de cadência de digitação para observadores de metadados. A infraestrutura de recepção, decodificação e exibição efêmera já existe (`TypingIndicatorEvent`); apenas o gerador de eventos no campo de texto foi omitido nesta fase.
+
+**Custo de reverter:** adicionar um listener com debounce no `TextEditingController` de `chat_screen.dart` chamando `Core::seal_outgoing_typing` ou similar.
+
+---
+
+## D20 — `CONTROL_PING` / Tráfego de cobertura omitido no cliente móvel
+**Spec:** §6.2, `0x40 CONTROL_PING` para keepalive e cover traffic.
+**Aqui:** omitido em dispositivos móveis operando em primeiro plano ou segundo plano.
+
+Manter tráfego de cobertura constante com envio periódico de envelopes fictícios impede os rádios celulares (LTE/5G) e Wi-Fi de entrarem em estados de baixo consumo de energia (RRC Idle / Connected DRX), resultando em drenagem acelerada da bateria e consumo severo da franquia de dados móveis do usuário. Conexões P2P WebRTC DataChannel já contam com keepalives SCTP/ICE integrados para manutenção de NAT bindings.
+
+**Custo de reverter:** implementar timer periódico disparando envelopes cifrados com `PacketType::ControlPing` quando uma sessão estiver ociosa.
+
+---
+
+## D21 — Backends de sinalização Nostr e troca manual diferidos
+**Spec:** §8.3, ordem de tentativa: "MQTT público → relay Nostr → troca manual".
+**Aqui:** apenas o backend MQTT público sobre TLS com suporte opcional a SOCKS5/Tor está implementado; Nostr e troca manual foram postergados.
+
+A infraestrutura abstrata `SignalingBackend` foi desenhada desde o início para permitir múltiplos provedores intercambiáveis sem alterar as camadas superiores. O backend MQTT público resolve a quase totalidade dos cenários de rendezvous P2P com baixa latência e alta disponibilidade. Relays Nostr (WebSocket com assinaturas Schnorr) e troca manual (copiar/colar SDP) foram postergados para fases posteriores de maturação do produto.
+
+**Custo de reverter:** implementar classes concretas `NostrSignalingBackend` e `ManualSignalingBackend` estendendo a interface `SignalingBackend`.
+
+---
+
+## D22 — Jitter de transmissão restrito a WebRTC
+**Spec:** §6.5, atraso amostrado de normal truncada [5 ms, 25 ms] antes de cada envio.
+**Aqui:** implementado e ativo no canal WebRTC; omitido em transportes de rede local (LAN TCP, Wi-Fi Aware, MultipeerConnectivity).
+
+O jitter artificial tem o propósito de dificultar correlação de tráfego contra observadores de rede remotos na Internet. Em redes estritamente locais (mesmo Wi-Fi ou conexão ad-hoc direta P2P entre aparelhos a poucos metros de distância), o atraso induzido não agrega benefício defensivo contra adversários remotos e penaliza a velocidade de transferência de arquivos de alta capacidade em conexões locais rápidas.
+
+**Custo de reverter:** aplicar a função `sample_jitter_delay_ms` antes de chamadas de envio em sockets locais.

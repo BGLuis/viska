@@ -110,9 +110,17 @@ impl Core {
 
         let mut sessions = self.lock_sessions()?;
         let bytes = match sessions.get_mut(&device_id) {
-            Some(session) if session.is_established() => session
-                .encrypt_outgoing(PacketType::MsgText, body.into_bytes(), Transport::DataChannel)
-                .ok(),
+            Some(session) if session.is_established() => {
+                let ciphertext = session
+                    .encrypt_outgoing(PacketType::MsgText, body.into_bytes(), Transport::DataChannel)
+                    .ok();
+                if let Some(ref ct) = ciphertext {
+                    if let Ok(cnt) = viska_proto::wire::envelope::counter(ct) {
+                        let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
+                    }
+                }
+                ciphertext
+            }
             _ => None,
         };
 
@@ -182,12 +190,21 @@ impl Core {
                     &body,
                     received_at,
                 )?;
+                if let Ok(cnt) = viska_proto::wire::envelope::counter(&envelope) {
+                    let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
+                }
                 Ok(Some(IncomingMessageDto {
                     message_id: Some(message_id),
                     body,
                     is_typing: false,
                     received_at_unix_secs: received_at,
                 }))
+            }
+            PacketType::MsgReceipt => {
+                if let Some(target_id) = viska_proto::store::messages::parse_receipt_target_id(&inner.body) {
+                    let _ = self.store.mark_delivered_by_target(&target_id, &device_id);
+                }
+                Ok(None)
             }
             PacketType::MsgTyping => Ok(Some(IncomingMessageDto {
                 message_id: None,
@@ -211,11 +228,44 @@ impl Core {
         }
     }
 
+    /// Cifra e empacota um recibo de entrega (MSG_RECEIPT) confirmando o recebimento de uma mensagem.
+    pub fn seal_outgoing_receipt(
+        &self,
+        peer_device_id: Vec<u8>,
+        target_id: String,
+    ) -> Result<SealedMessageDto, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        let mut sessions = self.lock_sessions()?;
+        let session = sessions
+            .get_mut(&device_id)
+            .ok_or(FfiError::NoActiveSession)?;
+
+        let payload = format!(r#"{{"v":1,"type":"receipt","targetId":"{}"}}"#, target_id);
+        let bytes = session
+            .encrypt_outgoing(
+                PacketType::MsgReceipt,
+                payload.into_bytes(),
+                Transport::DataChannel,
+            )
+            .ok();
+
+        Ok(SealedMessageDto {
+            message_id: 0,
+            bytes,
+        })
+    }
+
     /// Marca uma mensagem de saída como entregue ao transporte — chamar só
     /// depois que o envio de rede (`RTCDataChannel.send` ou equivalente) não
     /// lançar erro.
     pub fn mark_message_sent(&self, message_id: i64) -> Result<(), FfiError> {
         self.store.mark_message_sent(message_id)?;
+        Ok(())
+    }
+
+    /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+    pub fn mark_message_delivered(&self, message_id: i64) -> Result<(), FfiError> {
+        self.store.mark_message_delivered(message_id)?;
         Ok(())
     }
 
@@ -779,6 +829,57 @@ mod tests {
         assert_eq!(target_in_b.id, msg_b_id);
         assert_eq!(target_in_a.reactions, vec!["❤️".to_string()]);
         assert_eq!(target_in_b.reactions, vec!["❤️".to_string()]);
+    }
+
+    #[test]
+    fn message_sent_receipt_decrypted_and_sender_list_messages_shows_delivered() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+
+        // 1. Mensagem enviada pelo emissor (A) para B
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "Mensagem com recibo de entrega".to_string())
+            .unwrap();
+        p.core_a.mark_message_sent(sealed.message_id).unwrap();
+
+        // Antes do recibo, estado é Sent
+        let msgs_before = p.core_a.list_messages(p.device_id_b.clone()).unwrap();
+        assert_eq!(msgs_before.len(), 1);
+        assert_eq!(msgs_before[0].delivery_state, DeliveryStateDto::Sent);
+
+        // 2. B recebe e decifra a mensagem
+        let incoming = p
+            .core_b
+            .decrypt_incoming(p.device_id_a.clone(), sealed.bytes.unwrap())
+            .unwrap()
+            .expect("mensagem válida deve ser decifrada por B");
+        assert_eq!(incoming.body, "Mensagem com recibo de entrega");
+
+        // 3. B gera recibo de entrega MSG_RECEIPT apontando para o identificador da mensagem
+        let target_id = sealed.message_id.to_string();
+        let receipt = p
+            .core_b
+            .seal_outgoing_receipt(p.device_id_a.clone(), target_id)
+            .unwrap();
+        assert!(receipt.bytes.is_some());
+
+        // 4. A decifra o recibo recebido de B
+        let receipt_incoming = p
+            .core_a
+            .decrypt_incoming(p.device_id_b.clone(), receipt.bytes.unwrap())
+            .unwrap();
+        assert!(receipt_incoming.is_none(), "MSG_RECEIPT não produz balão de mensagem");
+
+        // 5. Critério de aceite: list_messages do emissor mostra Delivered
+        let msgs_after = p.core_a.list_messages(p.device_id_b.clone()).unwrap();
+        assert_eq!(msgs_after.len(), 1);
+        assert_eq!(msgs_after[0].delivery_state, DeliveryStateDto::Delivered);
     }
 }
 

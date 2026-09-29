@@ -43,14 +43,20 @@ class _LoopbackP2PTransport implements P2PTransport {
   @override
   Future<void> send(Uint8List envelope) async {
     scheduleMicrotask(() {
-      peer?._incoming.add(envelope);
+      final p = peer;
+      if (p != null && !p._incoming.isClosed) {
+        p._incoming.add(envelope);
+      }
     });
   }
 
   @override
   Future<void> sendFile(Uint8List bytes) async {
     scheduleMicrotask(() {
-      peer?._incomingFile.add(bytes);
+      final p = peer;
+      if (p != null && !p._incomingFile.isClosed) {
+        p._incomingFile.add(bytes);
+      }
     });
   }
 

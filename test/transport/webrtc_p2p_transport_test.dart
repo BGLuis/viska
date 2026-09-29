@@ -266,6 +266,17 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<void> markMessageDelivered({required PlatformInt64 messageId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
+  }) =>
+      throw UnimplementedError();
+
+  @override
   Future<void> configureDuressPin({
     required String duressPin,
     required int actionMode,

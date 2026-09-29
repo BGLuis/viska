@@ -163,6 +163,23 @@ class _FakeReceptionCore implements Core {
     return Uint8List.fromList([0x57, 0x41, 0x56]); // 'WAV'
   }
 
+  final sealOutgoingReceiptCalls = <String>[];
+
+  @override
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
+  }) async {
+    sealOutgoingReceiptCalls.add(targetId);
+    return SealedMessageDto(
+      messageId: 0,
+      bytes: Uint8List.fromList([0x11, 1, 2, 3]),
+    );
+  }
+
+  @override
+  Future<void> markMessageDelivered({required int messageId}) async {}
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -232,6 +249,8 @@ void main() {
       expect(events.first, isA<MessageReceivedEvent>());
       final received = events.first as MessageReceivedEvent;
       expect(received.message?.body, 'Decifrado com sucesso');
+      expect(core.sealOutgoingReceiptCalls, ['42']);
+      expect(transport.sendCalls, [Uint8List.fromList([0x11, 1, 2, 3])]);
 
       await sub.cancel();
     });

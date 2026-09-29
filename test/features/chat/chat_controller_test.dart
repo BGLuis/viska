@@ -174,6 +174,24 @@ class _FakeCore implements Core {
     markSentCalls.add(messageId);
   }
 
+  final List<PlatformInt64> markDeliveredCalls = [];
+
+  @override
+  Future<void> markMessageDelivered({required PlatformInt64 messageId}) async {
+    markDeliveredCalls.add(messageId);
+  }
+
+  @override
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
+  }) async {
+    return SealedMessageDto(
+      messageId: 0,
+      bytes: Uint8List.fromList([0x11, 1, 2, 3]),
+    );
+  }
+
   @override
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async =>
       messagesToReturn;

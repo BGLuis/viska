@@ -201,6 +201,9 @@ abstract class Core implements RustOpaqueInterface {
   /// limpa a chave mestra nativa injetada.
   Future<void> lock();
 
+  /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+  Future<void> markMessageDelivered({required PlatformInt64 messageId});
+
   /// Marca uma mensagem como lida, disparando o temporizador de expiração.
   Future<void> markMessageRead({required PlatformInt64 messageId});
 
@@ -285,6 +288,12 @@ abstract class Core implements RustOpaqueInterface {
   Future<void> sanitizeAndStageAudio({
     required String sourcePath,
     required String destinationPath,
+  });
+
+  /// Cifra e empacota um recibo de entrega (MSG_RECEIPT) confirmando o recebimento de uma mensagem.
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
   });
 
   /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
