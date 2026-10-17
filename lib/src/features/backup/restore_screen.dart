@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import '../../common_widgets/feedback/viska_banner.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
@@ -213,6 +214,12 @@ class _RestoreScreenState extends State<RestoreScreen> {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          const ViskaBanner(
+            tone: ViskaBannerTone.warning,
+            title: 'SUBSTITUIÇÃO DE IDENTIDADE',
+            message: 'A restauração deste backup substituirá a identidade criptográfica atual deste dispositivo. Sessões anteriores não incluídas no backup serão irrecuperáveis.',
           ),
           const SizedBox(height: 20),
 

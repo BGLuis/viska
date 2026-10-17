@@ -8,6 +8,9 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
+import '../../common_widgets/chat/file_offer_card.dart';
+import '../../common_widgets/feedback/viska_banner.dart';
+import '../../common_widgets/identity/transport_pill.dart';
 import '../../transport/message_reception_service.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
@@ -416,7 +419,28 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _handlePickAndSendFile() async {
     final result = await FilePicker.platform.pickFiles(allowMultiple: false);
     if (result == null || result.files.single.path == null) return;
-    await _controller?.sendFile(result.files.single.path!);
+    final file = result.files.single;
+
+    // Issue #23: Arquivos > 100 MB exigem confirmação explícita via FileOfferCard
+    if (file.size > 100 * 1024 * 1024) {
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
+          child: FileOfferCard(
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            onReject: () => Navigator.pop(ctx, false),
+            onAccept: () => Navigator.pop(ctx, true),
+          ),
+        ),
+      );
+      if (proceed != true) return;
+    }
+
+    await _controller?.sendFile(file.path!);
   }
 
   Future<void> _handleSend() async {
@@ -655,42 +679,26 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           if (controller.isKeyChanged)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
                 key: const Key('key_change_banner'),
-                onTap: _showSafetyNumberDialog,
-                child: Container(
-                  width: double.infinity,
-                  color: DarkTechTheme.alert.withValues(alpha: 0.25),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  child: const Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '⚠️ Atenção: As chaves criptográficas deste contato mudaram. Toque para re-verificar o número de segurança antes de enviar mensagens.',
-                          style: TextStyle(
-                            color: DarkTechTheme.alert,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      SizedBox(width: 8),
-                      Icon(Icons.chevron_right, color: DarkTechTheme.alert, size: 20),
-                    ],
-                  ),
-                ),
+                tone: ViskaBannerTone.danger,
+                title: 'CHAVES MODIFICADAS (POSSÍVEL INTERCEPTAÇÃO)',
+                message: 'As chaves criptográficas deste contato mudaram. Toque para re-verificar o número de segurança antes de enviar mensagens.',
+                actionLabel: 'VERIFICAR',
+                onActionPressed: _showSafetyNumberDialog,
               ),
             ),
           if (controller.connectionError != null)
-            Container(
-              width: double.infinity,
-              color: DarkTechTheme.alert.withValues(alpha: 0.2),
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                controller.connectionError!,
-                style: const TextStyle(color: DarkTechTheme.alert),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
+                tone: ViskaBannerTone.warning,
+                title: 'SESSÃO INTERROMPIDA',
+                message: controller.connectionError!,
+                actionLabel: 'RECONECTAR',
+                onActionPressed: () => controller.initialize(),
               ),
             ),
           if (controller.voiceError != null)
@@ -938,24 +946,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildTransportPill(ChatController controller) {
     final transport = controller.activeTransport;
+    final TransportType pillType;
+    if (transport.label.contains('Wi-Fi') || transport.label.contains('LAN')) {
+      pillType = TransportType.lan;
+    } else if (transport.label.contains('Proximidade') || transport.label.contains('BLE')) {
+      pillType = TransportType.proximity;
+    } else if (transport.label.contains('WebRTC') || transport.label.contains('Internet')) {
+      pillType = TransportType.webrtc;
+    } else if (transport.label.contains('Conectando')) {
+      pillType = TransportType.connecting;
+    } else {
+      pillType = TransportType.offline;
+    }
+
     return Container(
       key: const Key('transport_indicator_pill'),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: DarkTechTheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: DarkTechTheme.divider,
-          width: 0.8,
-        ),
-      ),
-      child: Text(
-        transport.label,
-        style: const TextStyle(
-          fontSize: 10.5,
-          color: DarkTechTheme.textSecondary,
-          fontWeight: FontWeight.w500,
-        ),
+      child: TransportPill(
+        type: pillType,
+        customLabel: transport.label,
       ),
     );
   }

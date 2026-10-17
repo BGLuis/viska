@@ -82,6 +82,14 @@ class LockController with WidgetsBindingObserver {
 
   String? _normalPinHash;
   String? _duressPinHash;
+  int? _normalPinLength;
+  int? _duressPinLength;
+
+  /// Quantidade de dígitos do PIN Normal configurado (ou nulo se não definido).
+  int? get normalPinLength => _normalPinLength;
+
+  /// Quantidade de dígitos do PIN de Coação configurado (ou nulo se não definido).
+  int? get duressPinLength => _duressPinLength;
 
   Timer? _inactivityTimer;
   Timer? _ephemeralSweepTimer;
@@ -138,6 +146,8 @@ class LockController with WidgetsBindingObserver {
         final json = jsonDecode(content) as Map<String, dynamic>;
         _normalPinHash = json['normal_pin_hash'] as String?;
         _duressPinHash = json['duress_pin_hash'] as String?;
+        _normalPinLength = (json['normal_pin_length'] as num?)?.toInt();
+        _duressPinLength = (json['duress_pin_length'] as num?)?.toInt();
         duressActionMode = (json['duress_action_mode'] as num?)?.toInt() ?? 0;
       }
     } catch (_) {}
@@ -149,6 +159,8 @@ class LockController with WidgetsBindingObserver {
       final json = {
         if (_normalPinHash != null) 'normal_pin_hash': _normalPinHash,
         if (_duressPinHash != null) 'duress_pin_hash': _duressPinHash,
+        if (_normalPinLength != null) 'normal_pin_length': _normalPinLength,
+        if (_duressPinLength != null) 'duress_pin_length': _duressPinLength,
         'duress_action_mode': duressActionMode,
       };
       file.writeAsStringSync(jsonEncode(json));
@@ -159,8 +171,11 @@ class LockController with WidgetsBindingObserver {
   Future<void> setNormalPin(String? pin) async {
     if (pin == null || pin.trim().isEmpty) {
       _normalPinHash = null;
+      _normalPinLength = null;
     } else {
-      _normalPinHash = _hashPin(pin.trim());
+      final trimmed = pin.trim();
+      _normalPinHash = _hashPin(trimmed);
+      _normalPinLength = trimmed.length;
     }
     await _saveSecurityConfig();
   }
@@ -169,8 +184,11 @@ class LockController with WidgetsBindingObserver {
   Future<void> setDuressPin(String? pin, {int actionMode = 0}) async {
     if (pin == null || pin.trim().isEmpty) {
       _duressPinHash = null;
+      _duressPinLength = null;
     } else {
-      _duressPinHash = _hashPin(pin.trim());
+      final trimmed = pin.trim();
+      _duressPinHash = _hashPin(trimmed);
+      _duressPinLength = trimmed.length;
     }
     duressActionMode = actionMode;
     await _saveSecurityConfig();

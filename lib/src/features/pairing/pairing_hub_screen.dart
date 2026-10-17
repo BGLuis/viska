@@ -11,6 +11,11 @@ import 'package:viska/src/features/pairing/proximity/proximity_pairing_view.dart
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import '../../common_widgets/security/qr_frame.dart';
+import '../../common_widgets/security/scanner_viewfinder.dart';
+import '../../theme/tokens/viska_colors.dart';
+import '../../theme/tokens/viska_spacing.dart';
+import '../../theme/tokens/viska_typography.dart';
 
 /// Hub centralizado de adição de contatos com 3 abas:
 /// 1. Proximidade: Descoberta de aparelhos locais na LAN e pareamento presencial com validação SAS.
@@ -286,33 +291,39 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
       );
     }
 
-    return MobileScanner(
-      controller: _scannerController,
-      onDetect: _handleDetection,
-      errorBuilder: (context, error) {
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.videocam_off, size: 48, color: Colors.amber),
-                const SizedBox(height: 12),
-                Text(
-                  'Câmera não disponível (${error.errorCode.name}).',
-                  textAlign: TextAlign.center,
+    return Stack(
+      children: [
+        MobileScanner(
+          controller: _scannerController,
+          onDetect: _handleDetection,
+          errorBuilder: (context, error) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.videocam_off, size: 48, color: ViskaColors.ephemeralDefault),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Câmera não disponível (${error.errorCode.name}).',
+                      textAlign: TextAlign.center,
+                      style: ViskaTypography.bodyMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Você pode parear pela aba de Proximidade ou Código Manual.',
+                      textAlign: TextAlign.center,
+                      style: ViskaTypography.bodySmall.copyWith(color: ViskaColors.textMuted),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Você pode parear pela aba de Proximidade ou Código Manual.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+              ),
+            );
+          },
+        ),
+        const ScannerViewfinder(),
+      ],
     );
   }
 
@@ -326,36 +337,27 @@ class _QrCodeTabViewState extends State<_QrCodeTabView> {
         }
 
         return SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(ViskaSpacing.space2xl),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
+              QrFrame(
+                size: 260,
                 child: QrImageView.withQr(
                   qr: QrCode.fromUint8List(
                     data: payload,
                     errorCorrectLevel: QrErrorCorrectLevel.M,
                   ),
-                  size: 240,
+                  size: 220,
                 ),
               ),
-              const SizedBox(height: 20),
-              const Text(
+              const SizedBox(height: ViskaSpacing.spaceXl),
+              Text(
                 'Peça para seu amigo escanear este código com a câmera do app dele.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: Colors.grey),
+                style: ViskaTypography.bodyMedium.copyWith(
+                  color: ViskaColors.textSecondary,
+                ),
               ),
             ],
           ),
