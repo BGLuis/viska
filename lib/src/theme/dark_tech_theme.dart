@@ -1,10 +1,19 @@
 import 'package:flutter/material.dart';
+import 'tokens/viska_colors.dart';
+import 'tokens/viska_radii.dart';
+import 'tokens/viska_spacing.dart';
+import 'tokens/viska_typography.dart';
+
+export 'tokens/viska_colors.dart';
+export 'tokens/viska_radii.dart';
+export 'tokens/viska_spacing.dart';
+export 'tokens/viska_typography.dart';
 
 /// Tema Dark-Tech Editorial de alta precisão para o Viska.
 ///
 /// Paleta de cores com foco em segurança operacional, contraste e sobriedade:
-/// - Fundo (Scaffold): `#0A0D10` (Obsidiana / Carbono Profundo)
-/// - Superfícies: `#11151B` e `#181E27` (Ardósia Técnica)
+/// - Fundo (Scaffold): `#0A0D10` (ViskaColors.bgCanvas)
+/// - Superfícies: `#11151B` e `#181E27` (ViskaColors.bgSurface e bgSurfaceRaised)
 /// - Primária: `#00E599` (Verde Menta Elétrico - Confiança / Verificado)
 /// - Secundária: `#FFB800` (Âmbar Criptográfico - Efêmero / Timers)
 /// - Alerta / Erro: `#FF3B30` (Carmim Aeroespacial)
@@ -12,155 +21,181 @@ import 'package:flutter/material.dart';
 class DarkTechTheme {
   DarkTechTheme._();
 
-  // Cores principais normativas
-  static const Color scaffoldBackground = Color(0xFF0A0D10);
-  static const Color surface = Color(0xFF11151B);
-  static const Color surfaceContainer = Color(0xFF181E27);
-  static const Color primary = Color(0xFF00E599);
-  static const Color onPrimary = Color(0xFF0A0D10);
-  static const Color secondary = Color(0xFFFFB800);
-  static const Color onSecondary = Color(0xFF0A0D10);
-  static const Color alert = Color(0xFFFF3B30);
-  static const Color divider = Color(0xFF1E2530);
+  // Cores principais normativas (espelhadas de ViskaColors para compatibilidade)
+  static const Color scaffoldBackground = ViskaColors.bgCanvas;
+  static const Color surface = ViskaColors.bgSurface;
+  static const Color surfaceContainer = ViskaColors.bgSurfaceRaised;
+  static const Color primary = ViskaColors.trustDefault;
+  static const Color onPrimary = ViskaColors.trustOn;
+  static const Color secondary = ViskaColors.ephemeralDefault;
+  static const Color onSecondary = ViskaColors.ephemeralOn;
+  static const Color alert = ViskaColors.dangerDefault;
+  static const Color divider = ViskaColors.borderDefault;
 
   // Tipografia e tons neutros
-  static const Color textPrimary = Color(0xFFEDF2F7);
-  static const Color textSecondary = Color(0xFF8A99AD);
-  static const Color textMuted = Color(0xFF55657E);
+  static const Color textPrimary = ViskaColors.textPrimary;
+  static const Color textSecondary = ViskaColors.textSecondary;
+  static const Color textMuted = ViskaColors.textMuted;
 
   static ThemeData get theme {
-    final colorScheme = const ColorScheme.dark().copyWith(
-      primary: primary,
-      onPrimary: onPrimary,
-      primaryContainer: Color(0xFF0A3D28),
-      onPrimaryContainer: Color(0xFF6BFFC9),
-      secondary: secondary,
-      onSecondary: onSecondary,
-      secondaryContainer: Color(0xFF3D2C00),
-      onSecondaryContainer: Color(0xFFFFE082),
-      error: alert,
-      onError: Colors.white,
-      errorContainer: Color(0xFF4A100E),
-      onErrorContainer: Color(0xFFFFB4AB),
-      surface: surface,
-      onSurface: textPrimary,
-      onSurfaceVariant: textSecondary,
-      surfaceContainerHighest: surfaceContainer,
-      outline: divider,
-      outlineVariant: divider,
+    const colorScheme = ColorScheme.dark(
+      primary: ViskaColors.trustDefault,
+      onPrimary: ViskaColors.trustOn,
+      primaryContainer: ViskaColors.trustContainer,
+      onPrimaryContainer: ViskaColors.trustOnContainer,
+      secondary: ViskaColors.ephemeralDefault,
+      onSecondary: ViskaColors.ephemeralOn,
+      secondaryContainer: ViskaColors.ephemeralContainer,
+      onSecondaryContainer: ViskaColors.ephemeralOnContainer,
+      error: ViskaColors.dangerDefault,
+      onError: ViskaColors.dangerOn,
+      errorContainer: ViskaColors.dangerContainer,
+      onErrorContainer: ViskaColors.dangerOnContainer,
+      surface: ViskaColors.bgSurface,
+      onSurface: ViskaColors.textPrimary,
+      onSurfaceVariant: ViskaColors.textSecondary,
+      surfaceContainerHighest: ViskaColors.bgSurfaceRaised,
+      outline: ViskaColors.borderDefault,
+      outlineVariant: ViskaColors.borderStrong,
+    );
+
+    final baseTextTheme = Typography.material2021().white.apply(
+      fontFamily: ViskaTypography.fontSans,
+      bodyColor: ViskaColors.textPrimary,
+      displayColor: ViskaColors.textPrimary,
+    );
+
+    final textTheme = baseTextTheme.copyWith(
+      displayLarge: ViskaTypography.display,
+      headlineMedium: ViskaTypography.headline,
+      titleLarge: ViskaTypography.titleLarge,
+      titleMedium: ViskaTypography.titleMedium,
+      bodyLarge: ViskaTypography.bodyLarge,
+      bodyMedium: ViskaTypography.bodyMedium,
+      bodySmall: ViskaTypography.bodySmall,
+      labelLarge: ViskaTypography.labelLarge,
+      labelMedium: ViskaTypography.labelMedium,
+      labelSmall: ViskaTypography.labelOverline,
     );
 
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
-      scaffoldBackgroundColor: scaffoldBackground,
+      fontFamily: ViskaTypography.fontSans,
+      scaffoldBackgroundColor: ViskaColors.bgCanvas,
       colorScheme: colorScheme,
-      dividerColor: divider,
+      textTheme: textTheme,
+      dividerColor: ViskaColors.borderDefault,
       dividerTheme: const DividerThemeData(
-        color: divider,
+        color: ViskaColors.borderDefault,
         thickness: 1.0,
         space: 1.0,
       ),
       appBarTheme: const AppBarTheme(
-        backgroundColor: surface,
-        foregroundColor: textPrimary,
+        backgroundColor: ViskaColors.bgSurface,
+        foregroundColor: ViskaColors.textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
         shape: Border(
-          bottom: BorderSide(color: divider, width: 1.0),
+          bottom: BorderSide(color: ViskaColors.borderDefault, width: 1.0),
         ),
-        iconTheme: IconThemeData(color: textPrimary),
+        iconTheme: IconThemeData(color: ViskaColors.textPrimary),
+        titleTextStyle: ViskaTypography.titleMedium,
       ),
       cardTheme: CardThemeData(
-        color: surface,
+        color: ViskaColors.bgSurface,
         elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: divider, width: 1.0),
+          borderRadius: ViskaRadii.borderMd,
+          side: const BorderSide(color: ViskaColors.borderDefault, width: 1.0),
         ),
         margin: EdgeInsets.zero,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: surfaceContainer,
-        hintStyle: const TextStyle(color: textMuted),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        fillColor: ViskaColors.bgSurfaceRaised,
+        hintStyle: const TextStyle(
+          color: ViskaColors.textMuted,
+          fontFamily: ViskaTypography.fontSans,
+        ),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: ViskaSpacing.spaceLg,
+          vertical: ViskaSpacing.spaceMd,
+        ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: divider),
+          borderRadius: ViskaRadii.borderMd,
+          borderSide: const BorderSide(color: ViskaColors.borderDefault),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: divider),
+          borderRadius: ViskaRadii.borderMd,
+          borderSide: const BorderSide(color: ViskaColors.borderDefault),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: primary, width: 1.5),
+          borderRadius: ViskaRadii.borderMd,
+          borderSide: const BorderSide(color: ViskaColors.trustDefault, width: 1.5),
         ),
         errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: alert),
+          borderRadius: ViskaRadii.borderMd,
+          borderSide: const BorderSide(color: ViskaColors.dangerDefault),
         ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: surface,
+        backgroundColor: ViskaColors.bgSurface,
         elevation: 4,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: divider, width: 1.0),
+          borderRadius: ViskaRadii.borderLg,
+          side: const BorderSide(color: ViskaColors.borderDefault, width: 1.0),
         ),
-        titleTextStyle: const TextStyle(
-          color: textPrimary,
-          fontSize: 18,
-          fontWeight: FontWeight.w600,
-        ),
+        titleTextStyle: ViskaTypography.titleLarge,
       ),
       bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: surface,
-        modalBackgroundColor: surface,
+        backgroundColor: ViskaColors.bgSurface,
+        modalBackgroundColor: ViskaColors.bgSurface,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          side: BorderSide(color: divider, width: 1.0),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(ViskaRadii.xl)),
+          side: BorderSide(color: ViskaColors.borderDefault, width: 1.0),
         ),
       ),
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
-        backgroundColor: primary,
-        foregroundColor: onPrimary,
+        backgroundColor: ViskaColors.trustDefault,
+        foregroundColor: ViskaColors.trustOn,
         elevation: 2,
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: primary,
-          foregroundColor: onPrimary,
+          backgroundColor: ViskaColors.trustDefault,
+          foregroundColor: ViskaColors.trustOn,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: ViskaRadii.borderMd,
           ),
-          textStyle: const TextStyle(fontWeight: FontWeight.w600),
+          textStyle: ViskaTypography.labelLarge.copyWith(fontWeight: FontWeight.w600),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: primary,
-          side: const BorderSide(color: primary),
+          foregroundColor: ViskaColors.trustDefault,
+          side: const BorderSide(color: ViskaColors.trustDefault),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: ViskaRadii.borderMd,
           ),
+          textStyle: ViskaTypography.labelLarge.copyWith(fontWeight: FontWeight.w600),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: primary,
+          foregroundColor: ViskaColors.trustDefault,
+          textStyle: ViskaTypography.labelLarge,
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(
-          foregroundColor: textPrimary,
+          foregroundColor: ViskaColors.textPrimary,
         ),
       ),
       listTileTheme: const ListTileThemeData(
-        iconColor: textSecondary,
-        textColor: textPrimary,
+        iconColor: ViskaColors.textSecondary,
+        textColor: ViskaColors.textPrimary,
       ),
     );
   }
