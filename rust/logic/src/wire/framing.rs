@@ -11,7 +11,9 @@
 //!   — bastaria a caixa do meio procurar por aqueles bytes fixos para marcar
 //!   todo o tráfego do app.
 
-use crate::crypto::aead::TAG_LEN;
+use crate::crypto::aead::{TAG_LEN, XNONCE_LEN};
+use crate::file::manifest::{FILE_ID_LEN, LAN_SYMBOL_SIZE};
+use crate::file::transfer::SYMBOL_DATA_AT;
 use crate::wire::envelope::COUNTER_LEN;
 use crate::wire::transport::Transport;
 use crate::{Error, Result};
@@ -26,7 +28,24 @@ pub const LENGTH_PREFIX_LEN: usize = 4;
 /// ou de um bug sério — e é rejeitado *antes* de alocar um único byte para o
 /// corpo do quadro, para que um comprimento forjado de 4 GB não vire uma
 /// tentativa de alocação de 4 GB.
-pub const MAX_FRAME_LEN: usize = COUNTER_LEN + Transport::LocalSocket.max_bucket() + TAG_LEN;
+///
+/// O canal `file` também passa por este enquadramento, e o pacote de símbolo
+/// selado (D17) é maior que um envelope: `file_id` em claro, cabeçalho do
+/// símbolo, nonce XChaCha e tag. Sem contá-lo, um símbolo de 64 KiB da
+/// transferência na LAN seria rejeitado pelo receptor como "quadro absurdo".
+pub const MAX_FRAME_LEN: usize = {
+    let envelope = COUNTER_LEN + Transport::LocalSocket.max_bucket() + TAG_LEN;
+    let file_packet = FILE_ID_LEN
+        + SYMBOL_DATA_AT
+        + LAN_SYMBOL_SIZE as usize
+        + XNONCE_LEN
+        + TAG_LEN;
+    if file_packet > envelope {
+        file_packet
+    } else {
+        envelope
+    }
+};
 
 /// Prefixa `envelope` com seu comprimento em big-endian, para envio pelo socket TCP.
 pub fn frame(envelope: &[u8]) -> Result<Vec<u8>> {
