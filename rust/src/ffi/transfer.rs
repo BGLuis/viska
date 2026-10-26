@@ -71,10 +71,10 @@ use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SendAudioStartedDto, SendFileStartedDto, TransferProgressDto,
 };
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
-use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, MAX_BLOCK_SYMBOLS};
+use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
 use viska_proto::file::merkle;
 use viska_proto::file::transfer::{
-    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferProgress,
+    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferMode, TransferProgress,
     TRANSFER_SECRET_LEN,
 };
 use viska_proto::store::transfers::Direction;
@@ -120,7 +120,7 @@ impl Core {
     /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
     /// precisa da raiz completa antes do primeiro símbolo sair.
     ///
-    /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+    /// `use_lan` escolhe `symbol_size`: 65535 (LAN, `LAN_SYMBOL_SIZE`) ou 16384
     /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
     /// `block_symbols` é sempre o teto de D6 (1024).
     pub fn start_send_file(
@@ -204,7 +204,7 @@ impl Core {
             .map_err(|_| FfiError::Internal)?
             .len();
         let symbol_size: u16 = if use_lan {
-            Transport::LocalSocket.max_bucket() as u16
+            LAN_SYMBOL_SIZE
         } else {
             Transport::DataChannel.max_bucket() as u16
         };
@@ -254,7 +254,8 @@ impl Core {
         };
 
         let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
-        let send = SendTransfer::new(manifest.clone(), kind, &transfer_secret, file);
+        let mode = if use_lan { TransferMode::Offset } else { TransferMode::Fountain };
+        let send = SendTransfer::new(manifest.clone(), kind, &transfer_secret, file).with_mode(mode);
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
@@ -599,7 +600,7 @@ impl Core {
 
         let feedback = FileFeedback::decode(&body, manifest.source_blocks)?;
         if let Some(TransferHandle::Send(send)) = self.lock_transfers()?.get_mut(&file_id) {
-            send.ingest_feedback(&feedback);
+            send.ingest_feedback(&feedback)?;
         }
         Ok(())
     }
@@ -711,6 +712,82 @@ mod tests {
             core_a.start_send_file(vec![0u8; 16], path, false),
             Err(FfiError::NoActiveSession)
         );
+    }
+
+    /// Na LAN o emissor usa o maior símbolo do RaptorQ, só símbolos-fonte (modo
+    /// offset), e o arquivo chega íntegro, passando pelo enquadramento TCP.
+    #[test]
+    fn lan_transfer_uses_lan_symbol_size_and_offset_mode() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        let original: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "lan.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, true)
+            .unwrap();
+
+        let stored = pair
+            .core_a
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .unwrap();
+        let manifest = Manifest::decode(&stored.manifest_cbor).unwrap();
+        assert_eq!(manifest.symbol_size, LAN_SYMBOL_SIZE);
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let mut symbols_sent = 0u32;
+        for _ in 0..10_000 {
+            let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            else {
+                break;
+            };
+            let mut framed = viska_proto::wire::framing::frame(&wire_chunk).unwrap();
+            let wire_chunk = viska_proto::wire::framing::extract_frame(&mut framed)
+                .unwrap()
+                .expect("pacote de símbolo da LAN precisa passar pelo enquadramento TCP");
+            symbols_sent += 1;
+            pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+            if pair
+                .core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap()
+                .map(|p| p.is_complete)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            let sealed_feedback = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+                .unwrap();
+            pair.core_a
+                .decrypt_incoming(pair.device_id_b.clone(), sealed_feedback)
+                .unwrap();
+        }
+
+        let expected_symbols = original.len().div_ceil(LAN_SYMBOL_SIZE as usize) as u32;
+        assert_eq!(symbols_sent, expected_symbols, "sem símbolos de reparo na LAN");
+
+        let dst_path = dir_dst.path().join("lan-recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
     }
 
     /// Ida e volta completa pela fronteira FFI: A manda um arquivo pequeno

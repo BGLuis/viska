@@ -389,7 +389,7 @@ class ChatController extends ChangeNotifier {
       final started = await _core.startSendFile(
         peerDeviceId: _contactId.deviceId,
         filePath: filePath,
-        useLan: false,
+        useLan: activeTransport == ActiveTransportType.lanDirect,
       );
       _receivedFilePaths[_hex(started.fileId)] = filePath;
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
@@ -473,7 +473,7 @@ class ChatController extends ChangeNotifier {
       final started = await _core.startSendAudio(
         peerDeviceId: _contactId.deviceId,
         audioPath: sanitizedPath,
-        useLan: false,
+        useLan: activeTransport == ActiveTransportType.lanDirect,
       );
 
       // Cacheia o WAV (D18) antes de apagar o arquivo sanitizado — permite

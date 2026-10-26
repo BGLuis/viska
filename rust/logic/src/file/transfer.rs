@@ -129,7 +129,7 @@ use crate::{Error, Result};
 
 const SYMBOL_BLOCK_INDEX_AT: usize = 0;
 const SYMBOL_SYMBOL_ID_AT: usize = SYMBOL_BLOCK_INDEX_AT + 4;
-const SYMBOL_DATA_AT: usize = SYMBOL_SYMBOL_ID_AT + 4;
+pub(crate) const SYMBOL_DATA_AT: usize = SYMBOL_SYMBOL_ID_AT + 4;
 
 /// Lê o `file_id` em claro na frente de um pacote do canal `file` (D17) —
 /// sem decifrar nada, é só isto que permite escolher qual `ReceiveTransfer`
@@ -411,6 +411,19 @@ impl TransferProgress {
     }
 }
 
+/// Como o emissor trata a perda de símbolos — D6, §7.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferMode {
+    /// Canal não confiável (DataChannel): símbolos de reparo RaptorQ
+    /// contínuos até o feedback confirmar o bloco.
+    Fountain,
+    /// Canal confiável e ordenado (LAN TCP): só os símbolos-fonte, em ordem,
+    /// uma vez cada. Reparo seria overhead duplicado, porque o TCP já
+    /// retransmite. A retomada acontece por bloco, via
+    /// [`SendTransfer::ingest_feedback`] e [`SendTransfer::restart_current_block`].
+    Offset,
+}
+
 /// Lado emissor de uma transferência — lê o arquivo em blocos, na ordem, e
 /// nunca mantém mais de um bloco (`BlockEncoder`) em RAM por vez (D6).
 pub struct SendTransfer<R: Read> {
@@ -422,6 +435,7 @@ pub struct SendTransfer<R: Read> {
     current_source_symbols: Vec<Vec<u8>>,
     next_repair_symbol_id: u32,
     repair_limit: u32,
+    mode: TransferMode,
 }
 
 impl<R: Read> core::fmt::Debug for SendTransfer<R> {
@@ -451,7 +465,17 @@ impl<R: Read> SendTransfer<R> {
             current_source_symbols: Vec::new(),
             next_repair_symbol_id: 0,
             repair_limit: 0,
+            mode: TransferMode::Fountain,
         }
+    }
+
+    pub fn with_mode(mut self, mode: TransferMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn mode(&self) -> TransferMode {
+        self.mode
     }
 
     pub fn is_complete(&self) -> bool {
@@ -486,7 +510,11 @@ impl<R: Read> SendTransfer<R> {
         self.current_source_symbols = encoder.source_symbols();
         let k = encoder.source_symbol_count();
         // Limite de emissão sem feedback: k símbolos-fonte + 10% de reparo (P-03).
-        self.repair_limit = (k as f64 * 1.1).ceil() as u32;
+        // Em modo offset não há reparo: o canal já entrega tudo em ordem.
+        self.repair_limit = match self.mode {
+            TransferMode::Fountain => (k as f64 * 1.1).ceil() as u32,
+            TransferMode::Offset => k,
+        };
         self.current_encoder = Some(encoder);
         self.next_repair_symbol_id = 0;
         Ok(())
@@ -552,23 +580,63 @@ impl<R: Read> SendTransfer<R> {
     /// `symbols_received` se refere no receptor) — o bitmap é que decide,
     /// porque no momento em que o receptor manda o feedback ele já pode ter
     /// avançado para o bloco seguinte.
-    pub fn ingest_feedback(&mut self, feedback: &FileFeedback) {
-        if feedback
-            .blocks_completed
-            .get(self.current_block_index as usize)
-            .copied()
-            .unwrap_or(false)
+    pub fn ingest_feedback(&mut self, feedback: &FileFeedback) -> Result<()> {
+        let mut advanced = false;
+        while !self.is_complete()
+            && feedback
+                .blocks_completed
+                .get(self.current_block_index as usize)
+                .copied()
+                .unwrap_or(false)
         {
-            self.current_encoder = None;
-            self.current_source_symbols.clear();
-            self.current_block_index += 1;
-            self.repair_limit = 0;
-        } else if let Some(encoder) = &self.current_encoder {
-            // Se recebeu feedback para o bloco corrente e ele ainda não terminou,
-            // estende o teto de reparo para permitir nova rajada proporcional (P-03).
+            self.advance_block()?;
+            advanced = true;
+        }
+
+        if !advanced && self.mode == TransferMode::Fountain {
+            if let Some(encoder) = &self.current_encoder {
+                // Se recebeu feedback para o bloco corrente e ele ainda não terminou,
+                // estende o teto de reparo para permitir nova rajada proporcional (P-03).
+                let k = encoder.source_symbol_count();
+                let step = (k as f64 * 0.1).ceil().max(1.0) as u32;
+                self.repair_limit = self.next_repair_symbol_id.saturating_add(step);
+            }
+        }
+        Ok(())
+    }
+
+    /// Passa ao bloco seguinte. Se o bloco corrente nunca foi codificado
+    /// (retomada: o receptor já tinha esse trecho), descarta os bytes dele
+    /// para manter o arquivo posicionado no início do bloco seguinte.
+    fn advance_block(&mut self) -> Result<()> {
+        if self.current_encoder.is_none() {
+            let len = block_len_at(&self.manifest, self.current_block_index) as u64;
+            let skipped = std::io::copy(&mut (&mut self.file).take(len), &mut std::io::sink())
+                .map_err(|_| Error::Malformed("falha pulando bloco já recebido"))?;
+            if skipped != len {
+                return Err(Error::Malformed("arquivo menor que o manifesto ao pular bloco"));
+            }
+        }
+        self.current_encoder = None;
+        self.current_source_symbols.clear();
+        self.current_block_index += 1;
+        self.next_repair_symbol_id = 0;
+        self.repair_limit = 0;
+        Ok(())
+    }
+
+    /// Recomeça a emissão do bloco corrente do símbolo 0. Para retomar depois
+    /// de uma queda de conexão: o que estava em voo no canal se perdeu, e o
+    /// receptor descarta duplicatas do que já tinha chegado. Blocos já
+    /// completos não são reenviados — o próximo `ingest_feedback` os pula.
+    pub fn restart_current_block(&mut self) {
+        self.next_repair_symbol_id = 0;
+        if let Some(encoder) = &self.current_encoder {
             let k = encoder.source_symbol_count();
-            let step = (k as f64 * 0.1).ceil().max(1.0) as u32;
-            self.repair_limit = self.next_repair_symbol_id.saturating_add(step);
+            self.repair_limit = match self.mode {
+                TransferMode::Fountain => (k as f64 * 1.1).ceil() as u32,
+                TransferMode::Offset => k,
+            };
         }
     }
 }
@@ -812,7 +880,7 @@ mod tests {
             }
             let symbol = sender.next_symbol().unwrap().expect("sem símbolos restantes antes de completar");
             receiver.ingest_symbol(symbol).unwrap();
-            sender.ingest_feedback(&receiver.feedback());
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
         }
         assert!(receiver.is_complete(), "não completou dentro do limite de iterações — provável bug de laço infinito");
         assert!(sender.is_complete());
@@ -860,7 +928,7 @@ mod tests {
                 .expect("sem símbolos restantes antes de completar");
             assert_eq!(peek_wire_file_id(&wire).unwrap(), manifest.file_id);
             receiver.ingest_sealed_symbol(strip_wire_prefix(wire)).unwrap();
-            sender.ingest_feedback(&receiver.feedback());
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
         }
         assert!(receiver.is_complete());
 
@@ -999,7 +1067,7 @@ mod tests {
             }
 
             let feedback = receiver.feedback();
-            sender.ingest_feedback(&feedback);
+            sender.ingest_feedback(&feedback).unwrap();
         }
         assert!(receiver.is_complete(), "não completou dentro do limite de iterações — provável bug de laço infinito");
 
@@ -1158,5 +1226,107 @@ mod tests {
         fn decode_metadata_body_never_panics(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..=4096)) {
             let _ = decode_metadata_body(&bytes);
         }
+    }
+
+    #[test]
+    fn offset_mode_sends_only_source_symbols_and_completes() {
+        let (manifest, original) = manifesto_de_teste(3 * 4096, 512, 8);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut sender = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.clone()))
+            .with_mode(TransferMode::Offset);
+        let mut receiver =
+            ReceiveTransfer::start(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+
+        let mut sent = 0u32;
+        while !receiver.is_complete() {
+            let symbol = sender.next_symbol().unwrap().expect("offset não deve esgotar antes do feedback");
+            assert!(symbol.symbol_id < 8, "offset mode nunca emite reparo");
+            sent += 1;
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+        assert_eq!(sent, 3 * 8, "exatamente k símbolos por bloco, sem overhead");
+
+        let mut destino = Vec::new();
+        receiver.finish(staging_dir.path(), &mut destino).unwrap();
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn offset_mode_pauses_instead_of_emitting_repair() {
+        let (manifest, original) = manifesto_de_teste(4096, 512, 8);
+        let mut sender = SendTransfer::new(manifest, TransferKind::File, b"s", Cursor::new(original))
+            .with_mode(TransferMode::Offset);
+        for _ in 0..8 {
+            assert!(sender.next_symbol().unwrap().is_some());
+        }
+        assert!(sender.next_symbol().unwrap().is_none());
+    }
+
+    /// Retomada: o receptor já tem os dois primeiros blocos; o emissor, recém
+    /// criado, pula esses blocos lendo o arquivo adiante e só manda o terceiro.
+    #[test]
+    fn offset_mode_resumes_at_first_missing_block() {
+        let (manifest, original) = manifesto_de_teste(3 * 4096, 512, 8);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut receiver =
+            ReceiveTransfer::start(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        let mut first = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.clone()))
+            .with_mode(TransferMode::Offset);
+        while receiver.progress().blocks_done < 2 {
+            let symbol = first.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            first.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+
+        let mut resumed = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.clone()))
+            .with_mode(TransferMode::Offset);
+        resumed.ingest_feedback(&receiver.feedback()).unwrap();
+
+        let mut sent = 0;
+        while !receiver.is_complete() {
+            let symbol = resumed.next_symbol().unwrap().unwrap();
+            assert_eq!(symbol.block_index, 2, "blocos já recebidos não são reenviados");
+            sent += 1;
+            receiver.ingest_symbol(symbol).unwrap();
+        }
+        assert_eq!(sent, 8);
+
+        let mut destino = Vec::new();
+        receiver.finish(staging_dir.path(), &mut destino).unwrap();
+        assert_eq!(destino, original, "o conteúdo pós-retomada precisa bater byte a byte");
+    }
+
+    #[test]
+    fn restart_current_block_resends_from_symbol_zero() {
+        let (manifest, original) = manifesto_de_teste(4096, 512, 8);
+        let mut sender = SendTransfer::new(manifest, TransferKind::File, b"s", Cursor::new(original))
+            .with_mode(TransferMode::Offset);
+        for _ in 0..5 {
+            sender.next_symbol().unwrap();
+        }
+        sender.restart_current_block();
+        assert_eq!(sender.next_symbol().unwrap().unwrap().symbol_id, 0);
+        let mut remaining = 1;
+        while sender.next_symbol().unwrap().is_some() {
+            remaining += 1;
+        }
+        assert_eq!(remaining, 8);
+    }
+
+    /// Na LAN o símbolo tem quase 64 KiB (`symbol_size = 65535`); o pacote selado
+    /// resultante precisa atravessar o enquadramento TCP sem ser rejeitado.
+    #[test]
+    fn lan_symbol_of_65535_bytes_passes_tcp_framing() {
+        let (manifest, original) = manifesto_de_teste(2 * 65535, 65535, 2);
+        assert_eq!(manifest.symbol_size, crate::file::manifest::LAN_SYMBOL_SIZE);
+        let mut sender = SendTransfer::new(manifest, TransferKind::File, b"s", Cursor::new(original))
+            .with_mode(TransferMode::Offset);
+        let sealed = sender.next_sealed_symbol().unwrap().unwrap();
+        let mut framed = crate::wire::framing::frame(&sealed).unwrap();
+        let extracted = crate::wire::framing::extract_frame(&mut framed).unwrap();
+        assert_eq!(extracted, Some(sealed));
     }
 }

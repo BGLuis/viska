@@ -387,3 +387,30 @@ A infraestrutura abstrata `SignalingBackend` foi desenhada desde o início para 
 O jitter artificial tem o propósito de dificultar correlação de tráfego contra observadores de rede remotos na Internet. Em redes estritamente locais (mesmo Wi-Fi ou conexão ad-hoc direta P2P entre aparelhos a poucos metros de distância), o atraso induzido não agrega benefício defensivo contra adversários remotos e penaliza a velocidade de transferência de arquivos de alta capacidade em conexões locais rápidas.
 
 **Custo de reverter:** aplicar a função `sample_jitter_delay_ms` antes de chamadas de envio em sockets locais.
+
+---
+
+## D23 — Símbolo da LAN de 65535 B e envelope de sessão com buckets do DataChannel
+**Spec:** §6.3 e §7.3, o símbolo da LAN tem 65536 B, e cada transporte usa o próprio par de buckets.
+**Aqui, símbolo:** `symbol_size = 65535` na LAN (`LAN_SYMBOL_SIZE`). O RaptorQ (RFC 6330) codifica o
+tamanho do símbolo em 16 bits, e `Manifest.symbol_size` é `u16`: 65536 não é representável (virava 0).
+O `FILE_SYMBOL` selado fica maior que um envelope, então `MAX_FRAME_LEN` passou a cobri-lo.
+
+**Aqui, envelope:** o envelope de sessão (texto, recibos, `FILE_METADATA`, `FILE_FEEDBACK`) é selado sempre com
+os buckets do DataChannel (1024/16384), inclusive na LAN. O canal `file` não é afetado: usa
+`symbol_size = 65535` na LAN (D6, acima) e não passa por `Session`.
+
+O receptor decifra com os mesmos buckets do emissor, então os dois lados precisam concordar sobre o
+transporte. Hoje o `Core` não recebe essa informação, e acrescentá-la muda a superfície FFI, o que
+exige regenerar `frb_generated.*` com `flutter_rust_bridge_codegen`. A perda é só de indistinguibilidade
+de tamanho dentro do tráfego da LAN, que tem o mesmo conjunto de dois tamanhos, só que menor.
+
+**Custo de reverter:** passar `Transport` por par a `encrypt_outgoing`/`decrypt_incoming` em
+`ffi/session.rs` e `ffi/transfer.rs`, e expô-lo ao Dart.
+
+**Limitações conhecidas do modo offset:** o emissor envia cada símbolo-fonte uma única vez, então
+um símbolo perdido (queda de conexão) deixa o bloco incompleto e o laço de envio espera feedback
+indefinidamente, até `restart_current_block` ganhar um chamador via FFI. Além disso, 65535 não é
+potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e
+`merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por
+posição. A raiz completa do manifesto não é afetada.

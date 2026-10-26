@@ -387,7 +387,7 @@ layout definido pela spec além de `FILE_METADATA` em si).
 ```
 file_id        16 B aleatórios
 file_size      u64
-symbol_size    u16   16384 no WebRTC, 65536 na LAN
+symbol_size    u16   16384 no WebRTC, 65535 na LAN (D23)
 source_blocks  u32   número de source blocks RaptorQ
 block_symbols  u16   símbolos-fonte por bloco, máx. 1024 (D6)
 merkle_root    32 B  raiz BLAKE3 do plaintext do arquivo
@@ -408,7 +408,13 @@ que o decodifica, e a raiz completa no final, antes do commit atômico.
 ### 7.3 RaptorQ (D6)
 
 - Ativado apenas em transportes não confiáveis (DataChannel em modo `ordered:false, maxRetransmits:0`).
-- Desativado na LAN TCP, que usa transferência por offset com retomada.
+- Desativado na LAN TCP, que usa transferência por offset (`TransferMode::Offset`): `symbol_size`
+  de 65535 (D23), só os `k` símbolos-fonte de cada bloco, em ordem, sem reparo. O emissor retoma por
+  bloco: o bitmap de `FILE_FEEDBACK` faz o emissor pular os blocos que o receptor já gravou.
+  `FILE_FEEDBACK` e `FILE_METADATA` não mudam de formato; o modo é uma escolha local do emissor
+  e o receptor não precisa saber dele.
+- O quadro TCP aceita até o pacote selado do canal `file` (`file_id ‖ cabeçalho ‖ símbolo ‖ nonce ‖
+  tag`), que é maior que um envelope (§6.4).
 - Source blocks de no máximo 1024 símbolos, para limitar o decodificador a ~16 MB de RAM.
 - O emissor gera símbolos de reparo continuamente até receber `FILE_FEEDBACK` indicando bloco completo.
 
