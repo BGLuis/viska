@@ -398,7 +398,7 @@ O `FILE_SYMBOL` selado fica maior que um envelope, então `MAX_FRAME_LEN` passou
 
 **Aqui, envelope:** o envelope de sessão (texto, recibos, `FILE_METADATA`, `FILE_FEEDBACK`) é selado sempre com
 os buckets do DataChannel (1024/16384), inclusive na LAN. O canal `file` não é afetado: usa
-`symbol_size = 65536` na LAN (D6) e não passa por `Session`.
+`symbol_size = 65535` na LAN (D6, acima) e não passa por `Session`.
 
 O receptor decifra com os mesmos buckets do emissor, então os dois lados precisam concordar sobre o
 transporte. Hoje o `Core` não recebe essa informação, e acrescentá-la muda a superfície FFI, o que
@@ -407,3 +407,10 @@ de tamanho dentro do tráfego da LAN, que tem o mesmo conjunto de dois tamanhos,
 
 **Custo de reverter:** passar `Transport` por par a `encrypt_outgoing`/`decrypt_incoming` em
 `ffi/session.rs` e `ffi/transfer.rs`, e expô-lo ao Dart.
+
+**Limitações conhecidas do modo offset:** o emissor envia cada símbolo-fonte uma única vez, então
+um símbolo perdido (queda de conexão) deixa o bloco incompleto e o laço de envio espera feedback
+indefinidamente, até `restart_current_block` ganhar um chamador via FFI. Além disso, 65535 não é
+potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e
+`merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por
+posição. A raiz completa do manifesto não é afetada.

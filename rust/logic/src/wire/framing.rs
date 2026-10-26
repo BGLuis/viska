@@ -47,6 +47,11 @@ pub const MAX_FRAME_LEN: usize = {
     }
 };
 
+const _: () = assert!(MAX_FRAME_LEN >= COUNTER_LEN + Transport::LocalSocket.max_bucket() + TAG_LEN);
+const _: () = assert!(
+    MAX_FRAME_LEN >= FILE_ID_LEN + SYMBOL_DATA_AT + LAN_SYMBOL_SIZE as usize + XNONCE_LEN + TAG_LEN
+);
+
 /// Prefixa `envelope` com seu comprimento em big-endian, para envio pelo socket TCP.
 pub fn frame(envelope: &[u8]) -> Result<Vec<u8>> {
     let len: u32 = envelope

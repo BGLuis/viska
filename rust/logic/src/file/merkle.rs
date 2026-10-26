@@ -27,13 +27,16 @@
 //! `block_chaining_value` recebe posição e bytes e devolve o CV computado,
 //! sem tentar adivinhar de onde viria um CV esperado para comparar.
 //!
-//! Todo bloco de arquivo, exceto possivelmente o último, tem tamanho que é
-//! uma potência de dois múltipla de `CHUNK_LEN` (1024 B): `block_symbols` é
-//! travado em potências de dois até 1.024 (D6) e `symbol_size` é 16384 ou
-//! 65536 — ambos potências de dois (`wire::transport::Transport::buckets`).
-//! Isso não é coincidência: é o que permite que blocos completos sejam
-//! subárvores válidas do BLAKE3 na posição em que caem, sem exigir nenhum
-//! ajuste fino de alinhamento por parte de quem chama.
+//! No DataChannel, todo bloco de arquivo, exceto possivelmente o último, tem
+//! tamanho que é uma potência de dois múltipla de `CHUNK_LEN` (1024 B):
+//! `block_symbols` é travado em potências de dois até 1.024 (D6) e
+//! `symbol_size` é 16384. Isso é o que permite que blocos completos sejam
+//! subárvores válidas do BLAKE3 na posição em que caem, sem ajuste de
+//! alinhamento por parte de quem chama.
+//!
+//! Na LAN `symbol_size` é 65535 (D23), que não é potência de dois: os blocos
+//! de lá não são subárvores alinhadas, e `block_chaining_value` não deve ser
+//! usado para verificá-los por posição.
 
 use std::io::Read;
 

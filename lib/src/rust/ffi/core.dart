@@ -372,7 +372,7 @@ abstract class Core implements RustOpaqueInterface {
   /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
   /// precisa da raiz completa antes do primeiro símbolo sair.
   ///
-  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+  /// `use_lan` escolhe `symbol_size`: 65535 (LAN, `LAN_SYMBOL_SIZE`) ou 16384
   /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
   /// `block_symbols` é sempre o teto de D6 (1024).
   Future<SendFileStartedDto> startSendFile({
