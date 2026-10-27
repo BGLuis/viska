@@ -78,7 +78,7 @@ use crate::crypto::kem::{
     self, Kem, KemCiphertext, KemPublicKey, KemSecretKey, KemSharedSecret, MlKem768,
 };
 use crate::{Error, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use zeroize::Zeroize;
 
 /// Gatilho do re-KEM por contagem (§5.4): a cada 256 mensagens enviadas por
@@ -228,6 +228,9 @@ fn walk_and_skip(
 /// duas cadeias diferentes podem ter a mesma mensagem número 3.
 struct SkippedKeys {
     entries: HashMap<SkippedId, SkippedEntry>,
+    /// Índice `seq -> id`, ordenado: a mais velha é sempre a primeira, então
+    /// estourar o teto custa O(log n) em vez de varrer `entries`.
+    by_age: BTreeMap<u64, SkippedId>,
     /// Contador monotônico só para decidir "qual é a mais velha" ao estourar
     /// o teto. `stored_at` (relógio de parede, resolução de segundo) não
     /// serve para isso sozinho: um lote de mensagens processado dentro do
@@ -253,6 +256,7 @@ impl SkippedKeys {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            by_age: BTreeMap::new(),
             next_seq: 0,
         }
     }
@@ -263,8 +267,14 @@ impl SkippedKeys {
 
     /// Remove entradas mais velhas que o TTL.
     fn evict_expired(&mut self, now: u64) {
-        self.entries
-            .retain(|_, entry| now.saturating_sub(entry.stored_at) < Self::TTL_SECONDS);
+        let by_age = &mut self.by_age;
+        self.entries.retain(|_, entry| {
+            let alive = now.saturating_sub(entry.stored_at) < Self::TTL_SECONDS;
+            if !alive {
+                by_age.remove(&entry.seq);
+            }
+            alive
+        });
     }
 
     /// Insere uma chave pulada, aplicando TTL e o teto de `CAP`.
@@ -276,19 +286,14 @@ impl SkippedKeys {
         self.evict_expired(now);
 
         if self.entries.len() >= Self::CAP && !self.entries.contains_key(&id) {
-            if let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.seq)
-                .map(|(id, _)| *id)
-            {
+            if let Some((_, oldest)) = self.by_age.pop_first() {
                 self.entries.remove(&oldest);
             }
         }
 
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.entries.insert(
+        let replaced = self.entries.insert(
             id,
             SkippedEntry {
                 key,
@@ -296,6 +301,10 @@ impl SkippedKeys {
                 seq,
             },
         );
+        if let Some(previous) = replaced {
+            self.by_age.remove(&previous.seq);
+        }
+        self.by_age.insert(seq, id);
     }
 
     /// Consome uma chave pulada, se existir.
@@ -305,7 +314,9 @@ impl SkippedKeys {
     /// isso é seguro porque essa chave já foi derivada e confirmada num passo
     /// anterior, ver a documentação de módulo.
     fn take(&mut self, id: &SkippedId) -> Option<kdf::Key> {
-        self.entries.remove(id).map(|entry| entry.key)
+        let entry = self.entries.remove(id)?;
+        self.by_age.remove(&entry.seq);
+        Some(entry.key)
     }
 }
 
@@ -1050,6 +1061,27 @@ mod tests {
             Err(Error::UndecryptableMessage)
         ));
         drop(recovered);
+    }
+
+    #[test]
+    fn skipped_keys_evicts_oldest_first_and_keeps_age_index_in_sync() {
+        let mut skipped = SkippedKeys::new();
+        let id = |n: u32| ([7u8; 32], n);
+        let total = 2 * SkippedKeys::CAP as u32;
+
+        for n in 0..total {
+            skipped.insert(id(n), kdf::Key::from_bytes([1; kdf::KEY_LEN]), 0);
+            assert_eq!(skipped.by_age.len(), skipped.entries.len());
+        }
+
+        assert_eq!(skipped.len(), SkippedKeys::CAP);
+        assert!(skipped.take(&id(SkippedKeys::CAP as u32 - 1)).is_none());
+        assert!(skipped.take(&id(SkippedKeys::CAP as u32)).is_some());
+        assert_eq!(skipped.by_age.len(), skipped.entries.len());
+
+        skipped.insert(id(total), kdf::Key::from_bytes([1; kdf::KEY_LEN]), u64::MAX);
+        assert_eq!(skipped.len(), 1, "TTL expirou as demais entradas");
+        assert_eq!(skipped.by_age.len(), 1);
     }
 
     #[test]
