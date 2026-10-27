@@ -969,6 +969,30 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+/// Decodifica o WAV da nota uma única vez por bolha: o `Future` fica no
+/// `State` para que rebuilds do chat não repitam a decodificação.
+class _VoiceNoteWaveform extends StatefulWidget {
+  const _VoiceNoteWaveform({required this.controller, required this.message});
+
+  final ChatController controller;
+  final MessageDto message;
+
+  @override
+  State<_VoiceNoteWaveform> createState() => _VoiceNoteWaveformState();
+}
+
+class _VoiceNoteWaveformState extends State<_VoiceNoteWaveform> {
+  late final Future<Uint8List?> _wav = widget.controller.voiceNoteWav(widget.message);
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: _wav,
+      builder: (context, snapshot) => AudioWaveformPlayer(audioBytes: snapshot.data),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
@@ -1127,10 +1151,7 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final audioBytes = controller.getVoiceNoteAudio(message);
-    return AudioWaveformPlayer(
-      audioBytes: audioBytes,
-    );
+    return _VoiceNoteWaveform(controller: controller, message: message);
   }
 
   /// Renderiza um balão de arquivo genérico. Outgoing é sempre exibido como

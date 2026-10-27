@@ -989,6 +989,61 @@ void main() {
       expect(player.stopCalls, 1);
       expect(controller.playingMessageId, isNull);
     });
+    test('voiceNoteWav keeps a single decoded WAV, decoding each note on demand', () async {
+      var fileId = Uint8List.fromList(List.filled(16, 4));
+      core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
+            fileId: fileId,
+            progress: TransferProgressDto(
+              blocksDone: 1,
+              totalBlocks: 1,
+              bytesDone: BigInt.from(1),
+              isComplete: true,
+            ),
+          );
+      var decodeCalls = 0;
+      core.decodeAudioToWavHandler = (_) {
+        decodeCalls++;
+        return Uint8List.fromList([decodeCalls]);
+      };
+      controller = makeController();
+      await controller.initialize();
+
+      MessageDto noteFor(Uint8List id) => MessageDto(
+            id: id.first,
+            direction: MessageDirectionDto.incoming,
+            kind: MessageKindDto.voiceNote,
+            body: '',
+            audioFileId: id,
+            deliveryState: DeliveryStateDto.delivered,
+            createdAtUnixSecs: 0,
+            isEphemeral: false,
+            viewOnce: false,
+            reactions: const [],
+          );
+
+      final first = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([1]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(first); i++) {
+        await pumpEventQueue(times: 10);
+      }
+      fileId = Uint8List.fromList(List.filled(16, 5));
+      final second = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([2]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(second); i++) {
+        await pumpEventQueue(times: 10);
+      }
+      expect(decodeCalls, 0, reason: 'receber não decodifica WAV');
+
+      await controller.play(first);
+      await controller.play(first);
+      expect(decodeCalls, 1, reason: 'a nota corrente fica em cache');
+
+      await controller.play(second);
+      expect(decodeCalls, 2);
+
+      await controller.play(first);
+      expect(decodeCalls, 3, reason: 'o WAV da primeira nota não foi retido');
+    });
   });
 
   group('generic file transfer (Phase 4)', () {

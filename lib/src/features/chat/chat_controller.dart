@@ -170,12 +170,18 @@ class ChatController extends ChangeNotifier {
   String? _voiceError;
   String? get voiceError => _voiceError;
 
-  /// WAV já decodificado (D18) por `hex(file_id)` — de notas enviadas
+  /// Áudio interno comprimido por `hex(file_id)` — de notas enviadas
   /// (cacheado ao sanitizar, antes de apagar o arquivo sanitizado) e
   /// recebidas (cacheado ao completar `_finishReceivingVoiceNote`). Uma
   /// entrada aqui é o sinal de "pronta para tocar" que a UI usa; sem
   /// entrada e `kind == VoiceNote` significa "ainda recebendo".
+  ///
+  /// Guarda o formato comprimido, não o WAV (D18): o PCM custa ~5,6 MB por
+  /// minuto e acumulava sem limite durante a vida do controlador.
   final Map<String, Uint8List> _voiceNoteAudio = {};
+
+  /// Único WAV decodificado mantido vivo — o da última nota pedida.
+  ({String id, Uint8List wav})? _decodedWav;
 
   int? _playingMessageId;
   int? get playingMessageId => _playingMessageId;
@@ -190,11 +196,22 @@ class ChatController extends ChangeNotifier {
         _receptionService.isVoiceNoteReady(fileId);
   }
 
-  /// Retorna os bytes WAV decodificados em cache de uma nota de voz pronta.
-  Uint8List? getVoiceNoteAudio(MessageDto message) {
+  /// Decodifica sob demanda o WAV de uma nota de voz pronta (D18), mantendo
+  /// só o da última nota pedida.
+  Future<Uint8List?> voiceNoteWav(MessageDto message) async {
     final fileId = message.audioFileId;
     if (fileId == null) return null;
-    return _voiceNoteAudio[_hex(fileId)] ?? _receptionService.getVoiceNoteAudio(fileId);
+    final id = _hex(fileId);
+
+    final cached = _decodedWav;
+    if (cached != null && cached.id == id) return cached.wav;
+
+    final internal = _voiceNoteAudio[id] ?? _receptionService.getVoiceNoteAudio(fileId);
+    if (internal == null) return null;
+
+    final wav = await _core.decodeAudioToWav(internalBytes: internal);
+    _decodedWav = (id: id, wav: wav);
+    return wav;
   }
 
   bool _sendingFile = false;
@@ -302,8 +319,8 @@ class ChatController extends ChangeNotifier {
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();
-      case VoiceNoteReceivedEvent(:final fileId, :final wavBytes):
-        _voiceNoteAudio[_hex(fileId)] = wavBytes;
+      case VoiceNoteReceivedEvent(:final fileId, :final internalBytes):
+        _voiceNoteAudio[_hex(fileId)] = internalBytes;
         _fetchIncrementalMessages();
     }
   }
@@ -476,12 +493,11 @@ class ChatController extends ChangeNotifier {
         useLan: activeTransport == ActiveTransportType.lanDirect,
       );
 
-      // Cacheia o WAV (D18) antes de apagar o arquivo sanitizado — permite
+      // Cacheia o áudio interno antes de apagar o arquivo sanitizado — permite
       // tocar a própria nota enviada, sem round-trip pela rede.
       final internalBytes = await File(sanitizedPath).readAsBytes();
-      final wav = await _core.decodeAudioToWav(internalBytes: internalBytes);
-      _voiceNoteAudio[_hex(started.fileId)] = wav;
-      _receptionService.cacheVoiceNoteAudio(started.fileId, wav);
+      _voiceNoteAudio[_hex(started.fileId)] = internalBytes;
+      _receptionService.cacheVoiceNoteAudio(started.fileId, internalBytes);
       unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
 
       await _refreshMessages();
@@ -521,7 +537,7 @@ class ChatController extends ChangeNotifier {
   Future<void> play(MessageDto message) async {
     final fileId = message.audioFileId;
     if (fileId == null) return;
-    final wav = getVoiceNoteAudio(message);
+    final wav = await voiceNoteWav(message);
     if (wav == null) return;
 
     await _player.playBytes(wav);
