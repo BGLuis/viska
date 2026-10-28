@@ -870,12 +870,12 @@ mod tests {
                 (None, Some(init)) => (&core_b, alice_dev_id.clone(), &core_a, bob_dev_id.clone(), init),
                 other => panic!("exatamente um dos dois deveria ser iniciador: {other:?}"),
             };
-        let resp_bytes = responder_core.feed_handshake(responder_peer, init_bytes).unwrap().unwrap();
-        initiator_core.feed_handshake(initiator_peer, resp_bytes).unwrap();
+        let resp_bytes = responder_core.feed_handshake(responder_peer.clone(), init_bytes).unwrap().unwrap();
+        initiator_core.feed_handshake(initiator_peer.clone(), resp_bytes).unwrap();
 
-        // Envia mensagem antes da aposentadoria
-        let sealed_before = core_a.seal_outgoing_text(bob_dev_id.clone(), "msg pre-reparo".to_string()).unwrap().bytes.unwrap();
-        core_b.decrypt_incoming(alice_dev_id.clone(), sealed_before).unwrap();
+        // Envia mensagem antes da aposentadoria (o iniciador do ratchet possui sending_chain pronta imediatamente)
+        let sealed_before = initiator_core.seal_outgoing_text(initiator_peer.clone(), "msg pre-reparo".to_string()).unwrap().bytes.unwrap();
+        responder_core.decrypt_incoming(responder_peer.clone(), sealed_before).unwrap();
 
         let msgs_before = core_a.list_messages(bob_dev_id.clone()).unwrap();
         assert_eq!(msgs_before.len(), 1);
@@ -923,13 +923,13 @@ mod tests {
             };
         assert_eq!(init_v2_bytes[0], 2, "INIT deve ser emitida na Suíte 2");
 
-        let resp_v2_bytes = resp_v2_core.feed_handshake(resp_v2_peer, init_v2_bytes).unwrap().unwrap();
+        let resp_v2_bytes = resp_v2_core.feed_handshake(resp_v2_peer.clone(), init_v2_bytes).unwrap().unwrap();
         assert_eq!(resp_v2_bytes[0], 2, "RESP deve ser emitida na Suíte 2");
-        init_v2_core.feed_handshake(init_v2_peer, resp_v2_bytes).unwrap();
+        init_v2_core.feed_handshake(init_v2_peer.clone(), resp_v2_bytes).unwrap();
 
-        // Troca mensagem com sucesso na Suíte 2
-        let sealed_v2 = core_a.seal_outgoing_text(bob_dev_id.clone(), "ola na suite 2".to_string()).unwrap().bytes.unwrap();
-        let incoming_v2 = core_b2.decrypt_incoming(alice_dev_id.clone(), sealed_v2).unwrap().unwrap();
+        // Troca mensagem com sucesso na Suíte 2 (iniciador envia primeiro pacote com envio estabelecido)
+        let sealed_v2 = init_v2_core.seal_outgoing_text(init_v2_peer.clone(), "ola na suite 2".to_string()).unwrap().bytes.unwrap();
+        let incoming_v2 = resp_v2_core.decrypt_incoming(resp_v2_peer.clone(), sealed_v2).unwrap().unwrap();
         assert_eq!(incoming_v2.body, "ola na suite 2");
 
         // Limpeza
