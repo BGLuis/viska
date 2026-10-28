@@ -23,30 +23,43 @@ class DuressPinScreen extends StatefulWidget {
 }
 
 class _DuressPinScreenState extends State<DuressPinScreen> {
+  final _currentPinController = TextEditingController();
   final _normalPinController = TextEditingController();
+  final _normalPinConfirmController = TextEditingController();
   final _duressPinController = TextEditingController();
   late int _actionMode = widget.controller.duressActionMode;
   bool _saving = false;
   String? _error;
 
+  LockController get _controller => widget.controller;
+
   @override
   void dispose() {
+    _currentPinController.dispose();
     _normalPinController.dispose();
+    _normalPinConfirmController.dispose();
     _duressPinController.dispose();
     super.dispose();
   }
 
+  /// Quem pega o aparelho desbloqueado não pode trocar nem apagar os PINs sem
+  /// saber o atual.
+  bool _currentPinMatches() {
+    if (!_controller.hasNormalPin) return true;
+    return _controller.isNormalPin(_currentPinController.text.trim());
+  }
+
   Future<void> _save() async {
     final normal = _normalPinController.text.trim();
+    final normalConfirm = _normalPinConfirmController.text.trim();
     final duress = _duressPinController.text.trim();
 
-    if (normal.isEmpty && !widget.controller.hasNormalPin) {
-      setState(() => _error = 'Configure primeiro o PIN Normal.');
+    if (!_currentPinMatches()) {
+      setState(() => _error = 'PIN atual incorreto.');
       return;
     }
-
-    if (duress.isNotEmpty && normal.isNotEmpty && duress == normal) {
-      setState(() => _error = 'O PIN de Coação não pode ser igual ao PIN Normal.');
+    if (normal != normalConfirm) {
+      setState(() => _error = 'A confirmação não coincide com o novo PIN Normal.');
       return;
     }
 
@@ -56,15 +69,20 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
     });
 
     try {
-      if (normal.isNotEmpty) {
-        await widget.controller.setNormalPin(normal);
-      }
-      if (duress.isNotEmpty) {
-        await widget.controller.setDuressPin(duress, actionMode: _actionMode);
-      }
+      await _controller.configurePins(
+        normalPin: normal.isEmpty ? null : normal,
+        duressPin: duress.isEmpty ? null : duress,
+        actionMode: _actionMode,
+      );
       if (!mounted) return;
       widget.onSaved?.call();
       Navigator.of(context).pop();
+    } on PinConfigException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = e.message;
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -75,8 +93,39 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
   }
 
   Future<void> _clearPins() async {
-    await widget.controller.setNormalPin(null);
-    await widget.controller.setDuressPin(null);
+    if (!_currentPinMatches()) {
+      setState(() => _error = 'Digite o PIN atual para remover os PINs.');
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remover PINs?'),
+        content: const Text(
+          'O PIN Normal e o PIN de Coação serão apagados. O app passa a desbloquear só pela autenticação do sistema.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Remover'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _controller.clearPins();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = 'Erro ao remover os PINs.');
+      return;
+    }
     if (!mounted) return;
     widget.onSaved?.call();
     Navigator.of(context).pop();
@@ -140,21 +189,38 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
               ),
               const SizedBox(height: ViskaSpacing.space2xl),
 
-              // Campo de PIN Normal
+              if (_controller.hasNormalPin) ...[
+                ViskaTextField(
+                  controller: _currentPinController,
+                  labelText: 'PIN atual',
+                  hintText: 'Necessário para alterar ou remover',
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                ),
+                const SizedBox(height: ViskaSpacing.spaceLg),
+              ],
+
               ViskaTextField(
                 controller: _normalPinController,
-                labelText: 'PIN Normal de Desbloqueio',
-                hintText: widget.controller.hasNormalPin ? '•••• (mantém atual)' : 'Ex: 1234',
+                labelText: _controller.hasNormalPin ? 'Novo PIN Normal' : 'PIN Normal de Desbloqueio',
+                hintText: _controller.hasNormalPin ? 'Deixe vazio para manter o atual' : '4 a 8 dígitos',
+                obscureText: true,
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: ViskaSpacing.spaceLg),
+              ViskaTextField(
+                controller: _normalPinConfirmController,
+                labelText: 'Confirme o PIN Normal',
                 obscureText: true,
                 keyboardType: TextInputType.number,
               ),
               const SizedBox(height: ViskaSpacing.spaceLg),
 
-              // Campo de PIN de Coação
               ViskaTextField(
                 controller: _duressPinController,
                 labelText: 'PIN de Coação (Duress PIN)',
-                hintText: widget.controller.hasDuressPin ? '•••• (mantém atual)' : 'Ex: 9999',
+                hintText: _controller.hasDuressPin ? 'Deixe vazio para manter o atual' : 'Mesmo número de dígitos do Normal',
+                helperText: 'Precisa ser diferente do PIN Normal e ter o mesmo número de dígitos.',
                 obscureText: true,
                 keyboardType: TextInputType.number,
               ),
@@ -210,7 +276,7 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                 isFullWidth: true,
                 onPressed: _save,
               ),
-              if (widget.controller.hasNormalPin || widget.controller.hasDuressPin) ...[
+              if (_controller.hasNormalPin || _controller.hasDuressPin) ...[
                 const SizedBox(height: ViskaSpacing.spaceMd),
                 ViskaButton(
                   label: 'REMOVER PINS CONFIGURADOS',
