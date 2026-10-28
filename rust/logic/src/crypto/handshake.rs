@@ -26,6 +26,7 @@ use crate::crypto::kdf;
 use crate::crypto::kem::{
     self, Kem, KemCiphertext, KemPublicKey, KemSecretKey, KemSharedSecret, MlKem768,
 };
+use crate::crypto::Suite;
 use crate::{Error, Result, PROTOCOL_VERSION};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -132,11 +133,28 @@ fn derive_root(
     kdf::derive(kdf::context::HANDSHAKE, &material.0)
 }
 
-/// Valida comprimento, versão e tipo de uma mensagem de handshake recebida.
+/// Valida suite_id, comprimento e tipo de uma mensagem de handshake recebida.
 ///
 /// Sem downgrade negociado, como em `pairing::decode_qr`: uma versão que este
 /// binário não conhece é rejeitada, nunca aceita "no modo antigo".
-fn validate_header(msg: &[u8], expected_len: usize, expected_type: u8) -> Result<()> {
+/// O byte 0 é lido como identificador de suíte (`Suite::from_id`) e só então
+/// o comprimento esperado para aquela suíte é checado.
+fn validate_header(msg: &[u8], is_init: bool) -> Result<Suite> {
+    let version = *msg.first().ok_or_else(|| Error::BadLength {
+        expected: if is_init {
+            Suite::V1.init_len()
+        } else {
+            Suite::V1.resp_len()
+        },
+        actual: 0,
+    })?;
+
+    let suite = Suite::from_id(version)?;
+    let expected_len = if is_init {
+        suite.init_len()
+    } else {
+        suite.resp_len()
+    };
     if msg.len() != expected_len {
         return Err(Error::BadLength {
             expected: expected_len,
@@ -144,16 +162,16 @@ fn validate_header(msg: &[u8], expected_len: usize, expected_type: u8) -> Result
         });
     }
 
-    let version = msg[VERSION_AT];
-    if version != PROTOCOL_VERSION {
-        return Err(Error::UnsupportedVersion(version));
-    }
-
+    let expected_type = if is_init {
+        MSG_TYPE_INIT
+    } else {
+        MSG_TYPE_RESP
+    };
     if msg[MSG_TYPE_AT] != expected_type {
         return Err(Error::Malformed("tipo de mensagem de handshake inesperado"));
     }
 
-    Ok(())
+    Ok(suite)
 }
 
 /// O que o handshake entrega para o ratchet (§5, implementado à parte).
@@ -243,7 +261,7 @@ impl Initiator {
     /// dele não bate com o nosso, e as duas raízes simplesmente divergem, sem
     /// que nenhum erro explícito seja necessário nem possível (D1, §4.4).
     pub fn finish(self, local: &LocalIdentity, resp: &[u8]) -> Result<HandshakeOutcome> {
-        validate_header(resp, RESP_LEN, MSG_TYPE_RESP)?;
+        let _suite = validate_header(resp, false)?;
 
         let ek_r = DhPublic::from_slice(&resp[EK_AT..EK_AT + dh::KEY_LEN])?;
         let kem_ct = KemCiphertext::from_slice(&resp[KEM_MATERIAL_AT..])?;
@@ -297,7 +315,7 @@ pub fn respond(
     peer: &PublicIdentity,
     init: &[u8],
 ) -> Result<(HandshakeOutcome, [u8; RESP_LEN])> {
-    validate_header(init, INIT_LEN, MSG_TYPE_INIT)?;
+    let _suite = validate_header(init, true)?;
 
     let ek_i = DhPublic::from_slice(&init[EK_AT..EK_AT + dh::KEY_LEN])?;
     let kem_ek_i = KemPublicKey::from_slice(&init[KEM_MATERIAL_AT..])?;
@@ -555,4 +573,45 @@ mod tests {
             Err(Error::LowOrderPoint)
         ));
     }
+
+    #[test]
+    fn rejects_unsupported_version_before_length_validation() {
+        let (alice, bob) = pair();
+        // Byte 0 é 0x02 (suíte desconhecida) e comprimento é 100 (!= 1218)
+        let short_init = vec![0x02; 100];
+        assert!(matches!(
+            respond(&bob, &alice.public(), &short_init),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+
+        // Byte 0 é 0x02 e comprimento é 1500 (!= 1218)
+        let long_init = vec![0x02; 1500];
+        assert!(matches!(
+            respond(&bob, &alice.public(), &long_init),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+
+        // Mesma garantia na RESP recebida pelo finish
+        let (initiator, _) = Initiator::start(&alice, &bob.public()).unwrap();
+        let short_resp = vec![0x02; 50];
+        assert!(matches!(
+            initiator.finish(&alice, &short_resp),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+    }
+
+    #[test]
+    fn suite_v1_wire_bytes_match_frozen_format() {
+        let (alice, bob) = pair();
+        let (_, init) = Initiator::start(&alice, &bob.public()).unwrap();
+        assert_eq!(init[VERSION_AT], Suite::V1.id());
+        assert_eq!(init[MSG_TYPE_AT], MSG_TYPE_INIT);
+        assert_eq!(init.len(), Suite::V1.init_len());
+
+        let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
+        assert_eq!(resp[VERSION_AT], Suite::V1.id());
+        assert_eq!(resp[MSG_TYPE_AT], MSG_TYPE_RESP);
+        assert_eq!(resp.len(), Suite::V1.resp_len());
+    }
 }
+
