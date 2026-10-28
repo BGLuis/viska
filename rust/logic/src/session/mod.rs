@@ -714,4 +714,139 @@ mod tests {
             assert_eq!(inner.body, body);
         }
     }
+
+    #[test]
+    fn twenty_unknown_packets_followed_by_msg_text_does_not_fail_session() {
+        let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
+
+        for i in 0..20 {
+            let body = format!("unknown-payload-{i}").into_bytes();
+            let envelope = alice_session
+                .encrypt_outgoing(PacketType::Unknown(0x7F), body, Transport::DataChannel)
+                .unwrap();
+            let inner = bob_session
+                .decrypt_incoming(&envelope, Transport::DataChannel)
+                .unwrap()
+                .expect("pacote Unknown com tag válida não deve ser descartado como erro");
+            assert_eq!(inner.packet_type, PacketType::Unknown(0x7F));
+        }
+
+        assert!(bob_session.is_established());
+
+        let legitima = alice_session
+            .encrypt_outgoing(
+                PacketType::MsgText,
+                b"mensagem legitima".to_vec(),
+                Transport::DataChannel,
+            )
+            .unwrap();
+        let inner = bob_session
+            .decrypt_incoming(&legitima, Transport::DataChannel)
+            .unwrap()
+            .expect("MsgText subsequente deve decifrar normalmente");
+        assert_eq!(inner.packet_type, PacketType::MsgText);
+        assert_eq!(inner.body, b"mensagem legitima");
+        assert!(bob_session.is_established());
+    }
+
+    #[test]
+    fn unknown_packet_with_kem_ct_applies_kem_step_and_subsequent_message_decrypts() {
+        let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
+
+        // Estabelece a cadeia inicial
+        let env0 = alice_session
+            .encrypt_outgoing(PacketType::MsgText, b"inicio".to_vec(), Transport::DataChannel)
+            .unwrap();
+        bob_session
+            .decrypt_incoming(&env0, Transport::DataChannel)
+            .unwrap()
+            .unwrap();
+
+        let mut saw_kem_ct = false;
+
+        // Avança até o gatilho de re-KEM (256 mensagens). Bob responde sempre com Unknown(0x7F).
+        for i in 0..300 {
+            let env_a = alice_session
+                .encrypt_outgoing(
+                    PacketType::MsgText,
+                    format!("msg-alice-{i}").into_bytes(),
+                    Transport::DataChannel,
+                )
+                .unwrap();
+            bob_session
+                .decrypt_incoming(&env_a, Transport::DataChannel)
+                .unwrap()
+                .unwrap();
+
+            let env_b = bob_session
+                .encrypt_outgoing(
+                    PacketType::Unknown(0x7F),
+                    format!("msg-bob-{i}").into_bytes(),
+                    Transport::DataChannel,
+                )
+                .unwrap();
+            let inner_b = alice_session
+                .decrypt_incoming(&env_b, Transport::DataChannel)
+                .unwrap()
+                .unwrap();
+
+            if inner_b.kem_ct.is_some() {
+                saw_kem_ct = true;
+                assert_eq!(inner_b.packet_type, PacketType::Unknown(0x7F));
+                // Alice recebeu o KEM_ct em um pacote Unknown e aplicou o passo KEM.
+                // Agora envia uma MsgText na cadeia nova derivada da nova root key.
+                let next_env = alice_session
+                    .encrypt_outgoing(
+                        PacketType::MsgText,
+                        b"pos-re-kem".to_vec(),
+                        Transport::DataChannel,
+                    )
+                    .unwrap();
+                let next_inner = bob_session
+                    .decrypt_incoming(&next_env, Transport::DataChannel)
+                    .unwrap()
+                    .expect("mensagem na cadeia nova deve decifrar com sucesso");
+                assert_eq!(next_inner.body, b"pos-re-kem");
+                break;
+            }
+        }
+
+        assert!(saw_kem_ct, "Bob deveria ter enviado um pacote com KEM_ct");
+    }
+
+    #[test]
+    fn tampered_unknown_packet_counts_as_aead_failure() {
+        let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
+
+        for _ in 0..MAX_CONSECUTIVE_AEAD_FAILURES {
+            let mut tampered = alice_session
+                .encrypt_outgoing(
+                    PacketType::Unknown(0x7F),
+                    b"payload".to_vec(),
+                    Transport::DataChannel,
+                )
+                .unwrap();
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0xff;
+            assert_eq!(
+                bob_session
+                    .decrypt_incoming(&tampered, Transport::DataChannel)
+                    .unwrap(),
+                None
+            );
+        }
+
+        // Após o limiar de falhas de AEAD, a sessão entra em Failed
+        let legitima = alice_session
+            .encrypt_outgoing(
+                PacketType::MsgText,
+                b"tarde demais".to_vec(),
+                Transport::DataChannel,
+            )
+            .unwrap();
+        assert!(bob_session
+            .decrypt_incoming(&legitima, Transport::DataChannel)
+            .is_err());
+    }
 }
+

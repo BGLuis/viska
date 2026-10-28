@@ -328,6 +328,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn rejects_handshake_bytes_in_plaintext() {
+        let pacote = amostra(PacketType::MsgText, false, false, b"x".to_vec());
+        for byte in [0x01, 0x02] {
+            let mut encoded = pacote.encode(Transport::DataChannel).unwrap();
+            encoded[PACKET_TYPE_AT] = byte;
+            assert!(matches!(
+                InnerPlaintext::decode(&encoded, Transport::DataChannel),
+                Err(Error::Malformed(_))
+            ));
+        }
+    }
+
     /// Estratégia de `PacketType` a partir do índice em `ALL`, para uso nos
     /// property tests abaixo.
     fn estrategia_packet_type() -> impl Strategy<Value = PacketType> {
