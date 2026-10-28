@@ -27,7 +27,7 @@ use crate::crypto::kem::{
     self, Kem, KemCiphertext, KemPublicKey, KemSecretKey, KemSharedSecret, MlKem768,
 };
 use crate::crypto::Suite;
-use crate::{Error, Result, PROTOCOL_VERSION};
+use crate::{Error, Result};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Deslocamento da versão do protocolo, comum às duas mensagens.
@@ -77,6 +77,7 @@ struct HandshakeMaterial([u8; MATERIAL_LEN]);
 /// diferentes, mesmo que os DH e o KEM tenham corrido normalmente.
 #[allow(clippy::too_many_arguments)]
 fn build_transcript(
+    suite: Suite,
     ik_dh_i: &DhPublic,
     ik_dh_r: &DhPublic,
     ek_i: &DhPublic,
@@ -87,7 +88,7 @@ fn build_transcript(
     let mut out = [0u8; TRANSCRIPT_LEN];
     let mut at = 0;
 
-    out[at] = PROTOCOL_VERSION;
+    out[at] = suite.id();
     at += 1;
     out[at..at + dh::KEY_LEN].copy_from_slice(ik_dh_i.as_bytes());
     at += dh::KEY_LEN;
@@ -216,6 +217,7 @@ pub struct HandshakeOutcome {
 pub struct Initiator {
     /// `IK_dh` pública do par, já conhecida do pareamento.
     peer_dh: DhPublic,
+    suite: Suite,
     ek_secret: DhSecret,
     ek_public: DhPublic,
     kem_secret: KemSecretKey,
@@ -223,27 +225,31 @@ pub struct Initiator {
 }
 
 impl Initiator {
-    /// Inicia o handshake e produz a mensagem INIT (§4.1).
-    ///
-    /// Quem chama decide o papel de antemão comparando `IK_dh` com
-    /// `PublicIdentity::is_before` — esta função não reafirma a checagem
-    /// porque a segurança do protocolo não depende dela (ver o comentário de
-    /// módulo): ela só existe para evitar round-trip extra em handshake
-    /// simultâneo, não para impedir ataque nenhum.
+    /// Inicia o handshake na suíte padrão V1 e produz a mensagem INIT (§4.1).
     pub fn start(local: &LocalIdentity, peer: &PublicIdentity) -> Result<(Self, [u8; INIT_LEN])> {
+        Self::start_with_suite(local, peer, Suite::V1)
+    }
+
+    /// Inicia o handshake em uma suíte específica e produz a mensagem INIT (§4.1).
+    pub fn start_with_suite(
+        local: &LocalIdentity,
+        peer: &PublicIdentity,
+        suite: Suite,
+    ) -> Result<(Self, [u8; INIT_LEN])> {
         let _ = local;
         let ek_secret = DhSecret::generate()?;
         let ek_public = ek_secret.public();
         let kem_pair = MlKem768::generate()?;
 
         let mut init = [0u8; INIT_LEN];
-        init[VERSION_AT] = PROTOCOL_VERSION;
+        init[VERSION_AT] = suite.id();
         init[MSG_TYPE_AT] = MSG_TYPE_INIT;
         init[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(ek_public.as_bytes());
         init[KEM_MATERIAL_AT..].copy_from_slice(kem_pair.public.as_bytes());
 
         let state = Self {
             peer_dh: peer.dh,
+            suite,
             ek_secret,
             ek_public,
             kem_secret: kem_pair.secret,
@@ -261,7 +267,10 @@ impl Initiator {
     /// dele não bate com o nosso, e as duas raízes simplesmente divergem, sem
     /// que nenhum erro explícito seja necessário nem possível (D1, §4.4).
     pub fn finish(self, local: &LocalIdentity, resp: &[u8]) -> Result<HandshakeOutcome> {
-        let _suite = validate_header(resp, false)?;
+        let resp_suite = validate_header(resp, false)?;
+        if resp_suite != self.suite {
+            return Err(Error::UnsupportedVersion(resp_suite.id()));
+        }
 
         let ek_r = DhPublic::from_slice(&resp[EK_AT..EK_AT + dh::KEY_LEN])?;
         let kem_ct = KemCiphertext::from_slice(&resp[KEM_MATERIAL_AT..])?;
@@ -276,6 +285,7 @@ impl Initiator {
 
         let ik_dh_i = local.dh().public();
         let transcript = build_transcript(
+            self.suite,
             &ik_dh_i,
             &self.peer_dh,
             &self.ek_public,
@@ -298,6 +308,7 @@ impl core::fmt::Debug for Initiator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Initiator")
             .field("peer_dh", &self.peer_dh)
+            .field("suite", &self.suite)
             .field("ek_public", &self.ek_public)
             .field("ek_secret", &"<redigida>")
             .field("kem_secret", &"<redigida>")
@@ -315,7 +326,7 @@ pub fn respond(
     peer: &PublicIdentity,
     init: &[u8],
 ) -> Result<(HandshakeOutcome, [u8; RESP_LEN])> {
-    let _suite = validate_header(init, true)?;
+    let suite = validate_header(init, true)?;
 
     let ek_i = DhPublic::from_slice(&init[EK_AT..EK_AT + dh::KEY_LEN])?;
     let kem_ek_i = KemPublicKey::from_slice(&init[KEM_MATERIAL_AT..])?;
@@ -333,11 +344,11 @@ pub fn respond(
     let dh3 = ek_secret.agree(&ek_i)?;
 
     let ik_dh_r = local.dh().public();
-    let transcript = build_transcript(&peer.dh, &ik_dh_r, &ek_i, &ek_r, &kem_ek_i, &kem_ct);
+    let transcript = build_transcript(suite, &peer.dh, &ik_dh_r, &ek_i, &ek_r, &kem_ek_i, &kem_ct);
     let root = derive_root(&dh1, &dh2, &dh3, &ss_kem, &transcript);
 
     let mut resp = [0u8; RESP_LEN];
-    resp[VERSION_AT] = PROTOCOL_VERSION;
+    resp[VERSION_AT] = suite.id();
     resp[MSG_TYPE_AT] = MSG_TYPE_RESP;
     resp[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(ek_r.as_bytes());
     resp[KEM_MATERIAL_AT..].copy_from_slice(kem_ct.as_bytes());
@@ -372,12 +383,14 @@ mod tests {
     fn clone_initiator(original: &Initiator) -> Initiator {
         Initiator {
             peer_dh: original.peer_dh,
+            suite: original.suite,
             ek_secret: DhSecret::from_bytes(original.ek_secret.to_bytes()),
             ek_public: original.ek_public,
             kem_secret: original.kem_secret.clone(),
             kem_public: original.kem_public.clone(),
         }
     }
+
 
     #[test]
     fn full_handshake_produces_same_root_on_both_sides() {

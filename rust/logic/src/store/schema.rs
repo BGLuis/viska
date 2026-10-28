@@ -5,7 +5,7 @@
 //! superfície (rollback, migrations nomeadas, CLI) o projeto não usa.
 
 /// Cada posição do array é a migração que leva da versão `i` para `i + 1`.
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     "\
     CREATE TABLE local_identity (
         id            INTEGER PRIMARY KEY CHECK (id = 0),
@@ -81,6 +81,8 @@ const MIGRATIONS: &[&str] = &[
     "\
     ALTER TABLE messages ADD COLUMN global_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_messages_global_id ON messages (global_id);",
+    "\
+    ALTER TABLE contacts ADD COLUMN suite_id INTEGER NOT NULL DEFAULT 1;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -269,4 +271,41 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn migration_from_previous_user_version_sets_suite_id_to_1() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Aplica todas as migrations até a versão anterior (8 migrations)
+        for migration in &MIGRATIONS[..8] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8).unwrap();
+
+        // Insere um contato antes da migration 9 (sem coluna suite_id explícita)
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1000, 'Legacy')",
+            rusqlite::params![[7u8; 16].as_slice(), [1u8; 32].as_slice(), [2u8; 32].as_slice()],
+        )
+        .unwrap();
+
+        // Executa a migration completa
+        migrate(&conn).unwrap();
+
+        let user_version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, MIGRATIONS.len() as i64);
+
+        // Afirma que o contato existente recebeu suite_id = 1
+        let suite_id: i64 = conn
+            .query_row(
+                "SELECT suite_id FROM contacts WHERE device_id = ?1",
+                [[7u8; 16].as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(suite_id, 1);
+    }
 }
+
