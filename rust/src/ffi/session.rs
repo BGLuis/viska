@@ -51,8 +51,13 @@ impl Core {
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
         let suite_id = self.store.get_contact_suite_id(&device_id)?;
+        let upgrade_suite = self
+            .agreed_upgrades
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&device_id));
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
-        let (session, _) = Session::open(&id, peer, suite_id)?;
+        let (session, _) = Session::open_with_upgrade(&id, peer, suite_id, upgrade_suite)?;
         let status = status_dto(&session);
         sessions.insert(device_id, session);
         Ok(status)
@@ -79,7 +84,28 @@ impl Core {
             .ok_or(FfiError::NoActiveSession)?;
 
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
-        Ok(session.process_handshake_message(&id, &bytes)?)
+        let resp = session.process_handshake_message(&id, &bytes)?;
+        let recorded = self.store.get_contact_suite_id(&device_id)?;
+        if session.should_upgrade_contact(recorded) {
+            let _ = self.store.set_contact_suite_id(&device_id, session.current_suite());
+        }
+        Ok(resp)
+    }
+
+    /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
+    pub fn build_control_suites(
+        &self,
+        peer_device_id: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        let mut sessions = self.lock_sessions()?;
+        let session = sessions
+            .get_mut(&device_id)
+            .ok_or(FfiError::NoActiveSession)?;
+        if !session.is_established() {
+            return Ok(None);
+        }
+        Ok(session.build_control_suites(Transport::DataChannel).ok())
     }
 
     /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
@@ -159,8 +185,20 @@ impl Core {
         let session = sessions
             .get_mut(&device_id)
             .ok_or(FfiError::NoActiveSession)?;
-
         let inner = session.decrypt_incoming(&envelope, Transport::DataChannel)?;
+        if let Some(upgrade) = session.agreed_upgrade_suite() {
+            if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
+                upgrades.insert(device_id, upgrade);
+            }
+        }
+        let should_upgrade = session.should_upgrade_contact(
+            self.store.get_contact_suite_id(&device_id).unwrap_or(0),
+        );
+        let current_suite = session.current_suite();
+        if should_upgrade {
+            let _ = self.store.set_contact_suite_id(&device_id, current_suite);
+        }
+
         let Some(inner) = inner else {
             return Ok(None);
         };

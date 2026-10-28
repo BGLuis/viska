@@ -106,7 +106,10 @@ enum SessionState {
 #[derive(Debug)]
 pub struct Session {
     peer: PublicIdentity,
+    current_suite: u8,
     min_suite: u8,
+    agreed_upgrade_suite: Option<u8>,
+    peer_confirmed: bool,
     state: SessionState,
     consecutive_aead_failures: u32,
     needs_rehandshake: bool,
@@ -127,22 +130,42 @@ impl Session {
     /// Abre uma sessão com `peer`, decidindo o papel por `is_before` (§4).
     ///
     /// `recorded_suite` indica a suíte em que o contato está registrado.
-    /// Quando este lado é o iniciador, produz a INIT na suíte registrada (ou maior,
-    /// se negociada futuramente). Quando é respondedor, aguarda a INIT do par
-    /// rejeitando qualquer suíte inferior à gravada (D24).
     pub fn open(
         local: &LocalIdentity,
         peer: PublicIdentity,
         recorded_suite: u8,
     ) -> Result<(Self, Option<Vec<u8>>)> {
-        let suite = Suite::from_id(recorded_suite)?;
+        Self::open_with_upgrade(local, peer, recorded_suite, None)
+    }
+
+    /// Abre uma sessão com `peer`, usando uma suíte negociada previamente em memória (`upgrade_suite`), se houver.
+    ///
+    /// Se o banco contiver uma suíte que o build não conhece, retorna `Error::UnsupportedVersion`.
+    /// Se formos iniciador e houver uma suíte maior em memória suportada pelo build, inicia nela.
+    /// Se formos respondedor, aceita INIT na suíte gravada ou maior (D24).
+    pub fn open_with_upgrade(
+        local: &LocalIdentity,
+        peer: PublicIdentity,
+        recorded_suite: u8,
+        upgrade_suite: Option<u8>,
+    ) -> Result<(Self, Option<Vec<u8>>)> {
+        let base_suite = Suite::from_id(recorded_suite)?;
+
+        let init_suite = match upgrade_suite {
+            Some(target) if target > recorded_suite => Suite::from_id(target)?,
+            _ => base_suite,
+        };
+
         if local.public().is_before(&peer) {
-            let (initiator, init_bytes) = Initiator::start_with_suite(local, &peer, suite)?;
+            let (initiator, init_bytes) = Initiator::start_with_suite(local, &peer, init_suite)?;
             let init_bytes = init_bytes.to_vec();
             Ok((
                 Self {
                     peer,
+                    current_suite: init_suite.id(),
                     min_suite: recorded_suite,
+                    agreed_upgrade_suite: None,
+                    peer_confirmed: false,
                     state: SessionState::AwaitingResponse(Box::new(initiator)),
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
@@ -154,7 +177,10 @@ impl Session {
             Ok((
                 Self {
                     peer,
+                    current_suite: recorded_suite,
                     min_suite: recorded_suite,
+                    agreed_upgrade_suite: None,
+                    peer_confirmed: false,
                     state: SessionState::AwaitingPeerInit,
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
@@ -194,6 +220,26 @@ impl Session {
         self.needs_rehandshake
     }
 
+    /// Retorna a suíte atualmente em uso nesta sessão.
+    pub fn current_suite(&self) -> u8 {
+        self.current_suite
+    }
+
+    /// Retorna a suíte acordada em memória para upgrade na próxima sessão, se houver.
+    pub fn agreed_upgrade_suite(&self) -> Option<u8> {
+        self.agreed_upgrade_suite
+    }
+
+    /// Retorna se a sessão já foi confirmada por ambos os pares.
+    pub fn is_confirmed(&self) -> bool {
+        self.peer_confirmed
+    }
+
+    /// Retorna se o contato deve ter sua `suite_id` elevada no banco local (D24).
+    pub fn should_upgrade_contact(&self, recorded_suite: u8) -> bool {
+        self.is_established() && self.peer_confirmed && self.current_suite > recorded_suite
+    }
+
     /// Processa uma mensagem de handshake recebida (INIT ou RESP, conforme o
     /// estado atual) e devolve os bytes de resposta a enviar, se houver.
     ///
@@ -224,6 +270,7 @@ impl Session {
                 }
                 match respond(local, &self.peer, bytes) {
                     Ok((outcome, resp_bytes)) => {
+                        self.current_suite = init_version;
                         self.state =
                             SessionState::Established(Box::new(RatchetState::initialize(outcome)?));
                         Ok(Some(resp_bytes.to_vec()))
@@ -244,6 +291,7 @@ impl Session {
                 Ok(outcome) => {
                     self.state =
                         SessionState::Established(Box::new(RatchetState::initialize(outcome)?));
+                    self.peer_confirmed = true;
                     self.pending_outgoing_handshake = None;
                     Ok(None)
                 }
@@ -351,6 +399,10 @@ impl Session {
         match try_decrypt(ratchet, bytes, transport) {
             Ok(inner) => {
                 self.consecutive_aead_failures = 0;
+                self.peer_confirmed = true;
+                if inner.packet_type == PacketType::ControlSuites {
+                    self.handle_control_suites(&inner.body);
+                }
                 Ok(Some(inner))
             }
             Err(_) => {
@@ -359,6 +411,50 @@ impl Session {
                     self.state = SessionState::Failed;
                 }
                 Ok(None)
+            }
+        }
+    }
+
+    /// Monta o payload do pacote `CONTROL_SUITES` (§6.2, `0x42`).
+    pub fn control_suites_payload() -> Vec<u8> {
+        let supported = Suite::supported();
+        let mut payload = Vec::with_capacity(1 + supported.len());
+        payload.push(supported.len() as u8);
+        for s in supported {
+            payload.push(s.id());
+        }
+        payload
+    }
+
+    /// Cifra o pacote `CONTROL_SUITES` para envio imediato após estabelecer sessão.
+    pub fn build_control_suites(&mut self, transport: Transport) -> Result<Vec<u8>> {
+        let payload = Self::control_suites_payload();
+        self.encrypt_outgoing(PacketType::ControlSuites, payload, transport)
+    }
+
+    fn handle_control_suites(&mut self, body: &[u8]) {
+        if body.is_empty() {
+            return;
+        }
+        let count = body[0] as usize;
+        if body.len() < 1 + count {
+            return;
+        }
+        let peer_suites = &body[1..=count];
+        let local_supported = Suite::supported();
+        let mut max_common: Option<u8> = None;
+        for s in local_supported {
+            let id = s.id();
+            if peer_suites.contains(&id) {
+                max_common = Some(match max_common {
+                    Some(curr) => curr.max(id),
+                    None => id,
+                });
+            }
+        }
+        if let Some(target) = max_common {
+            if target > self.min_suite {
+                self.agreed_upgrade_suite = Some(target);
             }
         }
     }
@@ -930,6 +1026,341 @@ mod tests {
         assert!(alice_session.is_established());
 
         set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn upgrade_to_highest_common_suite_preserves_history_and_records_2() {
+        use crate::crypto::kdf;
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        use crate::store::Store;
+
+        let (alice, bob) = pair();
+
+        // Bancos locais persistentes para Alice e Bob
+        let dir_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(&dir_a.path().join("a.db"), &kdf::Key::from_bytes([1u8; 32])).unwrap();
+        store_a.insert_contact(&bob.public(), 1, Some("Bob")).unwrap();
+        let msg_a1 = store_a
+            .insert_pending_message(&bob.public().device_id, PacketType::MsgText, "antiga de alice", 10)
+            .unwrap();
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let store_b = Store::open(&dir_b.path().join("b.db"), &kdf::Key::from_bytes([2u8; 32])).unwrap();
+        store_b.insert_contact(&alice.public(), 1, Some("Alice")).unwrap();
+        let msg_b1 = store_b
+            .insert_incoming_message(&alice.public().device_id, PacketType::MsgText, "antiga de alice para b", 10)
+            .unwrap();
+
+        // 1. Primeira conexão: Alice suporta {1, 2}, Bob só {1}
+        set_test_suite_v2_enabled(false); // Bob só conhece {1}
+        let (mut alice_s1, init1) = Session::open(&alice, bob.public(), 1).unwrap();
+        let (mut bob_s1, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let resp1 = bob_s1.process_handshake_message(&bob, &init1.unwrap()).unwrap().unwrap();
+        alice_s1.process_handshake_message(&alice, &resp1).unwrap();
+
+        // Alice envia anúncio com {1, 2} manualmente construído para simular Alice atualizada
+        let control_payload_a = vec![2, 1, 2]; // 2 suítes: 1 e 2
+        let env_a = alice_s1.encrypt_outgoing(PacketType::ControlSuites, control_payload_a, Transport::DataChannel).unwrap();
+        bob_s1.decrypt_incoming(&env_a, Transport::DataChannel).unwrap().unwrap();
+        // Bob só suporta {1}, então não acorda upgrade para 2
+        assert_eq!(bob_s1.agreed_upgrade_suite(), None);
+
+        // Bob envia anúncio com {1}
+        let control_payload_b = vec![1, 1];
+        let env_b = bob_s1.encrypt_outgoing(PacketType::ControlSuites, control_payload_b, Transport::DataChannel).unwrap();
+        alice_s1.decrypt_incoming(&env_b, Transport::DataChannel).unwrap().unwrap();
+        // Alice tem interseção {1}, que não é > min_suite 1
+        assert_eq!(alice_s1.agreed_upgrade_suite(), None);
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 1);
+        assert_eq!(store_b.get_contact_suite_id(&alice.public().device_id).unwrap(), 1);
+
+        // 2. Bob atualiza o app para {1, 2} com o mesmo banco
+        set_test_suite_v2_enabled(true);
+
+        // Conexão seguinte: ambos ainda com suíte gravada 1
+        let (mut alice_s2, init2) = Session::open(&alice, bob.public(), 1).unwrap();
+        let (mut bob_s2, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let resp2 = bob_s2.process_handshake_message(&bob, &init2.unwrap()).unwrap().unwrap();
+        alice_s2.process_handshake_message(&alice, &resp2).unwrap();
+
+        // Ambos trocam anúncios agora que os dois têm {1, 2}
+        let env_a2 = alice_s2.build_control_suites(Transport::DataChannel).unwrap();
+        bob_s2.decrypt_incoming(&env_a2, Transport::DataChannel).unwrap().unwrap();
+        assert_eq!(bob_s2.agreed_upgrade_suite(), Some(2));
+
+        let env_b2 = bob_s2.build_control_suites(Transport::DataChannel).unwrap();
+        alice_s2.decrypt_incoming(&env_b2, Transport::DataChannel).unwrap().unwrap();
+        assert_eq!(alice_s2.agreed_upgrade_suite(), Some(2));
+
+        // Ninguém grava 2 no banco ainda
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 1);
+        assert_eq!(store_b.get_contact_suite_id(&alice.public().device_id).unwrap(), 1);
+
+        // 3. Na conexão seguinte, o handshake é na suíte 2
+        let (mut alice_s3, init3) = Session::open_with_upgrade(
+            &alice,
+            bob.public(),
+            store_a.get_contact_suite_id(&bob.public().device_id).unwrap(),
+            alice_s2.agreed_upgrade_suite(),
+        ).unwrap();
+        let init3 = init3.unwrap();
+        assert_eq!(init3[0], 2, "handshake deve iniciar na suíte 2");
+
+        let (mut bob_s3, _) = Session::open_with_upgrade(
+            &bob,
+            alice.public(),
+            store_b.get_contact_suite_id(&alice.public().device_id).unwrap(),
+            bob_s2.agreed_upgrade_suite(),
+        ).unwrap();
+
+        let resp3 = bob_s3.process_handshake_message(&bob, &init3).unwrap().unwrap();
+        assert_eq!(resp3[0], 2, "resposta deve ser na suíte 2");
+
+        alice_s3.process_handshake_message(&alice, &resp3).unwrap();
+        assert!(alice_s3.is_established());
+        assert!(alice_s3.should_upgrade_contact(1));
+        store_a.set_contact_suite_id(&bob.public().device_id, alice_s3.current_suite()).unwrap();
+
+        // Bob recebe a primeira mensagem autenticada da sessão na suíte 2
+        let env_a3 = alice_s3.build_control_suites(Transport::DataChannel).unwrap();
+        bob_s3.decrypt_incoming(&env_a3, Transport::DataChannel).unwrap().unwrap();
+        assert!(bob_s3.should_upgrade_contact(1));
+        store_b.set_contact_suite_id(&alice.public().device_id, bob_s3.current_suite()).unwrap();
+
+        // Ambos agora gravaram 2
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 2);
+        assert_eq!(store_b.get_contact_suite_id(&alice.public().device_id).unwrap(), 2);
+
+        // Histórico de mensagens intacto nos dois bancos
+        assert!(store_a.list_pending_messages(&bob.public().device_id).unwrap().iter().any(|m| m.id == msg_a1));
+        let msgs_b = store_b.list_messages(&alice.public().device_id).unwrap();
+        assert!(msgs_b.iter().any(|m| m.id == msg_b1));
+
+        set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn announcement_dropped_in_one_direction_nobody_records_2_and_next_session_opens_on_1() {
+        use crate::crypto::kdf;
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        use crate::store::Store;
+
+        set_test_suite_v2_enabled(true);
+        let (alice, bob) = pair();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(&dir_a.path().join("a.db"), &kdf::Key::from_bytes([1u8; 32])).unwrap();
+        store_a.insert_contact(&bob.public(), 1, None).unwrap();
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let store_b = Store::open(&dir_b.path().join("b.db"), &kdf::Key::from_bytes([2u8; 32])).unwrap();
+        store_b.insert_contact(&alice.public(), 1, None).unwrap();
+
+        let (mut alice_s1, init1) = Session::open(&alice, bob.public(), 1).unwrap();
+        let (mut bob_s1, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let resp1 = bob_s1.process_handshake_message(&bob, &init1.unwrap()).unwrap().unwrap();
+        alice_s1.process_handshake_message(&alice, &resp1).unwrap();
+
+        // Alice envia anúncio para Bob, mas o anúncio de Bob para Alice é descartado na rede
+        let env_a = alice_s1.build_control_suites(Transport::DataChannel).unwrap();
+        bob_s1.decrypt_incoming(&env_a, Transport::DataChannel).unwrap().unwrap();
+        // Alice nunca recebeu anúncio de Bob:
+        assert_eq!(alice_s1.agreed_upgrade_suite(), None);
+
+        // Nenhum dos dois grava 2 no banco
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 1);
+        assert_eq!(store_b.get_contact_suite_id(&alice.public().device_id).unwrap(), 1);
+
+        // Próxima sessão: Alice (iniciadora) abre com upgrade_suite = None (porque não recebeu anúncio)
+        let (mut alice_s2, init2) = Session::open_with_upgrade(
+            &alice,
+            bob.public(),
+            store_a.get_contact_suite_id(&bob.public().device_id).unwrap(),
+            alice_s1.agreed_upgrade_suite(),
+        ).unwrap();
+        let init2 = init2.unwrap();
+        assert_eq!(init2[0], 1, "iniciadora deve abrir na suíte 1");
+
+        let (mut bob_s2, _) = Session::open_with_upgrade(
+            &bob,
+            alice.public(),
+            store_b.get_contact_suite_id(&alice.public().device_id).unwrap(),
+            bob_s1.agreed_upgrade_suite(),
+        ).unwrap();
+
+        let resp2 = bob_s2.process_handshake_message(&bob, &init2).unwrap().unwrap();
+        assert_eq!(resp2[0], 1, "respondedor deve aceitar e responder na 1");
+        alice_s2.process_handshake_message(&alice, &resp2).unwrap();
+        assert!(alice_s2.is_established());
+        assert_eq!(alice_s2.current_suite(), 1);
+        assert_eq!(bob_s2.current_suite(), 1);
+
+        set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn handshake_on_2_fails_in_middle_suite_id_remains_1_in_both_dbs() {
+        use crate::crypto::kdf;
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        use crate::store::Store;
+
+        set_test_suite_v2_enabled(true);
+        let (alice, bob) = pair();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(&dir_a.path().join("a.db"), &kdf::Key::from_bytes([1u8; 32])).unwrap();
+        store_a.insert_contact(&bob.public(), 1, None).unwrap();
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let store_b = Store::open(&dir_b.path().join("b.db"), &kdf::Key::from_bytes([2u8; 32])).unwrap();
+        store_b.insert_contact(&alice.public(), 1, None).unwrap();
+
+        // Ambos tentam upgrade para 2
+        let (mut alice_s2, init2) = Session::open_with_upgrade(&alice, bob.public(), 1, Some(2)).unwrap();
+        let init2 = init2.unwrap();
+        assert_eq!(init2[0], 2);
+
+        let (mut bob_s2, _) = Session::open_with_upgrade(&bob, alice.public(), 1, Some(2)).unwrap();
+        let resp2 = bob_s2.process_handshake_message(&bob, &init2).unwrap().unwrap();
+        assert_eq!(resp2[0], 2);
+
+        // A resposta é corrompida / truncada na rede (falha no meio do handshake)
+        let mut tampered_resp = resp2.clone();
+        tampered_resp.truncate(100);
+        assert!(alice_s2.process_handshake_message(&alice, &tampered_resp).is_err());
+        assert!(!alice_s2.is_established());
+
+        // Alice falhou: não eleva banco
+        assert!(!alice_s2.should_upgrade_contact(1));
+        // Bob não recebeu mensagem confirmada de Alice: não eleva banco
+        assert!(!bob_s2.should_upgrade_contact(1));
+
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 1);
+        assert_eq!(store_b.get_contact_suite_id(&alice.public().device_id).unwrap(), 1);
+
+        // A sessão seguinte abre na 1
+        let (mut alice_s3, init3) = Session::open(&alice, bob.public(), 1).unwrap();
+        let init3 = init3.unwrap();
+        assert_eq!(init3[0], 1);
+
+        let (mut bob_s3, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let resp3 = bob_s3.process_handshake_message(&bob, &init3).unwrap().unwrap();
+        assert_eq!(resp3[0], 1);
+        alice_s3.process_handshake_message(&alice, &resp3).unwrap();
+        assert!(alice_s3.is_established());
+
+        set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn contact_in_suite_2_with_build_only_1_returns_unsupported_version_and_data_intact() {
+        use crate::crypto::kdf;
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        use crate::store::Store;
+
+        // Build atual só conhece {1}
+        set_test_suite_v2_enabled(false);
+        let (alice, bob) = pair();
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(&dir_a.path().join("a.db"), &kdf::Key::from_bytes([1u8; 32])).unwrap();
+        store_a.insert_contact(&bob.public(), 1, Some("Bob")).unwrap();
+        store_a.set_contact_suite_id(&bob.public().device_id, 2).unwrap();
+        let msg_id = store_a
+            .insert_pending_message(&bob.public().device_id, PacketType::MsgText, "msg salva", 1)
+            .unwrap();
+
+        // Tentar abrir sessão com contato em suíte 2 devolve UnsupportedVersion(2)
+        let recorded_suite = store_a.get_contact_suite_id(&bob.public().device_id).unwrap();
+        assert_eq!(recorded_suite, 2);
+        let res = Session::open(&alice, bob.public(), recorded_suite);
+        assert!(matches!(res, Err(Error::UnsupportedVersion(2))));
+
+        // Contato e mensagens continuam intactos no banco
+        let contact = store_a.find_contact(&bob.public().device_id).unwrap().unwrap();
+        assert_eq!(contact.2.as_deref(), Some("Bob"));
+        assert_eq!(store_a.get_contact_suite_id(&bob.public().device_id).unwrap(), 2);
+        let pending = store_a.list_pending_messages(&bob.public().device_id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, msg_id);
+    }
+
+    #[test]
+    fn announcement_with_only_1_from_contact_recorded_in_2_does_not_downgrade() {
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        set_test_suite_v2_enabled(true);
+
+        let (alice, bob) = pair();
+        // Alice e Bob conversando na suíte 2 (contato gravado em 2)
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 2).unwrap();
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 2).unwrap();
+        let resp = bob_session.process_handshake_message(&bob, &init.unwrap()).unwrap().unwrap();
+        alice_session.process_handshake_message(&alice, &resp).unwrap();
+
+        // Alice (iniciadora) envia a primeira mensagem para estabelecer a cadeia de envio de Bob
+        let env_a = alice_session
+            .encrypt_outgoing(PacketType::MsgText, b"inicio".to_vec(), Transport::DataChannel)
+            .unwrap();
+        bob_session.decrypt_incoming(&env_a, Transport::DataChannel).unwrap().unwrap();
+
+        // Bob envia anúncio contendo apenas suíte {1}
+        let env_b = bob_session.encrypt_outgoing(
+            PacketType::ControlSuites,
+            vec![1, 1],
+            Transport::DataChannel,
+        ).unwrap();
+
+        alice_session.decrypt_incoming(&env_b, Transport::DataChannel).unwrap().unwrap();
+
+        // Alice não rebaixa nada: agreed_upgrade_suite continua None e suíte atual continua 2
+        assert_eq!(alice_session.agreed_upgrade_suite(), None);
+        assert_eq!(alice_session.current_suite(), 2);
+
+        set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn endpoint_with_only_suite_1_receives_control_suites_and_session_continues_on_1() {
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+
+        // Alice só suporta {1}
+        set_test_suite_v2_enabled(false);
+        let (alice, bob) = pair();
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
+
+        // Bob suporta {1, 2}
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let resp = bob_session.process_handshake_message(&bob, &init.unwrap()).unwrap().unwrap();
+        alice_session.process_handshake_message(&alice, &resp).unwrap();
+
+        // Alice (iniciadora) envia a primeira mensagem para estabelecer a cadeia de envio de Bob
+        let env_a = alice_session
+            .encrypt_outgoing(PacketType::MsgText, b"inicio".to_vec(), Transport::DataChannel)
+            .unwrap();
+        bob_session.decrypt_incoming(&env_a, Transport::DataChannel).unwrap().unwrap();
+
+        // Bob envia CONTROL_SUITES com {1, 2}
+        let payload = vec![2, 1, 2];
+        let env = bob_session.encrypt_outgoing(
+            PacketType::ControlSuites,
+            payload,
+            Transport::DataChannel,
+        ).unwrap();
+
+        // Alice decifra sem erro e descarta/não atualiza
+        let inner = alice_session.decrypt_incoming(&env, Transport::DataChannel).unwrap().unwrap();
+        assert_eq!(inner.packet_type, PacketType::ControlSuites);
+        assert_eq!(alice_session.agreed_upgrade_suite(), None);
+        assert_eq!(alice_session.current_suite(), 1);
+
+        // Sessão continua normalmente na suíte 1
+        let text_env = alice_session.encrypt_outgoing(
+            PacketType::MsgText,
+            b"sessao continua".to_vec(),
+            Transport::DataChannel,
+        ).unwrap();
+        let received = bob_session.decrypt_incoming(&text_env, Transport::DataChannel).unwrap().unwrap();
+        assert_eq!(received.body, b"sessao continua");
     }
 }
 
