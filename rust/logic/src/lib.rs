@@ -33,6 +33,9 @@ pub enum Error {
     #[error("versão de protocolo não suportada: {0:#04x}")]
     UnsupportedVersion(u8),
 
+    #[error("suíte criptográfica desativada: {0:#04x}; re-pareamento presencial obrigatório")]
+    SuiteRetired(u8),
+
     #[error("payload malformado: {0}")]
     Malformed(&'static str),
 

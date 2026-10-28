@@ -219,6 +219,21 @@ impl Core {
         Ok(ContactDto::from_identity(&candidate, paired_at, nickname, false))
     }
 
+    /// Re-pareamento presencial com um contato existente (§10, D24):
+    /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
+    pub fn repair_from_qr(&self, payload: Vec<u8>) -> Result<ContactDto, FfiError> {
+        self.ensure_not_locked()?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let candidate = pairing::decode_qr(&payload, &id.public())?;
+        let suite_id = *payload.first().ok_or(FfiError::QrMalformed)?;
+        self.store.update_contact_keys(&candidate, suite_id)?;
+        let (contact, paired_at, nickname, is_verified) = self
+            .store
+            .find_contact(&candidate.device_id)?
+            .ok_or(FfiError::ContactNotFound)?;
+        Ok(ContactDto::from_identity(&contact, paired_at, nickname, is_verified))
+    }
+
     /// Todos os contatos já pareados.
     pub fn list_contacts(&self) -> Result<Vec<ContactDto>, FfiError> {
         self.ensure_not_locked()?;
@@ -731,7 +746,7 @@ mod tests {
             signing: fake_public.signing,
             dh: fake_public.dh,
         };
-        core_a.store.update_contact_keys(&fake_contact_with_same_id).unwrap();
+        core_a.store.update_contact_keys(&fake_contact_with_same_id, 2).unwrap();
 
         // Agora is_verified foi revogado para false e is_key_changed deve detectar true!
         assert!(!core_a.is_contact_verified(contact.device_id.clone()).unwrap());

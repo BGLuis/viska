@@ -1362,5 +1362,21 @@ mod tests {
         let received = bob_session.decrypt_incoming(&text_env, Transport::DataChannel).unwrap().unwrap();
         assert_eq!(received.body, b"sessao continua");
     }
+
+    #[test]
+    fn session_open_with_retired_suite_returns_suite_retired_error_and_no_init() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let (alice, bob) = pair();
+        // Marca suíte 1 como desativada
+        set_suite_retired(1, true);
+
+        // Alice tenta abrir sessão com Bob (gravado na suíte 1)
+        let res = Session::open(&alice, bob.public(), 1);
+        assert!(matches!(res, Err(Error::SuiteRetired(1))));
+
+        // Restaura
+        set_suite_retired(1, false);
+    }
 }
 

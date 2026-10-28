@@ -19,6 +19,7 @@ pub enum Suite {
 #[cfg(test)]
 thread_local! {
     static TEST_V2_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RETIRED_SUITES: std::cell::RefCell<std::collections::HashSet<u8>> = std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 #[cfg(test)]
@@ -31,7 +32,30 @@ pub fn is_test_suite_v2_enabled() -> bool {
     TEST_V2_ENABLED.with(|c| c.get())
 }
 
+#[cfg(test)]
+pub fn set_suite_retired(id: u8, retired: bool) {
+    RETIRED_SUITES.with(|cell| {
+        if retired {
+            cell.borrow_mut().insert(id);
+        } else {
+            cell.borrow_mut().remove(&id);
+        }
+    });
+}
+
 impl Suite {
+    /// Identificadores de suítes desativadas/aposentadas por este build do aplicativo (§10, D24).
+    pub const RETIRED: &'static [u8] = &[];
+
+    /// Verifica se uma suíte foi desativada/aposentada.
+    pub fn is_retired(id: u8) -> bool {
+        #[cfg(test)]
+        if RETIRED_SUITES.with(|cell| cell.borrow().contains(&id)) {
+            return true;
+        }
+        Self::RETIRED.contains(&id)
+    }
+
     /// Identificador numérico da suíte no fio.
     pub const fn id(self) -> u8 {
         self as u8
@@ -40,18 +64,26 @@ impl Suite {
     /// Lista de todas as suítes suportadas por este build do aplicativo.
     pub const SUPPORTED: &'static [Suite] = &[Suite::V1];
 
-    /// Suítes suportadas dinamicamente (inclui suítes de teste se habilitadas).
+    /// Suítes suportadas dinamicamente (inclui suítes de teste se habilitadas), excluindo desativadas.
     pub fn supported() -> Vec<Suite> {
-        #[cfg(test)]
-        if is_test_suite_v2_enabled() {
-            return vec![Suite::V1, Suite::TestV2];
+        let mut suites = Vec::new();
+        if !Self::is_retired(Suite::V1.id()) {
+            suites.push(Suite::V1);
         }
-        vec![Suite::V1]
+        #[cfg(test)]
+        if is_test_suite_v2_enabled() && !Self::is_retired(Suite::TestV2.id()) {
+            suites.push(Suite::TestV2);
+        }
+        suites
     }
 
     /// Resolve a suíte a partir do identificador de 1 byte.
+    /// Retorna `Error::SuiteRetired(id)` se a suíte foi desativada.
     /// Retorna `Error::UnsupportedVersion(id)` se o identificador não for conhecido/suportado.
     pub fn from_id(id: u8) -> Result<Self> {
+        if Self::is_retired(id) {
+            return Err(Error::SuiteRetired(id));
+        }
         match id {
             0x01 => Ok(Self::V1),
             #[cfg(test)]
