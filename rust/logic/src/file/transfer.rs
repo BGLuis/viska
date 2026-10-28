@@ -653,6 +653,12 @@ pub struct ReceiveTransfer {
     current_decoder: BlockDecoder,
     symbols_received_current_block: u32,
     blocks_completed: Vec<bool>,
+    /// Em `Box` porque o estado do hasher (~2 KB) inflaria `TransferHandle`,
+    /// cujas variantes `Send`/`Receive` convivem no mesmo mapa.
+    /// Hash do plaintext na ordem em que os blocos são gravados no staging
+    /// (sempre em sequência, ver `ingest_symbol`): permite conferir a raiz
+    /// em `finish` sem decifrar o staging uma vez só para isso.
+    content_hasher: Box<blake3::Hasher>,
 }
 
 impl core::fmt::Debug for ReceiveTransfer {
@@ -695,6 +701,7 @@ impl ReceiveTransfer {
             current_decoder,
             symbols_received_current_block: 0,
             blocks_completed,
+            content_hasher: Box::new(blake3::Hasher::new()),
         })
     }
 
@@ -720,6 +727,7 @@ impl ReceiveTransfer {
             .ingest_symbol(symbol.symbol_id, symbol.data)?
         {
             Some(plaintext) => {
+                self.content_hasher.update(&plaintext);
                 self.staging.write(&plaintext)?;
                 self.blocks_completed[self.current_block_index as usize] = true;
                 self.current_block_index += 1;
@@ -786,14 +794,12 @@ impl ReceiveTransfer {
             manifest,
             key,
             staging,
+            content_hasher,
             ..
         } = self;
         staging.finish()?;
 
-        let mut hasher = HashingWriter(blake3::Hasher::new());
-        StagingReader::open(staging_dir, manifest.file_id, key.clone(), manifest.file_size)?
-            .decrypt_to(&mut hasher)?;
-        merkle::verify_root(&hasher.0.finalize(), &manifest.merkle_root)?;
+        merkle::verify_root(&content_hasher.finalize(), &manifest.merkle_root)?;
 
         StagingReader::open(staging_dir, manifest.file_id, key, manifest.file_size)?
             .decrypt_to(&mut destination)?;
@@ -802,19 +808,6 @@ impl ReceiveTransfer {
         Ok(FileComplete {
             file_id: manifest.file_id,
         })
-    }
-}
-
-struct HashingWriter(blake3::Hasher);
-
-impl Write for HashingWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.update(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -890,6 +883,57 @@ mod tests {
         assert_eq!(complete.file_id, manifest.file_id);
 
         assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn finish_decrypts_staging_exactly_once() {
+        let (manifest, original) = manifesto_de_teste(2 * 4096, 512, 8);
+        let staging_dir = tempfile::tempdir().unwrap();
+        let transfer_secret = b"segredo";
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            transfer_secret,
+            Cursor::new(original.clone()),
+        );
+        let mut receiver =
+            ReceiveTransfer::start(manifest, TransferKind::File, transfer_secret, staging_dir.path()).unwrap();
+        while !receiver.is_complete() {
+            let symbol = sender.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+
+        let before = staging::DECRYPT_PASSES.with(|n| n.get());
+        let mut destino = Vec::new();
+        receiver.finish(staging_dir.path(), &mut destino).unwrap();
+
+        assert_eq!(staging::DECRYPT_PASSES.with(|n| n.get()) - before, 1);
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn finish_rejects_wrong_merkle_root_without_writing_destination() {
+        let (mut manifest, original) = manifesto_de_teste(4096, 512, 8);
+        manifest.merkle_root[0] ^= 1;
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut sender = SendTransfer::new(
+            manifest.clone(),
+            TransferKind::File,
+            b"segredo",
+            Cursor::new(original),
+        );
+        let mut receiver =
+            ReceiveTransfer::start(manifest, TransferKind::File, b"segredo", staging_dir.path()).unwrap();
+        while !receiver.is_complete() {
+            let symbol = sender.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+
+        let mut destino = Vec::new();
+        assert!(receiver.finish(staging_dir.path(), &mut destino).is_err());
+        assert!(destino.is_empty());
     }
 
     /// Tira o `file_id` em claro (D17) do pacote — o que a fronteira FFI
