@@ -969,26 +969,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// Decodifica o WAV da nota uma única vez por bolha: o `Future` fica no
-/// `State` para que rebuilds do chat não repitam a decodificação.
-class _VoiceNoteWaveform extends StatefulWidget {
+/// Exibe a forma de onda da nota de voz adiando a decodificação do áudio WAV
+/// estritamente para o momento do play, preservando o cache de 1 entrada do
+/// controlador e evitando a alocação de PCM na renderização das bolhas.
+class _VoiceNoteWaveform extends StatelessWidget {
   const _VoiceNoteWaveform({required this.controller, required this.message});
 
   final ChatController controller;
   final MessageDto message;
 
   @override
-  State<_VoiceNoteWaveform> createState() => _VoiceNoteWaveformState();
-}
-
-class _VoiceNoteWaveformState extends State<_VoiceNoteWaveform> {
-  late final Future<Uint8List?> _wav = widget.controller.voiceNoteWav(widget.message);
-
-  @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Uint8List?>(
-      future: _wav,
-      builder: (context, snapshot) => AudioWaveformPlayer(audioBytes: snapshot.data),
+    return AudioWaveformPlayer(
+      loadAudioBytes: () => controller.voiceNoteWav(message),
     );
   }
 }

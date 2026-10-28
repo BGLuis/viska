@@ -183,6 +183,12 @@ class ChatController extends ChangeNotifier {
   /// Único WAV decodificado mantido vivo — o da última nota pedida.
   ({String id, Uint8List wav})? _decodedWav;
 
+  /// Sequencial de requisições de decodificação para proteção contra condições de corrida.
+  int _wavRequestSeq = 0;
+
+  /// Requisição de decodificação em andamento para deduplicar chamadas concorrentes da mesma nota.
+  ({String id, Future<Uint8List> future})? _pendingDecode;
+
   int? _playingMessageId;
   int? get playingMessageId => _playingMessageId;
 
@@ -197,7 +203,8 @@ class ChatController extends ChangeNotifier {
   }
 
   /// Decodifica sob demanda o WAV de uma nota de voz pronta (D18), mantendo
-  /// só o da última nota pedida.
+  /// só o da última nota pedida. Protegido contra condições de corrida e
+  /// chamadas concorrentes simultâneas.
   Future<Uint8List?> voiceNoteWav(MessageDto message) async {
     final fileId = message.audioFileId;
     if (fileId == null) return null;
@@ -206,12 +213,30 @@ class ChatController extends ChangeNotifier {
     final cached = _decodedWav;
     if (cached != null && cached.id == id) return cached.wav;
 
+    if (_pendingDecode != null && _pendingDecode!.id == id) {
+      return await _pendingDecode!.future;
+    }
+
     final internal = _voiceNoteAudio[id] ?? _receptionService.getVoiceNoteAudio(fileId);
     if (internal == null) return null;
 
-    final wav = await _core.decodeAudioToWav(internalBytes: internal);
-    _decodedWav = (id: id, wav: wav);
-    return wav;
+    final seq = ++_wavRequestSeq;
+    final future = _core.decodeAudioToWav(internalBytes: internal);
+    _pendingDecode = (id: id, future: future);
+
+    try {
+      final wav = await future;
+      // Garante que apenas o término da requisição cronologicamente mais recente
+      // atualize o cache de entrada única, prevenindo sobrescrita fora de ordem.
+      if (_wavRequestSeq == seq) {
+        _decodedWav = (id: id, wav: wav);
+      }
+      return wav;
+    } finally {
+      if (_pendingDecode?.future == future) {
+        _pendingDecode = null;
+      }
+    }
   }
 
   bool _sendingFile = false;
