@@ -47,6 +47,7 @@ pub struct StoredTransfer {
     /// transferência retomada saber qual chave rederivar (`K_symbol` vs.
     /// `K_audio_chunk`) sem precisar do `FILE_METADATA` de novo.
     pub kind: TransferKind,
+    pub staging_cipher_version: u8,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -62,8 +63,8 @@ pub fn insert(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO file_transfers
-            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
         rusqlite::params![
             file_id.as_slice(),
             direction as i64,
@@ -80,7 +81,7 @@ pub fn insert(
 
 pub fn find(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<Option<StoredTransfer>> {
     conn.query_row(
-        "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind
+        "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version
          FROM file_transfers WHERE file_id = ?1",
         [file_id.as_slice()],
         row_to_transfer,
@@ -99,7 +100,7 @@ pub fn list_for_contact(
 ) -> Result<Vec<StoredTransfer>> {
     let mut statement = conn
         .prepare(
-            "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind
+            "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version
              FROM file_transfers
              WHERE contact_device_id = ?1 AND direction = ?2
              ORDER BY created_at_unix_secs ASC",
@@ -160,6 +161,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
     let transfer_secret: Vec<u8> = row.get(4)?;
     let created_at_unix_secs: i64 = row.get(5)?;
     let kind: i64 = row.get(6)?;
+    let staging_cipher_version: i64 = row.get(7)?;
 
     Ok(StoredTransfer {
         file_id: file_id.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -171,6 +173,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
         transfer_secret,
         created_at_unix_secs,
         kind: TransferKind::from_u8(kind as u8).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        staging_cipher_version: staging_cipher_version as u8,
     })
 }
 

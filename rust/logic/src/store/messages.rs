@@ -396,8 +396,8 @@ fn insert_with_options_internal(
 
         conn.execute(
             "INSERT INTO messages
-                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?8, ?9)",
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id, body_cipher_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?8, ?9, 1)",
             rusqlite::params![
                 contact_device_id.as_slice(),
                 direction as i64,
@@ -442,8 +442,8 @@ fn insert_with_options_internal(
     } else {
         conn.execute(
             "INSERT INTO messages
-                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 0, ?7, ?8, ?9)",
+                (contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, is_ephemeral, reply_to_id, view_once, global_id, body_cipher_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 0, ?7, ?8, ?9, 1)",
             rusqlite::params![
                 contact_device_id.as_slice(),
                 direction as i64,
@@ -674,6 +674,7 @@ pub fn list_for_contact_paginated(
         .prepare(
             "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
                     m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
+                    m.body_cipher_version,
                     ek.key,
                     rx.reactions
              FROM messages m
@@ -714,8 +715,9 @@ pub fn list_for_contact_paginated(
         let reply_to_id: Option<i64> = row.get(7).map_err(|_| Error::Store)?;
         let view_once: i64 = row.get(8).unwrap_or(0);
         let global_id: Option<String> = row.get(9).unwrap_or(None);
-        let ek_key: Option<Vec<u8>> = row.get(10).map_err(|_| Error::Store)?;
-        let reactions_concat: Option<String> = row.get(11).map_err(|_| Error::Store)?;
+        let body_cipher_version: i64 = row.get(10).map_err(|_| Error::Store)?;
+        let ek_key: Option<Vec<u8>> = row.get(11).map_err(|_| Error::Store)?;
+        let reactions_concat: Option<String> = row.get(12).map_err(|_| Error::Store)?;
 
         let direction = match direction_raw {
             0 => Direction::Outgoing,
@@ -728,7 +730,7 @@ pub fn list_for_contact_paginated(
             DeliveryState::from_i64(delivery_state_raw)?;
         let is_ephemeral = is_ephemeral != 0;
 
-        let body = decode_ephemeral_body(raw_body, is_ephemeral, ek_key.as_deref());
+        let body = decode_ephemeral_body(raw_body, is_ephemeral, body_cipher_version, ek_key.as_deref())?;
         let reactions = match reactions_concat {
             Some(s) if !s.is_empty() => s.split('\u{001f}').map(|e| e.to_string()).collect(),
             _ => Vec::new(),
@@ -768,6 +770,7 @@ pub fn list_pending(
         .prepare(
             "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
                     m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
+                    m.body_cipher_version,
                     ek.key
              FROM messages m
              LEFT JOIN ephemeral_message_keys ek ON ek.message_id = m.id
@@ -794,7 +797,8 @@ pub fn list_pending(
                 let reply_to_id: Option<i64> = row.get(7)?;
                 let view_once: i64 = row.get(8).unwrap_or(0);
                 let global_id: Option<String> = row.get(9).unwrap_or(None);
-                let ek_key: Option<Vec<u8>> = row.get(10)?;
+                let body_cipher_version: i64 = row.get(10)?;
+                let ek_key: Option<Vec<u8>> = row.get(11)?;
                 Ok((
                     id,
                     direction,
@@ -806,6 +810,7 @@ pub fn list_pending(
                     reply_to_id,
                     view_once,
                     global_id,
+                    body_cipher_version,
                     ek_key,
                 ))
             },
@@ -825,6 +830,7 @@ pub fn list_pending(
             reply_to_id,
             view_once,
             global_id,
+            body_cipher_version,
             ek_key,
         ) = row.map_err(|_| Error::Store)?;
 
@@ -839,7 +845,7 @@ pub fn list_pending(
             DeliveryState::from_i64(delivery_state)?;
         let is_ephemeral = is_ephemeral != 0;
 
-        let body = decode_ephemeral_body(raw_body, is_ephemeral, ek_key.as_deref());
+        let body = decode_ephemeral_body(raw_body, is_ephemeral, body_cipher_version, ek_key.as_deref())?;
 
         messages.push(StoredMessage {
             id,
@@ -952,10 +958,16 @@ pub fn get_reactions_for_message(
 fn decode_ephemeral_body(
     raw_body: String,
     is_ephemeral: bool,
+    body_cipher_version: i64,
     key_opt: Option<&[u8]>,
-) -> String {
+) -> Result<String> {
     if !is_ephemeral {
-        return raw_body;
+        return Ok(raw_body);
+    }
+
+    if body_cipher_version != 1 {
+        let version_u8 = u8::try_from(body_cipher_version).unwrap_or(255);
+        return Err(Error::UnsupportedVersion(version_u8));
     }
 
     match key_opt {
@@ -974,12 +986,12 @@ fn decode_ephemeral_body(
                         Err(_) => "<mensagem efêmera corrompida>".to_string(),
                     };
                     cipher_buf.zeroize();
-                    result
+                    Ok(result)
                 }
-                Err(_) => "<mensagem efêmera malformada>".to_string(),
+                Err(_) => Ok("<mensagem efêmera malformada>".to_string()),
             }
         }
-        _ => EXPIRED_BODY_PLACEHOLDER.to_string(),
+        _ => Ok(EXPIRED_BODY_PLACEHOLDER.to_string()),
     }
 }
 
@@ -1285,6 +1297,82 @@ mod tests {
 
         let plain = b"direct-id-999";
         assert_eq!(parse_receipt_target_id(plain), Some("direct-id-999".to_string()));
+    }
+
+    #[test]
+    fn ephemeral_message_recorded_before_migration_opens_with_same_text() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Aplica migrations até a versão 9 (antes da migração de body_cipher_version)
+        for migration in &crate::store::schema::MIGRATIONS[..9] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+
+        let contact = [25u8; 16];
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname, suite_id)
+             VALUES (?1, ?2, ?3, 1000, 'Legacy', 1)",
+            rusqlite::params![contact.as_slice(), [1u8; 32].as_slice(), [2u8; 32].as_slice()],
+        ).unwrap();
+
+        // Insere mensagem efêmera no esquema antigo (sem coluna body_cipher_version explícita)
+        let k_msg = crate::crypto::kdf::Key::from_bytes([0x77u8; 32]);
+        let mut cipher_buf = b"mensagem secreta efemera".to_vec();
+        crate::crypto::aead::seal_xchacha(&k_msg, EPHEMERAL_AAD, &mut cipher_buf).unwrap();
+        let hex_body = hex::encode(&cipher_buf);
+
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, global_id)
+             VALUES (?1, 1, 16, ?2, 2, 2000, 1, 'legacy-ephemeral-gid')",
+            rusqlite::params![contact.as_slice(), hex_body],
+        ).unwrap();
+        let msg_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+             VALUES (?1, ?2, NULL, 5000)",
+            rusqlite::params![msg_id, k_msg.as_bytes().as_slice()],
+        ).unwrap();
+
+        // Executa a migration 10 (que adiciona body_cipher_version DEFAULT 1)
+        crate::store::schema::migrate(&conn).unwrap();
+
+        // Lê a mensagem após a migration
+        let msgs = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "mensagem secreta efemera");
+        assert!(msgs[0].is_ephemeral);
+    }
+
+    #[test]
+    fn ephemeral_message_with_body_cipher_version_9_returns_error_not_corrupted_text() {
+        let contact = [26u8; 16];
+        let conn = conn_with_contact(contact);
+
+        // Insere mensagem efêmera com body_cipher_version = 9
+        let k_msg = crate::crypto::kdf::Key::from_bytes([0x88u8; 32]);
+        let mut cipher_buf = b"texto nunca decifrado".to_vec();
+        crate::crypto::aead::seal_xchacha(&k_msg, EPHEMERAL_AAD, &mut cipher_buf).unwrap();
+        let hex_body = hex::encode(&cipher_buf);
+
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, global_id, body_cipher_version)
+             VALUES (?1, 1, 16, ?2, 2, 2000, 1, 'v9-ephemeral-gid', 9)",
+            rusqlite::params![contact.as_slice(), hex_body],
+        ).unwrap();
+        let msg_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+             VALUES (?1, ?2, NULL, 5000)",
+            rusqlite::params![msg_id, k_msg.as_bytes().as_slice()],
+        ).unwrap();
+
+        // Tentar listar deve retornar erro explícito UnsupportedVersion(9), nunca texto corrompido
+        let res = list_for_contact(&conn, &contact);
+        assert!(matches!(res, Err(Error::UnsupportedVersion(9))));
     }
 }
 
