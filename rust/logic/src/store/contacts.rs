@@ -50,20 +50,31 @@ pub fn insert(
 }
 
 /// Atualiza explicitamente as chaves criptográficas de um contato existente após
-/// consentimento do usuário. Reseta a marcação de verificação (`is_verified = 0`).
+/// consentimento do usuário durante re-pareamento presencial.
+///
+/// Só aceita suíte estritamente maior que a atualmente gravada no banco (§10, D24).
+/// Preserva histórico de mensagens e apelido, e reseta a verificação (`is_verified = 0`).
 pub fn update_keys(
     conn: &rusqlite::Connection,
     contact: &PublicIdentity,
+    new_suite: u8,
 ) -> Result<()> {
+    let recorded_suite = get_suite_id(conn, &contact.device_id)?;
+    if new_suite <= recorded_suite {
+        return Err(Error::UnsupportedVersion(new_suite));
+    }
+
     let count = conn.execute(
         "UPDATE contacts SET
             signing_pubkey = ?1,
             dh_pubkey = ?2,
+            suite_id = ?3,
             is_verified = 0
-         WHERE device_id = ?3",
+         WHERE device_id = ?4",
         rusqlite::params![
             contact.signing.as_slice(),
             contact.dh.as_bytes().as_slice(),
+            new_suite as i64,
             contact.device_id.as_slice(),
         ],
     )
@@ -372,10 +383,83 @@ mod tests {
             signing: id2.signing,
             dh: id2.dh,
         };
-        update_keys(&conn, &updated_contact).unwrap();
+        update_keys(&conn, &updated_contact, 2).unwrap();
         let (verified_after, sn_after) = get_verified_status(&conn, &id1.device_id).unwrap();
         assert!(!verified_after);
         // O Safety Number anterior permanece preservado para alertar sobre mudança de chave!
         assert_eq!(sn_after.as_deref(), Some("12345 67890"));
+    }
+
+    #[test]
+    fn repair_contact_from_suite_1_to_suite_2_preserves_messages_and_nickname_and_clears_verified() {
+        let conn = setup_test_db();
+        let id1 = LocalIdentity::generate().unwrap().public();
+        insert(&conn, &id1, 1000, Some("Amigo Bob")).unwrap();
+        set_verified(&conn, &id1.device_id, true).unwrap();
+        assert!(find_by_device_id(&conn, &id1.device_id).unwrap().unwrap().3);
+
+        // Insere mensagem para Bob
+        conn.execute(
+            "INSERT INTO messages (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs)
+             VALUES (?1, 0, 0x10, 'historico preservado', 0, 1000)",
+            rusqlite::params![id1.device_id.as_slice()],
+        ).unwrap();
+
+        // Bob gera novas chaves para suíte 2
+        let id2 = LocalIdentity::generate().unwrap().public();
+        let bob_v2 = PublicIdentity {
+            device_id: id1.device_id,
+            signing: id2.signing,
+            dh: id2.dh,
+        };
+
+        // Re-pareamento na suíte 2
+        update_keys(&conn, &bob_v2, 2).unwrap();
+
+        // Contato atualizado: suíte é 2, chaves novas, apelido preservado, is_verified zerado
+        let contact = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
+        assert_eq!(contact.0.signing, id2.signing);
+        assert_eq!(contact.0.dh, id2.dh);
+        assert_eq!(contact.2.as_deref(), Some("Amigo Bob"));
+        assert_eq!(contact.3, false, "is_verified deve ser zerado no re-pareamento");
+        assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 2);
+
+        // Mensagens anteriores preservadas
+        let msg_count: i64 = conn.query_row(
+            "SELECT count(*) FROM messages WHERE contact_device_id = ?1",
+            rusqlite::params![id1.device_id.as_slice()],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(msg_count, 1);
+    }
+
+    #[test]
+    fn repair_attempting_to_downgrade_or_keep_suite_is_rejected_and_contact_intact() {
+        let conn = setup_test_db();
+        let id1 = LocalIdentity::generate().unwrap().public();
+        insert(&conn, &id1, 1000, Some("Amigo")).unwrap();
+        update_suite_id(&conn, &id1.device_id, 2).unwrap();
+        assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 2);
+
+        let id2 = LocalIdentity::generate().unwrap().public();
+        let bob_downgrade = PublicIdentity {
+            device_id: id1.device_id,
+            signing: id2.signing,
+            dh: id2.dh,
+        };
+
+        // Tenta re-parear para suíte 1 (menor que 2): recusado
+        let err1 = update_keys(&conn, &bob_downgrade, 1).unwrap_err();
+        assert!(matches!(err1, Error::UnsupportedVersion(1)));
+
+        // Tenta re-parear para mesma suíte 2 (não é maior): recusado
+        let err2 = update_keys(&conn, &bob_downgrade, 2).unwrap_err();
+        assert!(matches!(err2, Error::UnsupportedVersion(2)));
+
+        // Contato continua intacto na suíte 2 com as chaves originais
+        let contact = find_by_device_id(&conn, &id1.device_id).unwrap().unwrap();
+        assert_eq!(contact.0.signing, id1.signing);
+        assert_eq!(contact.0.dh, id1.dh);
+        assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 2);
     }
 }

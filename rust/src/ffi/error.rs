@@ -47,6 +47,8 @@ pub enum FfiError {
     /// Um contato com o mesmo `device_id` já existe mas com chaves criptográficas
     /// diferentes. Requer confirmação explícita para evitar substituição de identidade.
     ContactKeyMismatch,
+    /// A suíte criptográfica do contato foi desativada e requer re-pareamento presencial.
+    SuiteRetired,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -59,6 +61,7 @@ impl From<viska_proto::Error> for FfiError {
             | Error::UnsupportedVersion(_)
             | Error::Malformed(_)
             | Error::InvalidPublicKey(_) => FfiError::QrMalformed,
+            Error::SuiteRetired(_) => FfiError::SuiteRetired,
             Error::BadSignature => FfiError::QrBadSignature,
             Error::SelfPairing => FfiError::SelfPairing,
             Error::LowOrderPoint => FfiError::ForgedKey,
