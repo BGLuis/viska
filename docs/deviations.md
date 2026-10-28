@@ -414,3 +414,20 @@ indefinidamente, até `restart_current_block` ganhar um chamador via FFI. Além 
 potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e
 `merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por
 posição. A raiz completa do manifesto não é afetada.
+
+---
+
+## D24 — Suítes criptográficas versionadas e ciclo de vida de migração
+**Spec:** §10 original previa apenas `version = 0x01` fixo com aborto imediato em versão desconhecida; sem conceito de suíte, fixação por contato, subida negociada nem processo de aposentadoria de primitiva.
+**Aqui:** o byte 0 do QR Code e das mensagens de handshake (`INIT`/`RESP`) passa a ser interpretado como `suite_id`. A combinação atual de primitivas da §1 é formalizada como Suíte `0x01`, idêntica byte a byte ao formato em vigor.
+
+O ciclo de vida de convivência e migração de suítes rege-se por sete princípios:
+1. **Identificador de suíte:** o byte 0 do QR e do handshake vira `suite_id`. A Suíte `0x01` mantém exatamente as primitivas e formatos vigentes (X25519 + ML-KEM-768, ChaCha20/XChaCha20-Poly1305, BLAKE3, Ed25519). O formato do QR v1 (145 B) permanece congelado.
+2. **Gravação por contato:** cada contato armazena no banco local (`contacts.suite_id`) a suíte acordada no pareamento. No handshake, o par só aceita suíte igual ou maior que a gravada para o contato e suportada pelo build local, rejeitando qualquer tentativa de handshake em suíte menor.
+3. **Anúncio autenticado em sessão:** assim que uma sessão é estabelecida (`Established`), cada ponta transmite um pacote de controle `CONTROL_SUITES` (§6.2, código `0x42`) contendo a lista de suítes suportadas pelo seu build. A suíte escolhida para a sessão seguinte é a maior em comum. O papel de iniciador do novo handshake segue a regra canônica de menor `IK_dh` (§4).
+4. **Momento da gravação:** a suíte gravada para o contato (`contacts.suite_id`) só é atualizada após a conclusão com sucesso de um handshake completo na suíte nova. O anúncio em si é efêmero e apenas planeja a tentativa; falhas no handshake mantêm a suíte gravada inalterada.
+5. **Aposentadoria de suíte:** uma suíte comprometida pode ser marcada como desativada/aposentada no build. O app recusa conexões e handshakes nela e orienta o usuário a re-parear presencialmente com o contato, preservando integralmente o histórico de mensagens e apelido.
+6. **Versionamento de formatos em repouso:** dados cifrados em repouso (cabeçalho de backup, mensagens efêmeras e staging de transferências) incluem explicitamente o identificador da versão de cifra utilizada. Leitores aceitam versões legadas suportadas; novos registros usam a versão mais recente.
+7. **Limite declarado de segurança:** a autenticação da Suíte `0x01` repousa na chave clássica X25519 (`IK_dh`). Caso o X25519 seja quebrado, o anúncio autenticado dentro da sessão não oferece garantia contra atacantes ativos; nessa hipótese, a transição para uma nova suíte exige estritamente re-pareamento presencial.
+
+**Custo de reverter:** reverter `suite_id` para um `PROTOCOL_VERSION = 0x01` fixo, remover o pacote `CONTROL_SUITES`, a coluna `suite_id` da tabela `contacts` e as colunas/prefixos de versão em repouso, tornando qualquer alteração de primitiva incompatível com pareamentos e dados históricos existentes.

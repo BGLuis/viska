@@ -114,6 +114,12 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
 - **Comprometimento do aparelho antes do primeiro uso.** Se o aparelho já estiver comprometido (malware,
   keylogger, câmera do QR interceptada) antes do pareamento, nenhuma primitiva aqui ajuda — a raiz de
   confiança é o pareamento presencial em si.
+- **Autenticação pós-quântica na Suíte 0x01.** A autenticação de identidade e pareamento na Suíte `0x01`
+  repousa exclusivamente em criptografia clássica (Ed25519 na assinatura do QR Code e X25519 para a
+  chave estática `IK_dh`). Embora o sigilo de sessão utilize ML-KEM-768 híbrido contra HNDL (§1.2), a
+  quebra criptoanalítica de X25519 compromete a autenticação mútua da Suíte `0x01`; nessa eventualidade,
+  o anúncio de suítes em banda (`CONTROL_SUITES`) não é confiável e a migração de suíte exige
+  obrigatoriamente re-pareamento presencial.
 
 ---
 

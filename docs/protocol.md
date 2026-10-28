@@ -326,9 +326,16 @@ offset  tam  campo
 0x30 AUDIO_CHUNK         quadro Opus
 0x40 CONTROL_PING        keepalive / cover traffic
 0x41 CONTROL_REKEM       carrega apenas material de re-KEM
+0x42 CONTROL_SUITES      anúncio de suítes suportadas: count (1 B) ‖ suites (count B)
 ```
 
 `0x01`/`0x02` (handshake) nunca aparecem aqui — vivem fora do envelope, antes de existir sessão.
+
+O corpo de `CONTROL_SUITES (0x42)` é composto por:
+- `count` (1 byte): quantidade de suítes suportadas pelo build.
+- `suites` (`count` bytes): lista dos identificadores `suite_id` (u8) suportados.
+
+Qualquer tipo de pacote desconhecido recebido dentro de uma sessão autenticada é descartado sem erro, permitindo compatibilidade futura entre versões diferentes do protocolo.
 
 ### 6.3 Buckets de padding (D5)
 
@@ -609,11 +616,15 @@ exigiria BLE L2CAP ou um dos aparelhos virar ponto de acesso; nenhum dos dois es
 
 ---
 
-## 10. Versionamento
+## 10. Versionamento e suítes criptográficas
 
-`version = 0x01` no QR e no handshake. Um par que receba uma versão desconhecida aborta e informa
-ao usuário para atualizar. Não há downgrade negociado — downgrade negociável é uma vulnerabilidade,
-não uma funcionalidade.
+O byte 0 do payload do QR Code e das mensagens de handshake (`INIT`/`RESP`) representa o identificador de suíte criptográfica (`suite_id`). A combinação atual de primitivas da §1 é formalizada como Suíte `0x01`, idêntica byte a byte ao formato vigente.
+
+1. **Gravação por contato:** A suíte de um contato é definida no momento do pareamento e gravada no banco local (`contacts.suite_id`). O handshake aceita suíte igual ou maior que a gravada para o contato e suportada por ambos os pares, e recusa qualquer suíte menor com erro de versão.
+2. **Anúncio de capacidades:** Imediatamente após a sessão alcançar o estado `Established`, cada ponta transmite um pacote `CONTROL_SUITES` (§6.2, `0x42`) com as suítes suportadas pelo seu build. A suíte acordada para o próximo handshake é a maior em comum entre os dois pares. O papel de iniciador do handshake seguinte permanece sendo o par com menor `IK_dh` (§4).
+3. **Momento da gravação:** A suíte gravada para o contato só é elevada no banco local após a conclusão bem-sucedida de um handshake completo na suíte nova. O recebimento do anúncio isolado não persiste nenhuma alteração; se o handshake na suíte nova falhar, a suíte gravada permanece inalterada e a próxima tentativa reabre na suíte anterior.
+4. **Retirada de suíte:** Uma suíte comprometida pode ser marcada como desativada pelo build. O app recusa conexões e handshakes nessa suíte e orienta o usuário a re-parear presencialmente com o contato. O re-pareamento atualiza as chaves e a suíte, mantendo integralmente o histórico de mensagens e apelido.
+5. **Não há downgrade negociado:** Não há downgrade negociado — downgrade negociável é uma vulnerabilidade, não uma funcionalidade. Nenhum anúncio ou negociação em claro pode reduzir a suíte de um contato abaixo do valor já registrado no banco local.
 
 ---
 
