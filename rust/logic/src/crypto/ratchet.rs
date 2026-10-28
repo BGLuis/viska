@@ -265,16 +265,28 @@ impl SkippedKeys {
         self.entries.len()
     }
 
-    /// Remove entradas mais velhas que o TTL.
+    /// Remove entradas mais velhas que o TTL a partir da cabeça de `by_age`.
+    ///
+    /// Como `seq` é estritamente monotônico e coincide com a ordem de inserção
+    /// cronológica, as entradas mais velhas por tempo estão sempre no início
+    /// de `by_age`. Drenamos as entradas expiradas a partir da menor chave até
+    /// encontrar a primeira entrada ainda válida, interrompendo a busca. Isso
+    /// evita varrer linearmente todas as entradas de `entries` a cada inserção
+    /// e garante que o custo de avaliar o TTL permaneça em O(log n) no caso comum.
     fn evict_expired(&mut self, now: u64) {
-        let by_age = &mut self.by_age;
-        self.entries.retain(|_, entry| {
-            let alive = now.saturating_sub(entry.stored_at) < Self::TTL_SECONDS;
-            if !alive {
-                by_age.remove(&entry.seq);
+        while let Some((_, &oldest_id)) = self.by_age.first_key_value() {
+            let expired = self
+                .entries
+                .get(&oldest_id)
+                .is_none_or(|entry| now.saturating_sub(entry.stored_at) >= Self::TTL_SECONDS);
+
+            if expired {
+                self.by_age.pop_first();
+                self.entries.remove(&oldest_id);
+            } else {
+                break;
             }
-            alive
-        });
+        }
     }
 
     /// Insere uma chave pulada, aplicando TTL e o teto de `CAP`.
@@ -1082,6 +1094,43 @@ mod tests {
         skipped.insert(id(total), kdf::Key::from_bytes([1; kdf::KEY_LEN]), u64::MAX);
         assert_eq!(skipped.len(), 1, "TTL expirou as demais entradas");
         assert_eq!(skipped.by_age.len(), 1);
+    }
+
+    #[test]
+    fn skipped_keys_drains_expired_entries_from_head_until_active() {
+        let mut skipped = SkippedKeys::new();
+        let id = |n: u32| ([9u8; 32], n);
+        let dummy_key = kdf::Key::from_bytes([2; kdf::KEY_LEN]);
+        let ttl = SkippedKeys::TTL_SECONDS;
+
+        // Inserções com idades distintas:
+        skipped.insert(id(1), dummy_key.clone(), 100);
+        skipped.insert(id(2), dummy_key.clone(), 200);
+        skipped.insert(id(3), dummy_key.clone(), 300);
+
+        // No tempo t = 100 + ttl - 1, nenhuma entrada expirou ainda:
+        skipped.insert(id(4), dummy_key.clone(), 100 + ttl - 1);
+        assert_eq!(skipped.len(), 4);
+        assert_eq!(skipped.by_age.len(), 4);
+
+        // No tempo t = 100 + ttl, a entrada 1 expira e a busca é interrompida na entrada 2:
+        skipped.insert(id(5), dummy_key.clone(), 100 + ttl);
+        assert_eq!(skipped.len(), 4);
+        assert_eq!(skipped.by_age.len(), 4);
+        assert!(skipped.take(&id(1)).is_none(), "entrada 1 deveria ter expirado");
+        assert!(skipped.take(&id(2)).is_some(), "entrada 2 deve continuar viva");
+
+        // No tempo t = 300 + ttl, a entrada 3 expira:
+        // Nota: entrada 2 já foi consumida via take acima, então a cabeça é 3.
+        skipped.insert(id(6), dummy_key, 300 + ttl);
+        assert_eq!(skipped.len(), 3); // 4, 5 e 6
+        assert_eq!(skipped.by_age.len(), 3);
+        assert!(skipped.take(&id(3)).is_none(), "entrada 3 deveria ter expirado");
+        assert!(skipped.take(&id(4)).is_some());
+        assert!(skipped.take(&id(5)).is_some());
+        assert!(skipped.take(&id(6)).is_some());
+        assert_eq!(skipped.len(), 0);
+        assert_eq!(skipped.by_age.len(), 0);
     }
 
     #[test]
