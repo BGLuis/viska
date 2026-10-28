@@ -428,12 +428,16 @@ fn apply_key(conn: &rusqlite::Connection, key: &kdf::Key) -> Result<()> {
 }
 
 /// Configura os pragmas obrigatórios da conexão:
+/// - `cipher_compatibility = 4`: fixa os parâmetros de criptografia no padrão do SQLCipher 4
+///   (PBKDF2-HMAC-SHA512, 256.000 iterações, páginas de 4096 B, HMAC-SHA512), garantindo que futuras
+///   atualizações de versão do SQLCipher não alterem os padrões nem quebrem a leitura de bancos existentes (#40).
 /// - `journal_mode = WAL`: concorrência e flush determinístico via checkpoint (D13).
 /// - `secure_delete = ON`: sobrescreve com zeros as páginas/células liberadas por DELETE,
 ///   impedindo que chaves efêmeras destruídas continuem legíveis nas páginas livres (S-14).
 fn apply_pragmas(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
+        "PRAGMA cipher_compatibility = 4;
+         PRAGMA journal_mode = WAL;
          PRAGMA secure_delete = ON;",
     )
     .map_err(|_| Error::Store)
@@ -690,4 +694,104 @@ mod tests {
             assert_eq!(wal_bytes.len(), 0, "WAL deve estar truncado após sweep");
         }
     }
+
+    #[test]
+    fn database_created_without_cipher_compatibility_reopens_with_pragma() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(42);
+        let contact = LocalIdentity::generate().unwrap().public();
+
+        // 1. Cria o banco manualmente sem o pragma cipher_compatibility (como bancos legados)
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA secure_delete = ON;",
+            )
+            .unwrap();
+            schema::migrate(&conn).unwrap();
+            contacts::insert(&conn, &contact, 1_700_000_000, Some("LegacyAlice")).unwrap();
+        }
+
+        // 2. Reabre pelo Store::open (que agora aplica PRAGMA cipher_compatibility = 4)
+        let store = Store::open(&path, &k).unwrap();
+        let (found, paired_at, nickname, _) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(found, contact);
+        assert_eq!(paired_at, 1_700_000_000);
+        assert_eq!(nickname.as_deref(), Some("LegacyAlice"));
+    }
+
+    #[test]
+    fn sqlcipher_export_matches_before_and_after_reopening_with_pragma() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(43);
+        let contact = LocalIdentity::generate().unwrap().public();
+
+        // 1. Cria o banco sem cipher_compatibility e exporta antes da reabertura
+        let export_before_path = dir.path().join("export_before.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA secure_delete = ON;",
+            )
+            .unwrap();
+            schema::migrate(&conn).unwrap();
+            contacts::insert(&conn, &contact, 1_700_000_000, Some("ExportTest")).unwrap();
+
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS plaintext_before KEY '';
+                 SELECT sqlcipher_export('plaintext_before');
+                 DETACH DATABASE plaintext_before;",
+                export_before_path.to_str().unwrap()
+            ))
+            .unwrap();
+        }
+
+        // 2. Reabre com Store::open (com PRAGMA cipher_compatibility = 4) e exporta novamente
+        let export_after_path = dir.path().join("export_after.sqlite3");
+        {
+            let store = Store::open(&path, &k).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.execute_batch(&format!(
+                        "ATTACH DATABASE '{}' AS plaintext_after KEY '';
+                         SELECT sqlcipher_export('plaintext_after');
+                         DETACH DATABASE plaintext_after;",
+                        export_after_path.to_str().unwrap()
+                    ))
+                    .map_err(|_| Error::Store)?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        // 3. Afirma que ambos os bancos exportados têm o mesmo conteúdo e esquema
+        let conn_before = rusqlite::Connection::open(&export_before_path).unwrap();
+        let conn_after = rusqlite::Connection::open(&export_after_path).unwrap();
+
+        let count_before: i64 = conn_before
+            .query_row("SELECT count(*) FROM contacts", [], |row| row.get(0))
+            .unwrap();
+        let count_after: i64 = conn_after
+            .query_row("SELECT count(*) FROM contacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_before, count_after);
+
+        let nick_before: String = conn_before
+            .query_row("SELECT nickname FROM contacts LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        let nick_after: String = conn_after
+            .query_row("SELECT nickname FROM contacts LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(nick_before, nick_after);
+        assert_eq!(nick_before, "ExportTest");
+    }
 }
+
