@@ -167,6 +167,13 @@ pub fn restore_encrypted_backup(backup_bytes: &[u8], mnemonic: &str) -> Result<V
     }
 
     let version_byte = backup_bytes[PREFIX.len()];
+    let version_num = match version_byte {
+        b'0'..=b'9' => version_byte - b'0',
+        _ => version_byte,
+    };
+    if crate::crypto::Suite::is_retired(version_num) {
+        return Err(Error::SuiteRetired(version_num));
+    }
     match version_byte {
         b'1' => {
             let mut entropy = mnemonic_to_entropy(mnemonic)?;
@@ -316,5 +323,20 @@ mod tests {
 
         let restored = restore_encrypted_backup(&backup_bytes, &mnemonic).unwrap();
         assert_eq!(restored, plaintext);
+    }
+
+    #[test]
+    fn backup_with_retired_version_returns_suite_retired_error() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let test_db = b"database payload";
+        let (mnemonic, encrypted) = create_encrypted_backup(test_db).unwrap();
+
+        set_suite_retired(1, true);
+
+        let res = restore_encrypted_backup(&encrypted, &mnemonic);
+        assert!(matches!(res, Err(Error::SuiteRetired(1))));
+
+        set_suite_retired(1, false);
     }
 }

@@ -105,7 +105,11 @@ impl Core {
         if !session.is_established() {
             return Ok(None);
         }
-        Ok(session.build_control_suites(Transport::DataChannel).ok())
+        match session.build_control_suites(Transport::DataChannel) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(viska_proto::Error::SuiteRetired(_)) => Err(FfiError::SuiteRetired),
+            Err(_) => Ok(None),
+        }
     }
 
     /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de

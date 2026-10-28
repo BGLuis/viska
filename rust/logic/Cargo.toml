@@ -47,3 +47,4 @@ audiopus = { version = "0.2.0", default-features = false, features = ["decoder",
 
 [features]
 default = []
+testing = []

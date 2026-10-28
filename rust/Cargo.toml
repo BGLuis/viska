@@ -26,6 +26,7 @@ zeroize = { version = "1.9", features = ["derive"] }
 
 
 [dev-dependencies]
+viska_proto = { path = "logic", features = ["testing"] }
 tempfile = "3.27.0"
 # Só para gerar quadros Opus de verdade nos testes ponta-a-ponta de nota de
 # voz (D18) — produção nunca codifica, só decodifica (ver viska_proto).

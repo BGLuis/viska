@@ -213,8 +213,9 @@ impl Core {
         self.ensure_not_locked()?;
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
         let candidate = pairing::decode_qr(&payload, &id.public())?;
+        let suite_id = *payload.first().ok_or(FfiError::QrMalformed)?;
         let paired_at = viska_proto::util::time::unix_seconds() as i64;
-        self.store.insert_contact(&candidate, paired_at, nickname.as_deref())?;
+        self.store.insert_contact_with_suite(&candidate, paired_at, nickname.as_deref(), suite_id)?;
 
         Ok(ContactDto::from_identity(&candidate, paired_at, nickname, false))
     }
@@ -227,6 +228,16 @@ impl Core {
         let candidate = pairing::decode_qr(&payload, &id.public())?;
         let suite_id = *payload.first().ok_or(FfiError::QrMalformed)?;
         self.store.update_contact_keys(&candidate, suite_id)?;
+
+        // Invalida sessões e propostas de upgrade em memória para este contato,
+        // garantindo que a próxima abertura de sessão use as chaves e suíte novas (§10, D24).
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(&candidate.device_id);
+        }
+        if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
+            upgrades.remove(&candidate.device_id);
+        }
+
         let (contact, paired_at, nickname, is_verified) = self
             .store
             .find_contact(&candidate.device_id)?
@@ -824,5 +835,105 @@ mod tests {
         assert_eq!(contacts[0].signing_pubkey, original_signing);
         assert_eq!(contacts[0].dh_pubkey, original_dh);
         assert_eq!(contacts[0].nickname.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn repair_from_qr_end_to_end_upgrades_suite_evicts_stale_session_and_preserves_history() {
+        use viska_proto::crypto::suite::{set_suite_retired, set_test_suite_v2_enabled, Suite};
+        use viska_proto::crypto::pairing::encode_qr_with_suite;
+        use viska_proto::crypto::identity::LocalIdentity;
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        // Pareamento inicial legítimo na Suíte 1
+        let bob_payload = core_b.my_qr_payload();
+        let alice_payload = core_a.my_qr_payload();
+        let bob_contact = core_a.pair_from_qr(bob_payload, Some("Amigo Bob".to_string())).unwrap();
+        let alice_contact = core_b.pair_from_qr(alice_payload, Some("Alice".to_string())).unwrap();
+
+        let bob_dev_id = bob_contact.device_id.clone();
+        let alice_dev_id = alice_contact.device_id.clone();
+
+        // Alice verifica Bob presencialmente
+        core_a.verify_contact(bob_dev_id.clone(), true).unwrap();
+        assert!(core_a.is_contact_verified(bob_dev_id.clone()).unwrap());
+
+        // Estabelece sessão e troca mensagens na Suíte 1
+        let status_a = core_a.ensure_session(bob_dev_id.clone()).unwrap();
+        let status_b = core_b.ensure_session(alice_dev_id.clone()).unwrap();
+        let (initiator_core, initiator_peer, responder_core, responder_peer, init_bytes) =
+            match (status_a.outgoing_handshake, status_b.outgoing_handshake) {
+                (Some(init), None) => (&core_a, bob_dev_id.clone(), &core_b, alice_dev_id.clone(), init),
+                (None, Some(init)) => (&core_b, alice_dev_id.clone(), &core_a, bob_dev_id.clone(), init),
+                other => panic!("exatamente um dos dois deveria ser iniciador: {other:?}"),
+            };
+        let resp_bytes = responder_core.feed_handshake(responder_peer, init_bytes).unwrap().unwrap();
+        initiator_core.feed_handshake(initiator_peer, resp_bytes).unwrap();
+
+        // Envia mensagem antes da aposentadoria
+        let sealed_before = core_a.seal_outgoing_text(bob_dev_id.clone(), "msg pre-reparo".to_string()).unwrap().bytes.unwrap();
+        core_b.decrypt_incoming(alice_dev_id.clone(), sealed_before).unwrap();
+
+        let msgs_before = core_a.list_messages(bob_dev_id.clone()).unwrap();
+        assert_eq!(msgs_before.len(), 1);
+
+        // Agora a Suíte 1 é declarada aposentada no ecossistema
+        set_suite_retired(1, true);
+        set_test_suite_v2_enabled(true);
+
+        // Bob gera novas chaves e suíte 2 mantendo o mesmo device_id
+        let bob_dev_bytes: [u8; 16] = bob_dev_id.clone().try_into().unwrap();
+        let bob_v2_id = LocalIdentity::from_parts(bob_dev_bytes, [0x33; 32], [0x44; 32]);
+        let bob_v2_payload = encode_qr_with_suite(&bob_v2_id, Suite::TestV2);
+
+        // Alice re-pareia Bob presencialmente com repair_from_qr
+        let repaired = core_a.repair_from_qr(bob_v2_payload.to_vec()).unwrap();
+        assert_eq!(repaired.device_id, bob_dev_id);
+        assert_eq!(repaired.nickname.as_deref(), Some("Amigo Bob"), "apelido deve ser preservado");
+        assert!(!repaired.is_verified, "is_verified deve ser resetado");
+        assert!(!core_a.is_contact_verified(bob_dev_id.clone()).unwrap());
+        assert!(core_a.is_key_changed(bob_dev_id.clone()).unwrap(), "mudança de chave deve ser detectada");
+
+        // Histórico de mensagens anteriores de Alice permanece intacto
+        let msgs_preserved = core_a.list_messages(bob_dev_id.clone()).unwrap();
+        assert_eq!(msgs_preserved.len(), 1);
+        assert_eq!(msgs_preserved[0].body, "msg pre-reparo");
+
+        // Alice abre sessão com Bob: como repair_from_qr removeu a sessão velha da RAM,
+        // uma sessão nova é criada usando a Suíte 2 recém-gravada!
+        // Criamos um novo Core B2 para Bob com a nova identidade v2
+        let dir_b2 = tempfile::tempdir().unwrap();
+        let core_b2 = open_core(&dir_b2);
+        // Atualiza a identidade em B2 para bob_v2_id
+        *core_b2.identity.write().unwrap() = bob_v2_id;
+        // B2 pareia com Alice na suíte 2
+        let alice_v2_payload = encode_qr_with_suite(&core_a.identity.read().unwrap(), Suite::TestV2);
+        core_b2.pair_from_qr(alice_v2_payload.to_vec(), Some("Alice".to_string())).unwrap();
+
+        let status_v2_a = core_a.ensure_session(bob_dev_id.clone()).unwrap();
+        let status_v2_b = core_b2.ensure_session(alice_dev_id.clone()).unwrap();
+        let (init_v2_core, init_v2_peer, resp_v2_core, resp_v2_peer, init_v2_bytes) =
+            match (status_v2_a.outgoing_handshake, status_v2_b.outgoing_handshake) {
+                (Some(init), None) => (&core_a, bob_dev_id.clone(), &core_b2, alice_dev_id.clone(), init),
+                (None, Some(init)) => (&core_b2, alice_dev_id.clone(), &core_a, bob_dev_id.clone(), init),
+                other => panic!("exatamente um dos dois deveria ser iniciador: {other:?}"),
+            };
+        assert_eq!(init_v2_bytes[0], 2, "INIT deve ser emitida na Suíte 2");
+
+        let resp_v2_bytes = resp_v2_core.feed_handshake(resp_v2_peer, init_v2_bytes).unwrap().unwrap();
+        assert_eq!(resp_v2_bytes[0], 2, "RESP deve ser emitida na Suíte 2");
+        init_v2_core.feed_handshake(init_v2_peer, resp_v2_bytes).unwrap();
+
+        // Troca mensagem com sucesso na Suíte 2
+        let sealed_v2 = core_a.seal_outgoing_text(bob_dev_id.clone(), "ola na suite 2".to_string()).unwrap().bytes.unwrap();
+        let incoming_v2 = core_b2.decrypt_incoming(alice_dev_id.clone(), sealed_v2).unwrap().unwrap();
+        assert_eq!(incoming_v2.body, "ola na suite 2");
+
+        // Limpeza
+        set_suite_retired(1, false);
+        set_test_suite_v2_enabled(false);
     }
 }

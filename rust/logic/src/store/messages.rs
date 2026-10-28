@@ -965,8 +965,11 @@ fn decode_ephemeral_body(
         return Ok(raw_body);
     }
 
+    let version_u8 = u8::try_from(body_cipher_version).unwrap_or(255);
+    if crate::crypto::Suite::is_retired(version_u8) {
+        return Err(Error::SuiteRetired(version_u8));
+    }
     if body_cipher_version != 1 {
-        let version_u8 = u8::try_from(body_cipher_version).unwrap_or(255);
         return Err(Error::UnsupportedVersion(version_u8));
     }
 
@@ -1373,6 +1376,40 @@ mod tests {
         // Tentar listar deve retornar erro explícito UnsupportedVersion(9), nunca texto corrompido
         let res = list_for_contact(&conn, &contact);
         assert!(matches!(res, Err(Error::UnsupportedVersion(9))));
+    }
+
+    #[test]
+    fn ephemeral_message_with_retired_body_cipher_version_returns_suite_retired_error() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let contact = [27u8; 16];
+        let conn = conn_with_contact(contact);
+
+        let k_msg = crate::crypto::kdf::Key::from_bytes([0x77u8; 32]);
+        let mut cipher_buf = b"texto aposentado".to_vec();
+        crate::crypto::aead::seal_xchacha(&k_msg, EPHEMERAL_AAD, &mut cipher_buf).unwrap();
+        let hex_body = hex::encode(&cipher_buf);
+
+        conn.execute(
+            "INSERT INTO messages
+                (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, global_id, body_cipher_version)
+             VALUES (?1, 1, 16, ?2, 2, 2000, 1, 'v1-retired-gid', 1)",
+            rusqlite::params![contact.as_slice(), hex_body],
+        ).unwrap();
+        let msg_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+             VALUES (?1, ?2, NULL, 5000)",
+            rusqlite::params![msg_id, k_msg.as_bytes().as_slice()],
+        ).unwrap();
+
+        set_suite_retired(1, true);
+
+        let res = list_for_contact(&conn, &contact);
+        assert!(matches!(res, Err(Error::SuiteRetired(1))));
+
+        set_suite_retired(1, false);
     }
 }
 

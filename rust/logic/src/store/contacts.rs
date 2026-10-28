@@ -7,15 +7,31 @@
 
 use crate::crypto::dh::DhPublic;
 use crate::crypto::identity::{PublicIdentity, DEVICE_ID_LEN, SIGNING_KEY_LEN};
+use crate::crypto::Suite;
 use crate::{Error, Result};
 use rusqlite::OptionalExtension;
 
+#[allow(dead_code)]
 pub fn insert(
     conn: &rusqlite::Connection,
     contact: &PublicIdentity,
     paired_at_unix_secs: i64,
     nickname: Option<&str>,
 ) -> Result<()> {
+    insert_with_suite(conn, contact, paired_at_unix_secs, nickname, 1)
+}
+
+pub fn insert_with_suite(
+    conn: &rusqlite::Connection,
+    contact: &PublicIdentity,
+    paired_at_unix_secs: i64,
+    nickname: Option<&str>,
+    suite_id: u8,
+) -> Result<()> {
+    if Suite::is_retired(suite_id) {
+        return Err(Error::SuiteRetired(suite_id));
+    }
+
     if let Some((existing_id, _, _, _)) = find_by_device_id(conn, &contact.device_id)? {
         // Se o device_id já existe mas as chaves diferem, recusa a substituição para
         // evitar que um atacante troque silenciosamente a identidade do contato (S-13).
@@ -35,13 +51,14 @@ pub fn insert(
 
     conn.execute(
         "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname, suite_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             contact.device_id.as_slice(),
             contact.signing.as_slice(),
             contact.dh.as_bytes().as_slice(),
             paired_at_unix_secs,
             nickname,
+            suite_id as i64,
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -59,6 +76,9 @@ pub fn update_keys(
     contact: &PublicIdentity,
     new_suite: u8,
 ) -> Result<()> {
+    if Suite::is_retired(new_suite) {
+        return Err(Error::SuiteRetired(new_suite));
+    }
     let recorded_suite = get_suite_id(conn, &contact.device_id)?;
     if new_suite <= recorded_suite {
         return Err(Error::UnsupportedVersion(new_suite));
@@ -461,5 +481,40 @@ mod tests {
         assert_eq!(contact.0.signing, id1.signing);
         assert_eq!(contact.0.dh, id1.dh);
         assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 2);
+    }
+
+    #[test]
+    fn insert_with_suite_and_update_keys_reject_retired_suite() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let conn = setup_test_db();
+        let id1 = LocalIdentity::generate().unwrap().public();
+
+        set_suite_retired(1, true);
+
+        // Tentar inserir com suíte aposentada retorna SuiteRetired(1)
+        let res = insert_with_suite(&conn, &id1, 1000, Some("RetiredPeer"), 1);
+        assert!(matches!(res, Err(Error::SuiteRetired(1))));
+
+        set_suite_retired(1, false);
+
+        // Insere com sucesso na suíte 1
+        insert_with_suite(&conn, &id1, 1000, Some("Peer"), 1).unwrap();
+        assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 1);
+
+        // Aposenta a suíte 2
+        set_suite_retired(2, true);
+        let id2 = LocalIdentity::generate().unwrap().public();
+        let updated = PublicIdentity {
+            device_id: id1.device_id,
+            signing: id2.signing,
+            dh: id2.dh,
+        };
+
+        // Re-pareamento para a suíte 2 desativada deve ser recusado
+        let res_update = update_keys(&conn, &updated, 2);
+        assert!(matches!(res_update, Err(Error::SuiteRetired(2))));
+
+        set_suite_retired(2, false);
     }
 }

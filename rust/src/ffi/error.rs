@@ -139,6 +139,7 @@ mod tests {
             FfiError::FileCorrupted
         );
         assert_eq!(FfiError::from(Error::Locked), FfiError::Locked);
+        assert_eq!(FfiError::from(Error::SuiteRetired(1)), FfiError::SuiteRetired);
 
         for err in [
             Error::AeadFailure,

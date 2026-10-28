@@ -428,11 +428,17 @@ impl Session {
 
     /// Cifra o pacote `CONTROL_SUITES` para envio imediato após estabelecer sessão.
     pub fn build_control_suites(&mut self, transport: Transport) -> Result<Vec<u8>> {
+        if Suite::is_retired(self.current_suite) || Suite::is_retired(self.min_suite) {
+            return Err(Error::SuiteRetired(self.current_suite));
+        }
         let payload = Self::control_suites_payload();
         self.encrypt_outgoing(PacketType::ControlSuites, payload, transport)
     }
 
     fn handle_control_suites(&mut self, body: &[u8]) {
+        if Suite::is_retired(self.current_suite) || Suite::is_retired(self.min_suite) {
+            return;
+        }
         if body.is_empty() {
             return;
         }
@@ -1376,6 +1382,29 @@ mod tests {
         assert!(matches!(res, Err(Error::SuiteRetired(1))));
 
         // Restaura
+        set_suite_retired(1, false);
+    }
+
+    #[test]
+    fn retired_suite_session_rejects_and_ignores_control_suites() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let (_alice, mut alice_s, _bob, mut bob_s) = established_pair();
+
+        // Marca suíte 1 como desativada enquanto a sessão está viva
+        set_suite_retired(1, true);
+
+        // build_control_suites deve falhar com SuiteRetired
+        assert!(matches!(
+            alice_s.build_control_suites(Transport::DataChannel),
+            Err(Error::SuiteRetired(1))
+        ));
+
+        // Envio direto de payload CONTROL_SUITES deve ser ignorado por bob_s
+        let payload = vec![2, 1, 2]; // count=2, suites=[1, 2]
+        bob_s.handle_control_suites(&payload);
+        assert_eq!(bob_s.agreed_upgrade_suite(), None);
+
         set_suite_retired(1, false);
     }
 }

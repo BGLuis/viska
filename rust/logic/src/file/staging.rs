@@ -208,6 +208,9 @@ impl StagingReader {
         total_len: u64,
         cipher_version: u8,
     ) -> Result<Self> {
+        if crate::crypto::Suite::is_retired(cipher_version) {
+            return Err(Error::SuiteRetired(cipher_version));
+        }
         if cipher_version != 1 {
             return Err(Error::UnsupportedVersion(cipher_version));
         }

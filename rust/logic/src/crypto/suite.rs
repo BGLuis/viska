@@ -12,27 +12,27 @@ use crate::{Error, Result};
 #[repr(u8)]
 pub enum Suite {
     V1 = 0x01,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     TestV2 = 0x02,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     static TEST_V2_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static RETIRED_SUITES: std::cell::RefCell<std::collections::HashSet<u8>> = std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn set_test_suite_v2_enabled(enabled: bool) {
     TEST_V2_ENABLED.with(|c| c.set(enabled));
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn is_test_suite_v2_enabled() -> bool {
     TEST_V2_ENABLED.with(|c| c.get())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn set_suite_retired(id: u8, retired: bool) {
     RETIRED_SUITES.with(|cell| {
         if retired {
@@ -49,7 +49,7 @@ impl Suite {
 
     /// Verifica se uma suíte foi desativada/aposentada.
     pub fn is_retired(id: u8) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if RETIRED_SUITES.with(|cell| cell.borrow().contains(&id)) {
             return true;
         }
@@ -70,7 +70,7 @@ impl Suite {
         if !Self::is_retired(Suite::V1.id()) {
             suites.push(Suite::V1);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if is_test_suite_v2_enabled() && !Self::is_retired(Suite::TestV2.id()) {
             suites.push(Suite::TestV2);
         }
@@ -86,7 +86,7 @@ impl Suite {
         }
         match id {
             0x01 => Ok(Self::V1),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             0x02 if is_test_suite_v2_enabled() => Ok(Self::TestV2),
             other => Err(Error::UnsupportedVersion(other)),
         }
@@ -96,7 +96,7 @@ impl Suite {
     pub const fn init_len(self) -> usize {
         match self {
             Self::V1 => 1218,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             Self::TestV2 => 1218,
         }
     }
@@ -105,7 +105,7 @@ impl Suite {
     pub const fn resp_len(self) -> usize {
         match self {
             Self::V1 => 1122,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             Self::TestV2 => 1122,
         }
     }

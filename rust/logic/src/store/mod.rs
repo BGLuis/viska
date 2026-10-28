@@ -50,15 +50,8 @@ impl Store {
 
         schema::migrate(&conn).map_err(|_| Error::Store)?;
 
-        for &retired in crate::crypto::Suite::RETIRED {
-            let _ = conn.execute(
-                "DELETE FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1",
-                rusqlite::params![retired as i64],
-            );
-            let _ = conn.execute(
-                "DELETE FROM file_transfers WHERE staging_cipher_version = ?1",
-                rusqlite::params![retired as i64],
-            );
+        for &retired in &get_retired_suite_ids() {
+            let _ = purge_retired_on_conn(&conn, retired);
         }
 
         Ok(Self {
@@ -90,6 +83,11 @@ impl Store {
         apply_key(&conn, &db_key)?;
         apply_pragmas(&conn)?;
         schema::migrate(&conn).map_err(|_| Error::Store)?;
+
+        for &retired in &get_retired_suite_ids() {
+            let _ = purge_retired_on_conn(&conn, retired);
+        }
+
         *guard = Some(conn);
         Ok(())
     }
@@ -121,7 +119,20 @@ impl Store {
         paired_at_unix_secs: i64,
         nickname: Option<&str>,
     ) -> Result<()> {
-        self.with_conn(|conn| contacts::insert(conn, contact, paired_at_unix_secs, nickname))
+        self.insert_contact_with_suite(contact, paired_at_unix_secs, nickname, 1)
+    }
+
+    /// Persiste um contato recém-pareado com uma suíte específica, opcionalmente com apelido.
+    pub fn insert_contact_with_suite(
+        &self,
+        contact: &PublicIdentity,
+        paired_at_unix_secs: i64,
+        nickname: Option<&str>,
+        suite_id: u8,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            contacts::insert_with_suite(conn, contact, paired_at_unix_secs, nickname, suite_id)
+        })
     }
 
     /// Atualiza o apelido de um contato existente.
@@ -134,24 +145,10 @@ impl Store {
         self.with_conn(|conn| contacts::update_keys(conn, contact, new_suite))
     }
 
-    /// Descarta mensagens efêmeras e transferências em staging cuja versão de cifra pertença
+    /// Descarta mensagens efêmeras, chaves efêmeras e transferências em staging cuja versão de cifra pertença
     /// a uma suíte criptográfica desativada (§10, D24).
     pub fn purge_retired_cipher_data(&self, retired_version: u8) -> Result<()> {
-        self.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1",
-                rusqlite::params![retired_version as i64],
-            )
-            .map_err(|_| Error::Store)?;
-
-            conn.execute(
-                "DELETE FROM file_transfers WHERE staging_cipher_version = ?1",
-                rusqlite::params![retired_version as i64],
-            )
-            .map_err(|_| Error::Store)?;
-
-            Ok(())
-        })
+        self.with_conn(|conn| purge_retired_on_conn(conn, retired_version))
     }
 
     /// Lista todos os contatos pareados.
@@ -457,6 +454,44 @@ impl core::fmt::Debug for Store {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Store(<opaco>)")
     }
+}
+
+fn get_retired_suite_ids() -> Vec<u8> {
+    #[allow(unused_mut)]
+    let mut retired = crate::crypto::Suite::RETIRED.to_vec();
+    #[cfg(any(test, feature = "testing"))]
+    {
+        for id in [1u8, 2u8] {
+            if crate::crypto::Suite::is_retired(id) && !retired.contains(&id) {
+                retired.push(id);
+            }
+        }
+    }
+    retired
+}
+
+fn purge_retired_on_conn(conn: &rusqlite::Connection, retired_version: u8) -> Result<()> {
+    conn.execute(
+        "DELETE FROM ephemeral_message_keys WHERE message_id IN (
+            SELECT id FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1
+         )",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    conn.execute(
+        "DELETE FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    conn.execute(
+        "DELETE FROM file_transfers WHERE staging_cipher_version = ?1",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    Ok(())
 }
 
 /// Aplica `PRAGMA key` na conexão. Isolado em função própria porque a chave
@@ -908,11 +943,18 @@ mod tests {
         store.insert_contact(&peer, 1000, Some("Peer")).unwrap();
 
         // Insere mensagem efêmera com body_cipher_version = 1
+        // Insere mensagem efêmera com body_cipher_version = 1 e chave efêmera associada
         store.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO messages (contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, body_cipher_version)
-                 VALUES (?1, 0, 0x10, 'efemera na suite 1', 0, 1000, 1, 1)",
+                "INSERT INTO messages (id, contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, body_cipher_version)
+                 VALUES (10, ?1, 0, 0x10, 'efemera na suite 1', 0, 1000, 1, 1)",
                 rusqlite::params![peer.device_id.as_slice()],
+            ).unwrap();
+
+            conn.execute(
+                "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+                 VALUES (10, ?1, NULL, 5000)",
+                rusqlite::params![[0xeeu8; 32].as_slice()],
             ).unwrap();
 
             // Insere transferência em staging com staging_cipher_version = 1
@@ -928,8 +970,10 @@ mod tests {
         // Afirma que antes do expurgo existem linhas na versão 1
         store.with_conn(|conn| {
             let m_count: i64 = conn.query_row("SELECT count(*) FROM messages WHERE body_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            let k_count: i64 = conn.query_row("SELECT count(*) FROM ephemeral_message_keys WHERE message_id = 10", [], |r| r.get(0)).unwrap();
             let f_count: i64 = conn.query_row("SELECT count(*) FROM file_transfers WHERE staging_cipher_version = 1", [], |r| r.get(0)).unwrap();
             assert_eq!(m_count, 1);
+            assert_eq!(k_count, 1);
             assert_eq!(f_count, 1);
             Ok(())
         }).unwrap();
@@ -937,11 +981,13 @@ mod tests {
         // Executa o expurgo da suíte desativada 1 (Item 4)
         store.purge_retired_cipher_data(1).unwrap();
 
-        // Afirma que nenhuma linha de messages ou file_transfers fica com versão de cifra desativada
+        // Afirma que nenhuma linha de messages, ephemeral_message_keys ou file_transfers fica com versão de cifra desativada
         store.with_conn(|conn| {
             let m_count: i64 = conn.query_row("SELECT count(*) FROM messages WHERE body_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            let k_count: i64 = conn.query_row("SELECT count(*) FROM ephemeral_message_keys WHERE message_id = 10", [], |r| r.get(0)).unwrap();
             let f_count: i64 = conn.query_row("SELECT count(*) FROM file_transfers WHERE staging_cipher_version = 1", [], |r| r.get(0)).unwrap();
             assert_eq!(m_count, 0, "nenhuma linha de messages deve permanecer na versao desativada");
+            assert_eq!(k_count, 0, "nenhuma chave efêmera deve permanecer");
             assert_eq!(f_count, 0, "nenhuma linha de file_transfers deve permanecer na versao desativada");
             Ok(())
         }).unwrap();
