@@ -349,7 +349,7 @@ void main() {
       await sub.cancel();
     });
 
-    test('completing voice note transfer decodes WAV, caches audio, and emits VoiceNoteReceivedEvent', () async {
+    test('completing voice note transfer caches compressed audio and emits VoiceNoteReceivedEvent', () async {
       final fileId = Uint8List.fromList(List.generate(16, (i) => 0xEE));
       core.sessionState = SessionStateKind.established;
       core.pendingOffers = []; // Não é oferta genérica -> áudio
@@ -372,7 +372,7 @@ void main() {
 
       expect(core.finishReceiveAudioCalls, [fileId]);
       expect(service.isVoiceNoteReady(fileId), isTrue);
-      expect(service.getVoiceNoteAudio(fileId), Uint8List.fromList([0x57, 0x41, 0x56]));
+      expect(service.getVoiceNoteAudio(fileId), Uint8List.fromList([1, 2, 3]));
       expect(events.whereType<VoiceNoteReceivedEvent>(), hasLength(1));
 
       await sub.cancel();

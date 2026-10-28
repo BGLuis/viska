@@ -44,15 +44,16 @@ class FileReceivedEvent extends MessageReceptionEvent {
   final String path;
 }
 
-/// Nota de voz recebida, verificada, decodificada para WAV e cacheada.
+/// Nota de voz recebida e verificada; carrega o áudio interno comprimido —
+/// o WAV é decodificado sob demanda por quem for tocar.
 class VoiceNoteReceivedEvent extends MessageReceptionEvent {
   const VoiceNoteReceivedEvent(
     super.contactId, {
     required this.fileId,
-    required this.wavBytes,
+    required this.internalBytes,
   });
   final Uint8List fileId;
-  final Uint8List wavBytes;
+  final Uint8List internalBytes;
 }
 
 /// Serviço de recepção contínua no nível do aplicativo.
@@ -322,9 +323,10 @@ class MessageReceptionService {
       await _router.sendToContact(contactId, sealedComplete);
 
       final internalBytes = await File(internalPath).readAsBytes();
-      final wav = await _core.decodeAudioToWav(internalBytes: internalBytes);
-      _voiceNoteAudio[_hex(fileId)] = wav;
-      _eventsController.add(VoiceNoteReceivedEvent(contactId, fileId: fileId, wavBytes: wav));
+      _voiceNoteAudio[_hex(fileId)] = internalBytes;
+      _eventsController.add(
+        VoiceNoteReceivedEvent(contactId, fileId: fileId, internalBytes: internalBytes),
+      );
     } catch (_) {
     } finally {
       unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
@@ -376,15 +378,15 @@ class MessageReceptionService {
     }
   }
 
-  /// Retorna os bytes WAV decodificados em cache de uma nota de voz pronta.
+  /// Retorna o áudio interno comprimido de uma nota de voz pronta.
   Uint8List? getVoiceNoteAudio(Uint8List fileId) => _voiceNoteAudio[_hex(fileId)];
 
-  /// Verifica se uma nota de voz já foi decodificada e está pronta para reprodução.
+  /// Verifica se o áudio de uma nota de voz já está disponível para reprodução.
   bool isVoiceNoteReady(Uint8List fileId) => _voiceNoteAudio.containsKey(_hex(fileId));
 
-  /// Cacheia os bytes WAV decodificados de uma nota de voz gerada localmente.
-  void cacheVoiceNoteAudio(Uint8List fileId, Uint8List wav) {
-    _voiceNoteAudio[_hex(fileId)] = wav;
+  /// Cacheia o áudio interno comprimido de uma nota de voz gerada localmente.
+  void cacheVoiceNoteAudio(Uint8List fileId, Uint8List internalBytes) {
+    _voiceNoteAudio[_hex(fileId)] = internalBytes;
   }
 
   /// Retorna o caminho temporário de um arquivo recebido.

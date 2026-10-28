@@ -240,6 +240,50 @@ void main() {
       // Verifica exibição de CustomPaint com o waveform
       expect(find.byType(CustomPaint), findsWidgets);
     });
+
+    testWidgets('defers audio decoding until play button is tapped when using loadAudioBytes', (tester) async {
+      var loadCalled = 0;
+      final completer = Completer<Uint8List?>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: Scaffold(
+            body: Center(
+              child: AudioWaveformPlayer(
+                loadAudioBytes: () {
+                  loadCalled++;
+                  return completer.future;
+                },
+                barCount: 20,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Confirma que NÃO chamou loadAudioBytes durante a renderização inicial
+      expect(loadCalled, 0);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+      expect(find.byType(CustomPaint), findsWidgets);
+
+      // Toca no botão de play
+      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      await tester.pump();
+
+      // Confirma que disparou a chamada e exibe o indicador de progresso
+      expect(loadCalled, 1);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      // Simula término do carregamento retornando nulo (ex: cancelamento ou áudio indisponível)
+      completer.complete(null);
+      await tester.pump();
+
+      // Indicador de progresso desaparece após o carregamento e botão volta para play
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    });
   });
 
   group('SwipeToReply and ReplyPreview', () {

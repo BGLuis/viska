@@ -339,7 +339,7 @@ class _FakeCore implements Core {
   Uint8List? Function(Uint8List fileId)? nextOutgoingWireChunkHandler;
   TransferProgressDto? Function(Uint8List fileId)? transferProgressHandler;
   Uint8List Function(Uint8List fileId, String destinationPath)? finishReceiveAudioHandler;
-  Uint8List Function(Uint8List internalBytes)? decodeAudioToWavHandler;
+  FutureOr<Uint8List> Function(Uint8List internalBytes)? decodeAudioToWavHandler;
   final pendingAudioOffersToReturn = <FileOfferDto>[];
 
   @override
@@ -401,7 +401,7 @@ class _FakeCore implements Core {
 
   @override
   Future<Uint8List> decodeAudioToWav({required List<int> internalBytes}) async =>
-      decodeAudioToWavHandler?.call(Uint8List.fromList(internalBytes)) ??
+      await decodeAudioToWavHandler?.call(Uint8List.fromList(internalBytes)) ??
       Uint8List.fromList([4, 4, 4]);
 
   @override
@@ -988,6 +988,143 @@ void main() {
       await controller.stopVoicePlayback();
       expect(player.stopCalls, 1);
       expect(controller.playingMessageId, isNull);
+    });
+    test('voiceNoteWav keeps a single decoded WAV, decoding each note on demand', () async {
+      var fileId = Uint8List.fromList(List.filled(16, 4));
+      core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
+            fileId: fileId,
+            progress: TransferProgressDto(
+              blocksDone: 1,
+              totalBlocks: 1,
+              bytesDone: BigInt.from(1),
+              isComplete: true,
+            ),
+          );
+      var decodeCalls = 0;
+      core.decodeAudioToWavHandler = (_) {
+        decodeCalls++;
+        return Uint8List.fromList([decodeCalls]);
+      };
+      controller = makeController();
+      await controller.initialize();
+
+      MessageDto noteFor(Uint8List id) => MessageDto(
+            id: id.first,
+            direction: MessageDirectionDto.incoming,
+            kind: MessageKindDto.voiceNote,
+            body: '',
+            audioFileId: id,
+            deliveryState: DeliveryStateDto.delivered,
+            createdAtUnixSecs: 0,
+            isEphemeral: false,
+            viewOnce: false,
+            reactions: const [],
+          );
+
+      final first = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([1]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(first); i++) {
+        await pumpEventQueue(times: 10);
+      }
+      fileId = Uint8List.fromList(List.filled(16, 5));
+      final second = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([2]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(second); i++) {
+        await pumpEventQueue(times: 10);
+      }
+      expect(decodeCalls, 0, reason: 'receber não decodifica WAV');
+
+      await controller.play(first);
+      await controller.play(first);
+      expect(decodeCalls, 1, reason: 'a nota corrente fica em cache');
+
+      await controller.play(second);
+      expect(decodeCalls, 2);
+
+      await controller.play(first);
+      expect(decodeCalls, 3, reason: 'o WAV da primeira nota não foi retido');
+    });
+
+    test('voiceNoteWav guards against race conditions and deduplicates concurrent calls', () async {
+      var fileId = Uint8List.fromList(List.filled(16, 10));
+      core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
+            fileId: fileId,
+            progress: TransferProgressDto(
+              blocksDone: 1,
+              totalBlocks: 1,
+              bytesDone: BigInt.from(1),
+              isComplete: true,
+            ),
+          );
+
+      final noteACompleter = Completer<Uint8List>();
+      var decodeCalls = 0;
+      core.decodeAudioToWavHandler = (bytes) {
+        decodeCalls++;
+        if (bytes.first == 10) {
+          return noteACompleter.future;
+        }
+        return Uint8List.fromList([bytes.first, 99]);
+      };
+
+      controller = makeController();
+      await controller.initialize();
+
+      MessageDto noteFor(Uint8List id) => MessageDto(
+            id: id.first,
+            direction: MessageDirectionDto.incoming,
+            kind: MessageKindDto.voiceNote,
+            body: '',
+            audioFileId: id,
+            deliveryState: DeliveryStateDto.delivered,
+            createdAtUnixSecs: 0,
+            isEphemeral: false,
+            viewOnce: false,
+            reactions: const [],
+          );
+
+      core.finishReceiveAudioHandler = (id, destPath) {
+        File(destPath).writeAsBytesSync([id.first]);
+        return Uint8List.fromList([id.first]);
+      };
+
+      final noteA = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([1]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(noteA); i++) {
+        await pumpEventQueue(times: 10);
+      }
+
+      fileId = Uint8List.fromList(List.filled(16, 20));
+      final noteB = noteFor(fileId);
+      transport.emitIncomingFile(Uint8List.fromList([2]));
+      for (var i = 0; i < 50 && !controller.isVoiceNoteReady(noteB); i++) {
+        await pumpEventQueue(times: 10);
+      }
+
+      // 1. Deduplicação concorrente para a mesma nota
+      final futureA1 = controller.voiceNoteWav(noteA);
+      final futureA2 = controller.voiceNoteWav(noteA);
+      expect(decodeCalls, 1, reason: 'apenas uma decodificação FFI deve ser disparada');
+
+      // 2. Dispara decodificação de noteB enquanto noteA ainda está pendente
+      final futureB = controller.voiceNoteWav(noteB);
+      final wavB = await futureB;
+      expect(wavB, Uint8List.fromList([20, 99]));
+      expect(decodeCalls, 2);
+
+      // Conclui noteA depois de noteB
+      noteACompleter.complete(Uint8List.fromList([10, 42]));
+      final wavA1 = await futureA1;
+      final wavA2 = await futureA2;
+      expect(wavA1, Uint8List.fromList([10, 42]));
+      expect(wavA2, Uint8List.fromList([10, 42]));
+
+      // 3. Verifica proteção contra condição de corrida: como noteB foi a requisição mais recente,
+      // noteA que terminou atrasada NÃO deve ter sobrescrito o cache.
+      // Chamar voiceNoteWav(noteB) agora deve acertar o cache imediatamente sem novo decode.
+      final cachedWavB = await controller.voiceNoteWav(noteB);
+      expect(cachedWavB, Uint8List.fromList([20, 99]));
+      expect(decodeCalls, 2, reason: 'noteB permaneceu no cache como requisição mais recente');
     });
   });
 
