@@ -12,6 +12,23 @@ use crate::{Error, Result};
 #[repr(u8)]
 pub enum Suite {
     V1 = 0x01,
+    #[cfg(test)]
+    TestV2 = 0x02,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_V2_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub fn set_test_suite_v2_enabled(enabled: bool) {
+    TEST_V2_ENABLED.with(|c| c.set(enabled));
+}
+
+#[cfg(test)]
+pub fn is_test_suite_v2_enabled() -> bool {
+    TEST_V2_ENABLED.with(|c| c.get())
 }
 
 impl Suite {
@@ -23,11 +40,22 @@ impl Suite {
     /// Lista de todas as suítes suportadas por este build do aplicativo.
     pub const SUPPORTED: &'static [Suite] = &[Suite::V1];
 
+    /// Suítes suportadas dinamicamente (inclui suítes de teste se habilitadas).
+    pub fn supported() -> Vec<Suite> {
+        #[cfg(test)]
+        if is_test_suite_v2_enabled() {
+            return vec![Suite::V1, Suite::TestV2];
+        }
+        vec![Suite::V1]
+    }
+
     /// Resolve a suíte a partir do identificador de 1 byte.
     /// Retorna `Error::UnsupportedVersion(id)` se o identificador não for conhecido/suportado.
     pub fn from_id(id: u8) -> Result<Self> {
         match id {
             0x01 => Ok(Self::V1),
+            #[cfg(test)]
+            0x02 if is_test_suite_v2_enabled() => Ok(Self::TestV2),
             other => Err(Error::UnsupportedVersion(other)),
         }
     }
@@ -36,6 +64,8 @@ impl Suite {
     pub const fn init_len(self) -> usize {
         match self {
             Self::V1 => 1218,
+            #[cfg(test)]
+            Self::TestV2 => 1218,
         }
     }
 
@@ -43,6 +73,8 @@ impl Suite {
     pub const fn resp_len(self) -> usize {
         match self {
             Self::V1 => 1122,
+            #[cfg(test)]
+            Self::TestV2 => 1122,
         }
     }
 }
@@ -62,6 +94,7 @@ mod tests {
 
     #[test]
     fn unknown_suite_id_is_unsupported() {
+        set_test_suite_v2_enabled(false);
         assert!(matches!(
             Suite::from_id(0x00),
             Err(Error::UnsupportedVersion(0x00))
@@ -74,5 +107,22 @@ mod tests {
             Suite::from_id(0xff),
             Err(Error::UnsupportedVersion(0xff))
         ));
+    }
+
+    #[test]
+    fn test_v2_can_be_enabled_in_tests() {
+        set_test_suite_v2_enabled(false);
+        assert!(Suite::from_id(0x02).is_err());
+
+        set_test_suite_v2_enabled(true);
+        let v2 = Suite::from_id(0x02).unwrap();
+        assert_eq!(v2, Suite::TestV2);
+        assert_eq!(v2.id(), 0x02);
+        assert_eq!(v2.init_len(), 1218);
+        assert_eq!(v2.resp_len(), 1122);
+        assert_eq!(Suite::supported(), vec![Suite::V1, Suite::TestV2]);
+
+        set_test_suite_v2_enabled(false);
+        assert!(Suite::from_id(0x02).is_err());
     }
 }

@@ -34,8 +34,8 @@ pub fn insert(
     }
 
     conn.execute(
-        "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname, suite_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)",
         rusqlite::params![
             contact.device_id.as_slice(),
             contact.signing.as_slice(),
@@ -152,6 +152,41 @@ pub fn get_ephemeral_ttl(
     .optional()
     .map_err(|_| Error::Store)?
     .ok_or(Error::ContactNotFound)
+}
+
+/// Consulta a suite_id gravada para o contato.
+pub fn get_suite_id(
+    conn: &rusqlite::Connection,
+    device_id: &[u8; DEVICE_ID_LEN],
+) -> Result<u8> {
+    let suite_id: i64 = conn
+        .query_row(
+            "SELECT suite_id FROM contacts WHERE device_id = ?1",
+            [device_id.as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?
+        .ok_or(Error::ContactNotFound)?;
+    u8::try_from(suite_id).map_err(|_| Error::Store)
+}
+
+/// Atualiza a suite_id gravada para o contato (após conclusão de handshake em suíte nova).
+pub fn update_suite_id(
+    conn: &rusqlite::Connection,
+    device_id: &[u8; DEVICE_ID_LEN],
+    suite_id: u8,
+) -> Result<()> {
+    let count = conn
+        .execute(
+            "UPDATE contacts SET suite_id = ?1 WHERE device_id = ?2",
+            rusqlite::params![suite_id as i64, device_id.as_slice()],
+        )
+        .map_err(|_| Error::Store)?;
+    if count == 0 {
+        return Err(Error::ContactNotFound);
+    }
+    Ok(())
 }
 
 /// Remove todos os contatos (usado para restauração limpa de backup).

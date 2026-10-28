@@ -32,6 +32,7 @@ use crate::crypto::aead;
 use crate::crypto::handshake::{respond, Initiator};
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::ratchet::{RatchetHeader, RatchetState};
+use crate::crypto::suite::Suite;
 use crate::wire::envelope;
 use crate::wire::packet_type::PacketType;
 use crate::wire::plaintext::InnerPlaintext;
@@ -105,6 +106,7 @@ enum SessionState {
 #[derive(Debug)]
 pub struct Session {
     peer: PublicIdentity,
+    min_suite: u8,
     state: SessionState,
     consecutive_aead_failures: u32,
     needs_rehandshake: bool,
@@ -124,21 +126,23 @@ pub struct Session {
 impl Session {
     /// Abre uma sessão com `peer`, decidindo o papel por `is_before` (§4).
     ///
-    /// Quando este lado é o iniciador, devolve os bytes da INIT prontos para
-    /// enviar (`Some`); quando é o respondedor, devolve `None` — nada é
-    /// enviado até a INIT do par chegar via [`Self::process_handshake_message`].
-    /// A regra é 100% determinística nas duas pontas (mesma comparação
-    /// lexicográfica de `IK_dh`), então não existe handshake "simultâneo" de
-    /// verdade no sentido de ambos tentarem iniciar: no máximo um dos dois
-    /// lados chama `Session::open` antes do outro, mas os dois concordam
-    /// sobre quem é quem assim que os dois chamarem.
-    pub fn open(local: &LocalIdentity, peer: PublicIdentity) -> Result<(Self, Option<Vec<u8>>)> {
+    /// `recorded_suite` indica a suíte em que o contato está registrado.
+    /// Quando este lado é o iniciador, produz a INIT na suíte registrada (ou maior,
+    /// se negociada futuramente). Quando é respondedor, aguarda a INIT do par
+    /// rejeitando qualquer suíte inferior à gravada (D24).
+    pub fn open(
+        local: &LocalIdentity,
+        peer: PublicIdentity,
+        recorded_suite: u8,
+    ) -> Result<(Self, Option<Vec<u8>>)> {
+        let suite = Suite::from_id(recorded_suite)?;
         if local.public().is_before(&peer) {
-            let (initiator, init_bytes) = Initiator::start(local, &peer)?;
+            let (initiator, init_bytes) = Initiator::start_with_suite(local, &peer, suite)?;
             let init_bytes = init_bytes.to_vec();
             Ok((
                 Self {
                     peer,
+                    min_suite: recorded_suite,
                     state: SessionState::AwaitingResponse(Box::new(initiator)),
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
@@ -150,6 +154,7 @@ impl Session {
             Ok((
                 Self {
                     peer,
+                    min_suite: recorded_suite,
                     state: SessionState::AwaitingPeerInit,
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
@@ -202,23 +207,39 @@ impl Session {
         bytes: &[u8],
     ) -> Result<Option<Vec<u8>>> {
         match std::mem::replace(&mut self.state, SessionState::Failed) {
-            SessionState::AwaitingPeerInit => match respond(local, &self.peer, bytes) {
-                Ok((outcome, resp_bytes)) => {
-                    self.state =
-                        SessionState::Established(Box::new(RatchetState::initialize(outcome)?));
-                    Ok(Some(resp_bytes.to_vec()))
-                }
-                Err(err) => {
-                    // `respond` é uma função livre — não consome nenhum
-                    // estado nosso. Uma INIT malformada ou de tipo errado
-                    // (por exemplo, uma RESP chegando aqui por engano) não
-                    // custa nada tentar de novo quando a mensagem certa
-                    // chegar, então o estado volta exatamente para onde
-                    // estava, em vez de ficar em `Failed`.
+            SessionState::AwaitingPeerInit => {
+                let init_version = match bytes.first() {
+                    Some(&v) => v,
+                    None => {
+                        self.state = SessionState::AwaitingPeerInit;
+                        return Err(Error::BadLength {
+                            expected: 1,
+                            actual: 0,
+                        });
+                    }
+                };
+                if init_version < self.min_suite {
                     self.state = SessionState::AwaitingPeerInit;
-                    Err(err)
+                    return Err(Error::UnsupportedVersion(init_version));
                 }
-            },
+                match respond(local, &self.peer, bytes) {
+                    Ok((outcome, resp_bytes)) => {
+                        self.state =
+                            SessionState::Established(Box::new(RatchetState::initialize(outcome)?));
+                        Ok(Some(resp_bytes.to_vec()))
+                    }
+                    Err(err) => {
+                        // `respond` é uma função livre — não consome nenhum
+                        // estado nosso. Uma INIT malformada ou de tipo errado
+                        // (por exemplo, uma RESP chegando aqui por engano) não
+                        // custa nada tentar de novo quando a mensagem certa
+                        // chegar, então o estado volta exatamente para onde
+                        // estava, em vez de ficar em `Failed`.
+                        self.state = SessionState::AwaitingPeerInit;
+                        Err(err)
+                    }
+                }
+            }
             SessionState::AwaitingResponse(initiator) => match initiator.finish(local, bytes) {
                 Ok(outcome) => {
                     self.state =
@@ -438,8 +459,8 @@ mod tests {
     fn established_pair() -> (LocalIdentity, Session, LocalIdentity, Session) {
         let (alice, bob) = pair();
 
-        let (mut alice_session, init) = Session::open(&alice, bob.public()).unwrap();
-        let (mut bob_session, none) = Session::open(&bob, alice.public()).unwrap();
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
+        let (mut bob_session, none) = Session::open(&bob, alice.public(), 1).unwrap();
         assert!(none.is_none(), "bob é sempre respondedor — pair() garante essa ordem");
 
         let init = init.expect("alice é sempre iniciadora — pair() garante essa ordem");
@@ -461,7 +482,7 @@ mod tests {
     #[test]
     fn pending_outgoing_handshake_is_stable_until_resp_arrives_and_disappears_after() {
         let (alice, bob) = pair();
-        let (mut alice_session, init) = Session::open(&alice, bob.public()).unwrap();
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
         let init = init.unwrap();
 
         // Chamar de novo antes da RESP chegar sempre devolve os mesmos
@@ -472,7 +493,7 @@ mod tests {
         assert_eq!(alice_session.pending_outgoing_handshake(), Some(init.as_slice()));
         assert_eq!(alice_session.pending_outgoing_handshake(), Some(init.as_slice()));
 
-        let (mut bob_session, none) = Session::open(&bob, alice.public()).unwrap();
+        let (mut bob_session, none) = Session::open(&bob, alice.public(), 1).unwrap();
         assert!(none.is_none());
         assert_eq!(bob_session.pending_outgoing_handshake(), None);
 
@@ -539,10 +560,10 @@ mod tests {
     #[test]
     fn unexpected_message_type_as_responder_does_not_corrupt_state() {
         let (alice, bob) = pair();
-        let (_alice_session, init) = Session::open(&alice, bob.public()).unwrap();
+        let (_alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
         let init = init.unwrap();
 
-        let (mut bob_session, _) = Session::open(&bob, alice.public()).unwrap();
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
 
         // Uma mensagem de tipo errado (aqui, lixo do tamanho de uma RESP, que
         // `respond` rejeita por comprimento/tipo) não deveria mudar o estado:
@@ -570,10 +591,10 @@ mod tests {
         // O caso que realmente produz `Err` de `Initiator::finish` é um
         // comprimento ou `msg_type` errado — o que este teste usa.
         let (alice, bob) = pair();
-        let (mut alice_session, init) = Session::open(&alice, bob.public()).unwrap();
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
         let init = init.unwrap();
 
-        let (mut bob_session, _) = Session::open(&bob, alice.public()).unwrap();
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
         let resp = bob_session
             .process_handshake_message(&bob, &init)
             .unwrap()
@@ -678,7 +699,7 @@ mod tests {
     #[test]
     fn decrypt_incoming_on_unestablished_session_fails_without_panic() {
         let (alice, bob) = pair();
-        let (mut alice_session, _init) = Session::open(&alice, bob.public()).unwrap();
+        let (mut alice_session, _init) = Session::open(&alice, bob.public(), 1).unwrap();
 
         assert!(matches!(
             alice_session.decrypt_incoming(&[0u8; 200], Transport::DataChannel),
@@ -847,6 +868,68 @@ mod tests {
         assert!(bob_session
             .decrypt_incoming(&legitima, Transport::DataChannel)
             .is_err());
+    }
+
+    #[test]
+    fn responder_with_contact_in_suite_2_rejects_init_in_suite_1_without_state_change() {
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        set_test_suite_v2_enabled(true);
+
+        let (alice, bob) = pair();
+        // Alice inicia em suite 1 (com contato gravado em suite 1)
+        let (_alice_session, init_v1) = Session::open(&alice, bob.public(), 1).unwrap();
+        let init_v1 = init_v1.unwrap();
+
+        // Bob tem o contato gravado na suíte 2
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 2).unwrap();
+
+        // Bob recebe INIT na suíte 1: deve recusar com UnsupportedVersion(1)
+        let res = bob_session.process_handshake_message(&bob, &init_v1);
+        assert!(matches!(res, Err(Error::UnsupportedVersion(1))));
+
+        // O estado não deve ser corrompido nem ir para Failed
+        assert!(!bob_session.is_established());
+        assert!(!bob_session.is_failed());
+
+        // Se Bob receber agora uma INIT na suíte 2, deve aceitar normalmente
+        let (_alice_session_v2, init_v2) = Session::open(&alice, bob.public(), 2).unwrap();
+        let init_v2 = init_v2.unwrap();
+        let resp = bob_session
+            .process_handshake_message(&bob, &init_v2)
+            .unwrap();
+        assert!(resp.is_some());
+        assert!(bob_session.is_established());
+
+        set_test_suite_v2_enabled(false);
+    }
+
+    #[test]
+    fn responder_with_contact_in_suite_1_accepts_init_in_suite_2_when_supported() {
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+        set_test_suite_v2_enabled(true);
+
+        let (alice, bob) = pair();
+        // Alice inicia na suíte 2 (já atualizou)
+        let (mut alice_session, init_v2) = Session::open(&alice, bob.public(), 2).unwrap();
+        let init_v2 = init_v2.unwrap();
+
+        // Bob tem o contato gravado ainda na suíte 1
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
+
+        // Bob aceita INIT na suíte 2 porque 2 >= 1 e build suporta {1, 2}
+        let resp = bob_session
+            .process_handshake_message(&bob, &init_v2)
+            .unwrap()
+            .expect("respondedor gera RESP");
+        assert!(bob_session.is_established());
+
+        // Alice conclui o handshake na suíte 2
+        alice_session
+            .process_handshake_message(&alice, &resp)
+            .unwrap();
+        assert!(alice_session.is_established());
+
+        set_test_suite_v2_enabled(false);
     }
 }
 

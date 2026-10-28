@@ -133,6 +133,16 @@ impl Store {
         self.with_conn(|conn| contacts::find_by_device_id(conn, device_id))
     }
 
+    /// Consulta a suite_id gravada para o contato.
+    pub fn get_contact_suite_id(&self, device_id: &[u8; 16]) -> Result<u8> {
+        self.with_conn(|conn| contacts::get_suite_id(conn, device_id))
+    }
+
+    /// Atualiza a suite_id gravada para o contato.
+    pub fn set_contact_suite_id(&self, device_id: &[u8; 16], suite_id: u8) -> Result<()> {
+        self.with_conn(|conn| contacts::update_suite_id(conn, device_id, suite_id))
+    }
+
     /// Define se o contato está verificado (Fase 9).
     pub fn set_verified(&self, device_id: &[u8; 16], verified: bool) -> Result<()> {
         self.with_conn(|conn| contacts::set_verified(conn, device_id, verified))
@@ -792,6 +802,69 @@ mod tests {
             .unwrap();
         assert_eq!(nick_before, nick_after);
         assert_eq!(nick_before, "ExportTest");
+    }
+
+    #[test]
+    fn legacy_db_schema_v8_migrates_to_v9_and_keeps_all_data_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(44);
+
+        let contact = LocalIdentity::generate().unwrap().public();
+        let file_id = [42u8; 16];
+
+        // 1. Cria o banco e roda as primeiras 8 migrations
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            apply_pragmas(&conn).unwrap();
+            for migration in &schema::MIGRATIONS[..8] {
+                conn.execute_batch(migration).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 8).unwrap();
+
+            // Insere contato
+            conn.execute(
+                "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+                 VALUES (?1, ?2, ?3, 1000, 'Legacy')",
+                rusqlite::params![contact.device_id.as_slice(), contact.signing.as_slice(), contact.dh.as_bytes().as_slice()],
+            ).unwrap();
+
+            // Insere mensagem
+            conn.execute(
+                "INSERT INTO messages (id, contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, global_id)
+                 VALUES (1, ?1, 1, 16, 'conteudo legado', 2, 0, 2000, 'legacy-uuid')",
+                rusqlite::params![contact.device_id.as_slice()],
+            ).unwrap();
+
+            // Insere file transfer
+            conn.execute(
+                "INSERT INTO file_transfers (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind)
+                 VALUES (?1, 1, ?2, ?3, ?4, 3000, 0)",
+                rusqlite::params![file_id.as_slice(), contact.device_id.as_slice(), [8u8; 32].as_slice(), [7u8; 32].as_slice()],
+            ).unwrap();
+        }
+
+        // 2. Abre usando Store::open, que executa schema::migrate
+        let store = Store::open(&path, &k).unwrap();
+
+        // 3. Verifica se o contato continua legível e tem suite_id = 1
+        let found_contact = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(found_contact.0, contact);
+        assert_eq!(found_contact.2.as_deref(), Some("Legacy"));
+        assert_eq!(store.get_contact_suite_id(&contact.device_id).unwrap(), 1);
+
+        // 4. Verifica se a mensagem continua legível
+        let msgs = store.list_messages(&contact.device_id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "conteudo legado");
+        assert_eq!(msgs[0].global_id.as_deref(), Some("legacy-uuid"));
+
+        // 5. Verifica se o file transfer continua legível
+        let transfer = store.find_file_transfer(&file_id).unwrap().unwrap();
+        assert_eq!(transfer.file_id, file_id);
+        assert_eq!(transfer.created_at_unix_secs, 3000);
     }
 }
 

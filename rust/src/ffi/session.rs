@@ -50,8 +50,9 @@ impl Core {
             .store
             .find_contact(&device_id)?
             .ok_or(FfiError::ContactNotFound)?;
+        let suite_id = self.store.get_contact_suite_id(&device_id)?;
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
-        let (session, _) = Session::open(&id, peer)?;
+        let (session, _) = Session::open(&id, peer, suite_id)?;
         let status = status_dto(&session);
         sessions.insert(device_id, session);
         Ok(status)
