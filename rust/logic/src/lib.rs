@@ -24,8 +24,8 @@ pub mod store;
 pub mod util;
 pub mod wire;
 
-/// Versão do protocolo de fio implementada por este crate.
-pub const PROTOCOL_VERSION: u8 = 0x01;
+/// Versão legada / ID da primeira suíte criptográfica (Suite::V1).
+pub const PROTOCOL_VERSION: u8 = crypto::Suite::V1.id();
 
 /// Erro unificado do núcleo.
 #[derive(Debug, thiserror::Error)]
