@@ -83,6 +83,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_messages_global_id ON messages (global_id);",
     "\
     ALTER TABLE contacts ADD COLUMN suite_id INTEGER NOT NULL DEFAULT 1;",
+    "\
+    ALTER TABLE messages ADD COLUMN body_cipher_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE file_transfers ADD COLUMN staging_cipher_version INTEGER NOT NULL DEFAULT 1;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.

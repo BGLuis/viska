@@ -154,25 +154,34 @@ pub fn create_encrypted_backup(sqlite_bytes: &[u8]) -> Result<(String, Vec<u8>)>
 
 /// Restaura e decifra o pacote de backup a partir de `backup_bytes` e do `mnemonic`.
 pub fn restore_encrypted_backup(backup_bytes: &[u8], mnemonic: &str) -> Result<Vec<u8>> {
-    const MIN_LEN: usize = BACKUP_HEADER_MAGIC.len() + 24 + 16;
+    const PREFIX: &[u8] = b"VISKASAFE";
+    const MIN_LEN: usize = PREFIX.len() + 1 + 24 + 16;
     if backup_bytes.len() < MIN_LEN {
         return Err(Error::Malformed("arquivo de backup curto demais"));
     }
 
-    if &backup_bytes[..BACKUP_HEADER_MAGIC.len()] != BACKUP_HEADER_MAGIC {
+    if &backup_bytes[..PREFIX.len()] != PREFIX {
         return Err(Error::Malformed(
             "cabeçalho identificador de backup inválido",
         ));
     }
 
-    let mut entropy = mnemonic_to_entropy(mnemonic)?;
-    let key = derive_backup_key(&entropy);
-    entropy.zeroize();
+    let version_byte = backup_bytes[PREFIX.len()];
+    match version_byte {
+        b'1' => {
+            let mut entropy = mnemonic_to_entropy(mnemonic)?;
+            let key = derive_backup_key(&entropy);
+            entropy.zeroize();
 
-    let mut payload = backup_bytes[BACKUP_HEADER_MAGIC.len()..].to_vec();
-    aead::open_xchacha(&key, BACKUP_HEADER_MAGIC, &mut payload)?;
+            let header = &backup_bytes[..PREFIX.len() + 1];
+            let mut payload = backup_bytes[header.len()..].to_vec();
+            aead::open_xchacha(&key, header, &mut payload)?;
 
-    Ok(payload)
+            Ok(payload)
+        }
+        b'0'..=b'9' => Err(Error::UnsupportedVersion(version_byte - b'0')),
+        _ => Err(Error::UnsupportedVersion(version_byte)),
+    }
 }
 
 /// Exporta os bytes de banco fornecidos para um arquivo cifrado em `dest_path`.
@@ -270,5 +279,42 @@ mod tests {
 
         let res = restore_encrypted_backup(&encrypted, &wrong_mnemonic);
         assert!(matches!(res, Err(Error::AeadFailure)));
+    }
+
+    #[test]
+    fn backup_with_header_viskasafe9_is_rejected_with_version_error() {
+        let test_db = b"database payload";
+        let (mnemonic, mut encrypted) = create_encrypted_backup(test_db).unwrap();
+        // Substitui a versão '1' por '9' no cabeçalho
+        encrypted[9] = b'9';
+
+        let res = restore_encrypted_backup(&encrypted, &mnemonic);
+        assert!(matches!(res, Err(Error::UnsupportedVersion(9))));
+
+        // Adulterar o cabeçalho original com versão 1 mas alterando o ciphertext devolve AeadFailure
+        encrypted[9] = b'1';
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x55;
+        let res_aead = restore_encrypted_backup(&encrypted, &mnemonic);
+        assert!(matches!(res_aead, Err(Error::AeadFailure)));
+    }
+
+    #[test]
+    fn base_commit_fixed_vector_backup_restores_identically() {
+        // Vetor fixo gerado pelo algoritmo original (VISKASAFE1 + XChaCha20-Poly1305 + viska-backup-v1)
+        let entropy = [7u8; 32];
+        let mnemonic = entropy_to_mnemonic(&entropy);
+        let key = derive_backup_key(&entropy);
+        let plaintext = b"fixed-legacy-backup-data-from-base-commit";
+        let header = b"VISKASAFE1";
+
+        // Cria backup com dados conhecidos
+        let mut cipher_payload = plaintext.to_vec();
+        aead::seal_xchacha(&key, header, &mut cipher_payload).unwrap();
+        let mut backup_bytes = header.to_vec();
+        backup_bytes.extend_from_slice(&cipher_payload);
+
+        let restored = restore_encrypted_backup(&backup_bytes, &mnemonic).unwrap();
+        assert_eq!(restored, plaintext);
     }
 }
