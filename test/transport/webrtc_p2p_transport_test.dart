@@ -590,12 +590,51 @@ void main() {
           'sdpMLineIndex': 1,
         })),
       ]);
+      signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')])));
       signaling.emit(SignalingMessage('sub-1', remoteCandidatePayload));
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
       expect(channel.remoteCandidateCalls, [
         {'candidate': 'candidate:2 remoto', 'sdpMid': 'mid1', 'sdpMLineIndex': 1},
       ]);
+    });
+
+    test('remote candidate arriving before the offer is held and applied after it, once', () async {
+      final responderStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: null,
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: responderStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+
+      final candidate = Uint8List.fromList([
+        2,
+        ...utf8.encode(jsonEncode({'candidate': 'candidate:9 cedo', 'sdpMid': '0', 'sdpMLineIndex': 0})),
+      ]);
+      // Republicação (§8.2): o respondedor entra no tópico no meio de uma
+      // rodada e recebe o candidato antes da oferta, e depois tudo de novo.
+      signaling.emit(SignalingMessage('sub-1', candidate));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(channel.remoteCandidateCalls, isEmpty);
+
+      signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([0, ...utf8.encode('v=0 OFFER')])));
+      signaling.emit(SignalingMessage('sub-1', candidate));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(channel.answerCalls, ['v=0 OFFER']);
+      expect(channel.remoteCandidateCalls, [
+        {'candidate': 'candidate:9 cedo', 'sdpMid': '0', 'sdpMLineIndex': 0},
+      ]);
+      await transport.close();
     });
 
     test('disconnects signaling as soon as transport becomes connected', () async {
@@ -711,6 +750,120 @@ void main() {
 
       expect(channel.closed, isTrue);
       expect(signaling.disconnectCalls, 1);
+    });
+
+    group('republication (protocol.md §8.2)', () {
+      const refresh = Duration(milliseconds: 20);
+
+      SessionStatusDto status({required bool offerer}) => SessionStatusDto(
+            state: SessionStateKind.handshaking,
+            needsRehandshake: false,
+            outgoingHandshake: offerer ? Uint8List.fromList([1]) : null,
+          );
+
+      int countKind(_FakeSignalingBackend signaling, int kind) => signaling.publishCalls
+          .where((call) => _decodeTestPayload(call.value)['kind'] == kind)
+          .length;
+
+      test('offerer republishes offer and candidates until the answer arrives', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+
+        await transport.connect();
+        channel.emitLocalCandidate(RTCIceCandidate('candidate:1 local', 'mid0', 0));
+        await Future<void>.delayed(refresh * 4);
+
+        // O par pode não estar inscrito quando a primeira oferta sai (QoS 0, sem retain).
+        expect(countKind(signaling, 0), greaterThan(1));
+        expect(countKind(signaling, 2), greaterThan(1));
+        expect(channel.offerCalls, hasLength(1), reason: 'republica a mesma SDP, sem renegociar');
+
+        signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')])));
+        await Future<void>.delayed(refresh);
+        final offersAfterAnswer = countKind(signaling, 0);
+        await Future<void>.delayed(refresh * 4);
+
+        expect(countKind(signaling, 0), offersAfterAnswer);
+        await transport.close();
+      });
+
+      test('duplicate answer is applied only once', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        final answer = Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')]);
+        signaling.emit(SignalingMessage('sub-1', answer));
+        signaling.emit(SignalingMessage('sub-1', answer));
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(channel.remoteAnswerCalls, hasLength(1));
+        await transport.close();
+      });
+
+      test('responder answers a repeated offer with the cached answer instead of renegotiating', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: false));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        final offer = Uint8List.fromList([0, ...utf8.encode('v=0 OFFER REMOTA')]);
+        signaling.emit(SignalingMessage('sub-1', offer));
+        await Future<void>.delayed(Duration.zero);
+        signaling.emit(SignalingMessage('sub-1', offer));
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(channel.answerCalls, hasLength(1));
+        expect(countKind(signaling, 1), 2);
+        await transport.close();
+      });
+
+      test('stops refreshing signaling once the data channel connects', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        channel.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.connected));
+        await Future<void>.delayed(Duration.zero);
+        final publishesAtConnect = signaling.publishCalls.length;
+        await Future<void>.delayed(refresh * 4);
+
+        expect(signaling.publishCalls.length, publishesAtConnect);
+        await transport.close();
+      });
     });
   });
 }

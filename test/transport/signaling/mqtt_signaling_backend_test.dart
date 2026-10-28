@@ -119,6 +119,30 @@ void main() {
       expect(client.connectCalls, 1);
     });
 
+    test('connect enables keepalive so a silently dropped connection is detected', () async {
+      final client = _RecordingMqttClient();
+      final backend = MqttSignalingBackend(client: client);
+
+      await backend.connect();
+
+      expect(client.keepAlivePeriod, greaterThan(0));
+    });
+
+    test('after the broker drops the connection, connect reconnects and topics are resubscribed', () async {
+      final client = _RecordingMqttClient();
+      final backend = MqttSignalingBackend(client: client);
+      await backend.connect();
+      await backend.subscribeTopics(['t1']);
+
+      client.onDisconnected!();
+      await backend.connect();
+      await backend.subscribeTopics(['t1']);
+
+      expect(client.connectCalls, 2);
+      // A sessão nova no broker não herda assinaturas: 't1' precisa ser assinado de novo.
+      expect(client.subscribedTopics, ['t1', 't1']);
+    });
+
     test('subscribeTopics subscribes only to new topics and unsubscribes removed ones', () async {
       final client = _RecordingMqttClient();
       final backend = MqttSignalingBackend(client: client);

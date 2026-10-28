@@ -49,6 +49,8 @@ class MqttSignalingBackend implements SignalingBackend {
   Set<String> _subscribedTopics = {};
   bool _connected = false;
 
+  static const _keepAliveSeconds = 30;
+
   /// Configuração de proxy ativa para este backend.
   ProxyConfig get proxyConfig => _proxyConfig ?? ProxyConfigStore.current;
 
@@ -71,6 +73,10 @@ class MqttSignalingBackend implements SignalingBackend {
     }
 
     _client.autoReconnect = false;
+    // Sem keepalive (o padrão da biblioteca é 0), um NAT ou o broker derrubam
+    // a conexão ociosa em silêncio e o cliente segue achando que está conectado.
+    _client.keepAlivePeriod = _keepAliveSeconds;
+    _client.onDisconnected = _handleDisconnected;
     await _client.connect();
     _updatesSubscription ??= _client.updates?.listen(_handleUpdates);
     _connected = true;
@@ -105,6 +111,14 @@ class MqttSignalingBackend implements SignalingBackend {
     _client.disconnect();
     await _forwarder?.close();
     _forwarder = null;
+  }
+
+  /// A queda não reconecta sozinha (ver o comentário da classe): só libera o
+  /// próximo [connect] e esquece as assinaturas, que não sobrevivem a uma
+  /// sessão nova no broker.
+  void _handleDisconnected() {
+    _connected = false;
+    _subscribedTopics = {};
   }
 
   void _handleUpdates(List<MqttReceivedMessage<MqttMessage>> messages) {

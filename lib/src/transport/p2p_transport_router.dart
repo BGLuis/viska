@@ -65,6 +65,7 @@ class P2PTransportRouter {
   Future<void> closeContact(ContactId contact) async {
     final routed = _routed.remove(contact);
     if (routed == null) return;
+    await routed.eventsSub?.cancel();
     await routed.transport.close();
   }
 
@@ -86,14 +87,32 @@ class P2PTransportRouter {
       created = true;
       final transport = _transportFactory(_core, contact);
       final connectFuture = transport.connect();
-      // Evita exceção não tratada na zona se connect() falhar antes de um envio explícito
-      connectFuture.ignore();
-      return _RoutedTransport(transport, connectFuture);
+      final entry = _RoutedTransport(transport, connectFuture);
+      // Um transporte que falhou não se recupera sozinho. Mantido no mapa, ele
+      // deixaria o contato offline até reiniciar o app; esquecido, o próximo
+      // envio (ou o "Reconectar" da conversa) começa uma tentativa do zero.
+      // O `onError` também evita exceção não tratada na zona quando connect()
+      // falha antes de um envio explícito.
+      connectFuture.then((_) {}, onError: (Object _) => _forgetFailed(contact, entry));
+      entry.eventsSub = transport.connectionEvents.listen((event) {
+        if (event.state == TransportConnectionState.failed ||
+            event.state == TransportConnectionState.closed) {
+          _forgetFailed(contact, entry);
+        }
+      });
+      return entry;
     });
     if (created) {
       onTransportCreated?.call(contact);
     }
     return routed;
+  }
+
+  void _forgetFailed(ContactId contact, _RoutedTransport entry) {
+    if (!identical(_routed[contact], entry)) return;
+    _routed.remove(contact);
+    unawaited(entry.eventsSub?.cancel());
+    unawaited(entry.transport.close().catchError((_) {}));
   }
 
   static P2PTransport _defaultFactory(Core core, ContactId contactId) =>
@@ -110,4 +129,6 @@ class _RoutedTransport {
   /// `connectionEventsFor` não precisam esperar, porque devolvem `Stream`s
   /// que só emitem depois que houver algo para emitir de qualquer forma.
   final Future<void> connectFuture;
+
+  StreamSubscription<TransportConnectionEvent>? eventsSub;
 }

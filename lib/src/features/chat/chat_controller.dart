@@ -86,12 +86,14 @@ class ChatController extends ChangeNotifier {
   })  : _core = core,
         _router = router,
         _contactId = contactId,
+        _ownsReceptionService = receptionService == null,
         _receptionService = receptionService ?? MessageReceptionService(core: core, router: router),
         _recorder = recorder ?? RecordVoiceRecorder(),
         _player = player ?? JustAudioVoicePlayer();
 
   final Core _core;
   final P2PTransportRouter _router;
+  final bool _ownsReceptionService;
   final ContactId _contactId;
   final MessageReceptionService _receptionService;
   final VoiceRecorder _recorder;
@@ -727,6 +729,7 @@ class ChatController extends ChangeNotifier {
     unawaited(_connectionSub?.cancel());
     unawaited(_recorder.dispose());
     unawaited(_player.dispose());
+    if (_ownsReceptionService) unawaited(_receptionService.dispose());
     super.dispose();
   }
 }
