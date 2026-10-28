@@ -8,6 +8,7 @@ enum ViskaBannerTone {
   danger,
   warning,
   info,
+  trust,
 }
 
 /// Banner de alerta ou notificação de segurança com botão de ação inline.
@@ -53,6 +54,12 @@ class ViskaBanner extends StatelessWidget {
         bg = ViskaColors.bgSurfaceRaised;
         fg = ViskaColors.textPrimary;
         border = ViskaColors.borderStrong;
+        defaultIcon = Icons.info_outline_rounded;
+        break;
+      case ViskaBannerTone.trust:
+        bg = ViskaColors.trustContainer;
+        fg = ViskaColors.trustOnContainer;
+        border = ViskaColors.trustBorder;
         defaultIcon = Icons.info_outline_rounded;
         break;
     }

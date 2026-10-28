@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import '../../common_widgets/security/pin_dots.dart';
 import '../../common_widgets/security/pin_pad.dart';
@@ -21,26 +24,36 @@ class LockScreen extends StatefulWidget {
 }
 
 class _LockScreenState extends State<LockScreen> {
-  final _pinController = TextEditingController();
+  String _pin = '';
   bool _isAuthenticating = false;
+  bool _isSubmitting = false;
   String? _errorMessage;
+  Timer? _retryTicker;
+
+  LockController get _controller => widget.controller;
 
   @override
   void initState() {
     super.initState();
-    _pinController.addListener(_onPinChanged);
+    _syncRetryTicker();
     WidgetsBinding.instance.addPostFrameCallback((_) => _authenticate());
-  }
-
-  void _onPinChanged() {
-    setState(() {});
   }
 
   @override
   void dispose() {
-    _pinController.removeListener(_onPinChanged);
-    _pinController.dispose();
+    _retryTicker?.cancel();
     super.dispose();
+  }
+
+  /// Mantém a contagem regressiva da espera entre tentativas atualizada na tela.
+  void _syncRetryTicker() {
+    _retryTicker?.cancel();
+    if (_controller.pinRetryDelay == Duration.zero) return;
+    _retryTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      setState(() {});
+      if (_controller.pinRetryDelay == Duration.zero) timer.cancel();
+    });
   }
 
   Future<void> _authenticate() async {
@@ -50,7 +63,7 @@ class _LockScreenState extends State<LockScreen> {
       _errorMessage = null;
     });
 
-    final success = await widget.controller.unlock();
+    final success = await _controller.unlock();
 
     if (!mounted) return;
     setState(() {
@@ -62,47 +75,69 @@ class _LockScreenState extends State<LockScreen> {
   }
 
   Future<void> _submitPin() async {
-    final pin = _pinController.text.trim();
-    if (pin.isEmpty) return;
+    if (_pin.isEmpty || _isSubmitting) return;
+    _isSubmitting = true;
+    setState(() => _errorMessage = null);
 
-    setState(() {
-      _errorMessage = null;
-    });
-
-    final success = await widget.controller.verifyAndUnlockWithPin(pin);
-    if (!mounted) return;
-
-    if (!success) {
-      setState(() {
-        _errorMessage = 'PIN incorreto';
-      });
-      _pinController.clear();
+    try {
+      final success = await _controller.verifyAndUnlockWithPin(_pin);
+      if (!mounted) return;
+      if (!success) {
+        setState(() {
+          _errorMessage = 'PIN incorreto';
+          _pin = '';
+        });
+        _syncRetryTicker();
+      }
+    } finally {
+      _isSubmitting = false;
     }
   }
 
-  int get _targetPinLength => widget.controller.normalPinLength ?? 4;
+  /// Tamanho em que o PIN é enviado sem confirmação. Configurações novas têm
+  /// os dois PINs do mesmo tamanho; nas antigas vale o maior, para que o mais
+  /// longo continue alcançável.
+  int get _submitLength => max(
+        _controller.normalPinLength ?? LockController.minPinLength,
+        _controller.duressPinLength ?? 0,
+      );
 
   void _onDigitPressed(String digit) {
-    if (_pinController.text.length >= 8) return;
-    _pinController.text += digit;
-    final len = _pinController.text.length;
-    final expectedLen = _targetPinLength;
-    final duressLen = widget.controller.duressPinLength;
-    if (len == expectedLen || (duressLen != null && len == duressLen) || len >= 8) {
+    if (_isSubmitting || _controller.pinRetryDelay > Duration.zero) return;
+    if (_pin.length >= _submitLength) return;
+    setState(() {
+      _pin += digit;
+      _errorMessage = null;
+    });
+
+    final len = _pin.length;
+    final reachesShorterPin = len == _controller.normalPinLength ||
+        len == _controller.duressPinLength;
+    if (len == _submitLength ||
+        (reachesShorterPin && _controller.matchesAnyPin(_pin))) {
       _submitPin();
     }
   }
 
   void _onBackspacePressed() {
-    if (_pinController.text.isNotEmpty) {
-      _pinController.text = _pinController.text.substring(0, _pinController.text.length - 1);
-    }
+    if (_pin.isEmpty) return;
+    setState(() => _pin = _pin.substring(0, _pin.length - 1));
+  }
+
+  String _formatRetryDelay(Duration delay) {
+    final seconds = delay.inSeconds + (delay.inMilliseconds % 1000 > 0 ? 1 : 0);
+    if (seconds < 60) return '$seconds s';
+    final minutes = seconds ~/ 60;
+    final rest = seconds % 60;
+    return rest == 0 ? '$minutes min' : '$minutes min ${rest.toString().padLeft(2, '0')} s';
   }
 
   @override
   Widget build(BuildContext context) {
-    final pinLength = _pinController.text.length;
-    final dotCount = _targetPinLength;
+    final hasPin = _controller.hasNormalPin;
+    final retryDelay = _controller.pinRetryDelay;
+    final isWaiting = hasPin && retryDelay > Duration.zero;
+    final hasError = _errorMessage != null || isWaiting;
 
     return Scaffold(
       backgroundColor: ViskaColors.bgCanvas,
@@ -121,7 +156,7 @@ class _LockScreenState extends State<LockScreen> {
                     color: ViskaColors.bgSurfaceRaised,
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: _errorMessage != null
+                      color: hasError
                           ? ViskaColors.dangerDefault
                           : ViskaColors.borderStrong,
                       width: 1.5,
@@ -130,7 +165,7 @@ class _LockScreenState extends State<LockScreen> {
                   child: Icon(
                     Icons.lock_outline_rounded,
                     size: 28,
-                    color: _errorMessage != null
+                    color: hasError
                           ? ViskaColors.dangerDefault
                           : ViskaColors.textSecondary,
                   ),
@@ -150,17 +185,21 @@ class _LockScreenState extends State<LockScreen> {
                 ),
                 const SizedBox(height: ViskaSpacing.spaceMd),
 
-                // Indicador visual de pontos (PinDots)
-                PinDots(
-                  length: dotCount,
-                  filledCount: pinLength > dotCount ? dotCount : pinLength,
-                  hasError: _errorMessage != null,
-                ),
-                const SizedBox(height: ViskaSpacing.spaceSm),
+                // Sem PIN cadastrado não há o que digitar: só a autenticação do sistema.
+                if (hasPin) ...[
+                  PinDots(
+                    length: _submitLength,
+                    filledCount: _pin.length,
+                    hasError: hasError,
+                  ),
+                  const SizedBox(height: ViskaSpacing.spaceSm),
+                ],
 
-                if (_errorMessage != null) ...[
+                if (isWaiting || _errorMessage != null) ...[
                   Text(
-                    _errorMessage!,
+                    isWaiting
+                        ? 'Muitas tentativas. Tente novamente em ${_formatRetryDelay(retryDelay)}.'
+                        : _errorMessage!,
                     textAlign: TextAlign.center,
                     style: ViskaTypography.bodySmall.copyWith(
                       color: ViskaColors.dangerDefault,
@@ -170,21 +209,21 @@ class _LockScreenState extends State<LockScreen> {
                   const SizedBox(height: ViskaSpacing.spaceSm),
                 ],
 
-                // Teclado numérico in-app (PinPad)
-                PinPad(
-                  keySize: 52.0,
-                  onDigitPressed: _onDigitPressed,
-                  onBackspacePressed: _onBackspacePressed,
-                  leftAction: IconButton(
-                    icon: const Icon(Icons.fingerprint, size: 24),
-                    color: ViskaColors.trustDefault,
-                    tooltip: 'Desbloquear com biometria',
-                    onPressed: _isAuthenticating ? null : _authenticate,
+                if (hasPin) ...[
+                  PinPad(
+                    keySize: 52.0,
+                    onDigitPressed: _onDigitPressed,
+                    onBackspacePressed: _onBackspacePressed,
+                    leftAction: IconButton(
+                      icon: const Icon(Icons.fingerprint, size: 24),
+                      color: ViskaColors.trustDefault,
+                      tooltip: 'Desbloquear com biometria',
+                      onPressed: _isAuthenticating ? null : _authenticate,
+                    ),
                   ),
-                ),
-                const SizedBox(height: ViskaSpacing.spaceSm),
+                  const SizedBox(height: ViskaSpacing.spaceSm),
+                ],
 
-                // Botão de biometria / desbloqueio
                 OutlinedButton.icon(
                   onPressed: _isAuthenticating ? null : _authenticate,
                   icon: const Icon(Icons.fingerprint),
@@ -195,28 +234,6 @@ class _LockScreenState extends State<LockScreen> {
                     padding: const EdgeInsets.symmetric(
                       horizontal: ViskaSpacing.space2xl,
                       vertical: ViskaSpacing.spaceSm,
-                    ),
-                  ),
-                ),
-
-                // Elementos para manter compatibilidade total com testes de widget e teclados
-                SizedBox(
-                  height: 32,
-                  child: Opacity(
-                    opacity: 0.0,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _pinController,
-                            onSubmitted: (_) => _submitPin(),
-                          ),
-                        ),
-                        FilledButton(
-                          onPressed: _submitPin,
-                          child: const Text('Entrar com PIN'),
-                        ),
-                      ],
                     ),
                   ),
                 ),

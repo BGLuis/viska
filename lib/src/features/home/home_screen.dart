@@ -16,7 +16,8 @@ import '../chat/chat_screen.dart';
 import '../lock/lock_controller.dart';
 import '../onboarding/profile_setup_dialog.dart';
 import '../pairing/pairing_hub_screen.dart';
-import '../pairing/widgets/safety_number_qr_dialog.dart';
+import '../pairing/screens/safety_number_screen.dart';
+import '../pairing/screens/verified_success_screen.dart';
 import '../settings/settings_screen.dart';
 
 /// Tela inicial principal do Viska (Telas 02 e 03 do Figma).
@@ -198,16 +199,27 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (!mounted) return;
 
-      await showDialog<bool>(
-        context: context,
-        builder: (_) => SafetyNumberQrDialog(
-          contact: contact,
-          safetyNumber: safetyNumber,
-          core: widget.core,
-          onVerified: _refreshContacts,
+      final verified = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => SafetyNumberScreen(
+            contact: contact,
+            safetyNumber: safetyNumber,
+            core: widget.core,
+          ),
         ),
       );
       _refreshContacts();
+      if (verified != true || !mounted) return;
+
+      final nickname = contact.nickname?.trim();
+      final openChat = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => VerifiedSuccessScreen(
+            contactName: nickname == null || nickname.isEmpty ? 'Contato' : nickname,
+          ),
+        ),
+      );
+      if (openChat == true && mounted) await _openChat(contact);
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[HomeScreen] Erro ao carregar Safety Number: $e\n$stack');
       if (!mounted) return;

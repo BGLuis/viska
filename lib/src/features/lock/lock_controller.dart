@@ -29,7 +29,9 @@ class LockController with WidgetsBindingObserver {
     this.autoLockTimeout = const Duration(minutes: 1),
     this.autoLockOnBackground = true,
     this.exitFn,
-  }) : _localAuth = localAuth ?? LocalAuthentication() {
+    DateTime Function()? clock,
+  })  : _localAuth = localAuth ?? LocalAuthentication(),
+        _clock = clock ?? DateTime.now {
     instance = this;
     WidgetsBinding.instance.addObserver(this);
     _resetInactivityTimer();
@@ -53,6 +55,7 @@ class LockController with WidgetsBindingObserver {
   final Core core;
   final String appDirPath;
   final LocalAuthentication _localAuth;
+  final DateTime Function() _clock;
 
   /// Hook para simulação/interceptação de encerramento do processo em testes.
   void Function(int code)? exitFn;
@@ -84,6 +87,18 @@ class LockController with WidgetsBindingObserver {
   String? _duressPinHash;
   int? _normalPinLength;
   int? _duressPinLength;
+
+  int _failedPinAttempts = 0;
+  DateTime? _pinRetryNotBefore;
+
+  static const int minPinLength = 4;
+  static const int maxPinLength = 8;
+
+  /// Tentativas livres antes de começar a espera progressiva entre tentativas.
+  static const int freePinAttempts = 5;
+
+  static const Duration _baseRetryDelay = Duration(seconds: 30);
+  static const Duration _maxRetryDelay = Duration(minutes: 15);
 
   /// Quantidade de dígitos do PIN Normal configurado (ou nulo se não definido).
   int? get normalPinLength => _normalPinLength;
@@ -149,6 +164,10 @@ class LockController with WidgetsBindingObserver {
         _normalPinLength = (json['normal_pin_length'] as num?)?.toInt();
         _duressPinLength = (json['duress_pin_length'] as num?)?.toInt();
         duressActionMode = (json['duress_action_mode'] as num?)?.toInt() ?? 0;
+        _failedPinAttempts = (json['failed_pin_attempts'] as num?)?.toInt() ?? 0;
+        final notBefore = (json['pin_retry_not_before_ms'] as num?)?.toInt();
+        _pinRetryNotBefore =
+            notBefore == null ? null : DateTime.fromMillisecondsSinceEpoch(notBefore);
       }
     } catch (_) {}
   }
@@ -162,22 +181,22 @@ class LockController with WidgetsBindingObserver {
         if (_normalPinLength != null) 'normal_pin_length': _normalPinLength,
         if (_duressPinLength != null) 'duress_pin_length': _duressPinLength,
         'duress_action_mode': duressActionMode,
+        if (_failedPinAttempts > 0) 'failed_pin_attempts': _failedPinAttempts,
+        if (_pinRetryNotBefore != null)
+          'pin_retry_not_before_ms': _pinRetryNotBefore!.millisecondsSinceEpoch,
       };
       file.writeAsStringSync(jsonEncode(json));
     } catch (_) {}
   }
 
-  /// Configura o PIN normal do aplicativo.
+  /// Configura o PIN normal do aplicativo. `null` ou vazio remove os dois PINs,
+  /// porque um PIN de Coação sem PIN Normal não tem o que imitar.
   Future<void> setNormalPin(String? pin) async {
     if (pin == null || pin.trim().isEmpty) {
-      _normalPinHash = null;
-      _normalPinLength = null;
-    } else {
-      final trimmed = pin.trim();
-      _normalPinHash = _hashPin(trimmed);
-      _normalPinLength = trimmed.length;
+      await clearPins();
+      return;
     }
-    await _saveSecurityConfig();
+    await configurePins(normalPin: pin);
   }
 
   /// Configura o PIN de Coação e o modo de ação de defesa física.
@@ -185,12 +204,109 @@ class LockController with WidgetsBindingObserver {
     if (pin == null || pin.trim().isEmpty) {
       _duressPinHash = null;
       _duressPinLength = null;
-    } else {
-      final trimmed = pin.trim();
-      _duressPinHash = _hashPin(trimmed);
-      _duressPinLength = trimmed.length;
+      duressActionMode = actionMode;
+      await _saveSecurityConfig();
+      return;
     }
-    duressActionMode = actionMode;
+    await configurePins(duressPin: pin, actionMode: actionMode);
+  }
+
+  /// Aplica a configuração de PINs de uma vez, validando o estado resultante
+  /// como um todo. Argumento `null` mantém o valor atual.
+  ///
+  /// Lança [PinConfigException] sem alterar nada quando a combinação é inválida.
+  Future<void> configurePins({
+    String? normalPin,
+    String? duressPin,
+    int? actionMode,
+  }) async {
+    final normal = normalPin == null ? null : _validatedPin(normalPin);
+    final duress = duressPin == null ? null : _validatedPin(duressPin);
+
+    final nextNormalHash = normal == null ? _normalPinHash : _hashPin(normal);
+    final nextNormalLength = normal == null ? _normalPinLength : normal.length;
+    final nextDuressHash = duress == null ? _duressPinHash : _hashPin(duress);
+    final nextDuressLength = duress == null ? _duressPinLength : duress.length;
+
+    if (nextDuressHash != null) {
+      if (nextNormalHash == null) {
+        throw const PinConfigException('Configure primeiro o PIN Normal.');
+      }
+      // Coação igual ao Normal faria o próprio PIN do dono disparar a defesa
+      // (a coação é testada primeiro no desbloqueio).
+      if (nextDuressHash == nextNormalHash) {
+        throw const PinConfigException(
+          'O PIN de Coação não pode ser igual ao PIN Normal.',
+        );
+      }
+      // A tela de bloqueio envia o PIN sozinha ao atingir o tamanho esperado;
+      // com tamanhos diferentes o mais longo nunca chegaria a ser digitado, e
+      // a quantidade de pontos denunciaria qual dos dois está sendo usado.
+      if (nextDuressLength != nextNormalLength) {
+        throw const PinConfigException(
+          'O PIN de Coação precisa ter a mesma quantidade de dígitos do PIN Normal.',
+        );
+      }
+    }
+
+    _normalPinHash = nextNormalHash;
+    _normalPinLength = nextNormalLength;
+    _duressPinHash = nextDuressHash;
+    _duressPinLength = nextDuressLength;
+    if (actionMode != null) duressActionMode = actionMode;
+    await _saveSecurityConfig();
+  }
+
+  /// Remove o PIN Normal e o de Coação.
+  Future<void> clearPins() async {
+    _normalPinHash = null;
+    _normalPinLength = null;
+    _duressPinHash = null;
+    _duressPinLength = null;
+    _failedPinAttempts = 0;
+    _pinRetryNotBefore = null;
+    await _saveSecurityConfig();
+  }
+
+  static String _validatedPin(String pin) {
+    final trimmed = pin.trim();
+    if (!RegExp('^[0-9]{$minPinLength,$maxPinLength}\$').hasMatch(trimmed)) {
+      throw const PinConfigException(
+        'O PIN deve ter de $minPinLength a $maxPinLength dígitos, só números.',
+      );
+    }
+    return trimmed;
+  }
+
+  /// Tempo que ainda falta até a próxima tentativa de PIN ser aceita.
+  Duration get pinRetryDelay {
+    final notBefore = _pinRetryNotBefore;
+    if (notBefore == null) return Duration.zero;
+    final remaining = notBefore.difference(_clock());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  /// Verdadeiro quando [pin] coincide com algum PIN configurado. A tela de
+  /// bloqueio usa isso para não enviar cedo um PIN mais curto que o outro em
+  /// configurações antigas, gravadas antes de os tamanhos serem igualados.
+  bool matchesAnyPin(String pin) => isNormalPin(pin) || isDuressPin(pin);
+
+  Future<void> _registerFailedPinAttempt() async {
+    _failedPinAttempts++;
+    final excess = _failedPinAttempts - freePinAttempts;
+    if (excess >= 0) {
+      final factor = 1 << (excess > 10 ? 10 : excess);
+      final delay = _baseRetryDelay * factor;
+      _pinRetryNotBefore =
+          _clock().add(delay > _maxRetryDelay ? _maxRetryDelay : delay);
+    }
+    await _saveSecurityConfig();
+  }
+
+  Future<void> _resetFailedPinAttempts() async {
+    if (_failedPinAttempts == 0 && _pinRetryNotBefore == null) return;
+    _failedPinAttempts = 0;
+    _pinRetryNotBefore = null;
     await _saveSecurityConfig();
   }
 
@@ -263,6 +379,11 @@ class LockController with WidgetsBindingObserver {
         if (!authenticated) return false;
         biometricPassed = true;
       }
+    } on MissingPluginException {
+      // Plataforma sem implementação do local_auth (o alvo Linux de
+      // desenvolvimento): equivale a um aparelho sem autenticação do sistema,
+      // e segue a mesma regra abaixo — sem PIN desbloqueia, com PIN exige o PIN.
+      // Tratar como falha deixaria o app preso na tela de bloqueio para sempre.
     } on PlatformException {
       return false;
     } catch (_) {
@@ -282,6 +403,10 @@ class LockController with WidgetsBindingObserver {
   /// - PIN de Coação (Destruição Silenciosa ou Decoy Vault)
   /// - PIN Normal (Desbloqueio Legítimo)
   Future<bool> verifyAndUnlockWithPin(String pin) async {
+    // Durante a espera nenhum PIN é avaliado, nem o de Coação: aceitar só ele
+    // revelaria a quem observa que aquele PIN é especial.
+    if (pinRetryDelay > Duration.zero) return false;
+
     final trimmed = pin.trim();
 
     if (isDuressPin(trimmed)) {
@@ -296,15 +421,19 @@ class LockController with WidgetsBindingObserver {
         return false;
       } else {
         // Modo 2: Alterna para o cofre falso (Decoy Vault)
+        await _resetFailedPinAttempts();
         await activateDecoyVault();
         return true;
       }
     }
 
     if (isNormalPin(trimmed)) {
-      return await _unlockWithoutBiometrics();
+      final unlocked = await _unlockWithoutBiometrics();
+      if (unlocked) await _resetFailedPinAttempts();
+      return unlocked;
     }
 
+    await _registerFailedPinAttempt();
     return false;
   }
 
@@ -458,4 +587,14 @@ class LockController with WidgetsBindingObserver {
     isLocked.dispose();
     isDecoyVault.dispose();
   }
+}
+
+/// PIN recusado na configuração; [message] já é o texto para o usuário.
+class PinConfigException implements Exception {
+  const PinConfigException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'PinConfigException: $message';
 }

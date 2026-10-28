@@ -74,6 +74,16 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# flutter_webrtc 1.6.2 escreve `g_host_messenger` e só a lê em Windows; o clang
+# 23 passou a acusar isso, e o -Werror de APPLY_STANDARD_SETTINGS quebra o build.
+# A opção só existe em compiladores recentes, e um clang antigo trataria a opção
+# desconhecida como erro, daí a checagem.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-Wunused-but-set-global HAS_WUNUSED_BUT_SET_GLOBAL)
+if(TARGET flutter_webrtc_plugin AND HAS_WUNUSED_BUT_SET_GLOBAL)
+  target_compile_options(flutter_webrtc_plugin PRIVATE -Wno-unused-but-set-global)
+endif()
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build

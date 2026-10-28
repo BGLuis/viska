@@ -191,6 +191,13 @@ impl core::fmt::Debug for StagingReader {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Quantas vezes `decrypt_to` rodou nesta thread — permite a um teste
+    /// afirmar quantas leituras completas do staging um fluxo faz.
+    pub(crate) static DECRYPT_PASSES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 impl StagingReader {
     pub fn open(
         staging_dir: &Path,
@@ -250,9 +257,12 @@ impl StagingReader {
     /// recebido páginas anteriores já decididas como autênticas, mas o
     /// chamador nunca deve tratar um `Err` no meio como "arquivo parcialmente
     /// válido" — a verificação de integridade completa é a raiz de Merkle
-    /// (`file::merkle`), recomputada só depois que este método terminar com
-    /// sucesso.
+    /// (`file::merkle`), conferida por
+    /// `ReceiveTransfer::finish` sobre o plaintext hasheado na gravação, antes
+    /// de chamar este método.
     pub fn decrypt_to(&mut self, mut out: impl Write) -> Result<()> {
+        #[cfg(test)]
+        DECRYPT_PASSES.with(|n| n.set(n.get() + 1));
         for page_index in 0..self.page_count() {
             let plaintext_len = self.page_plaintext_len(page_index);
             let encrypted_len = plaintext_len + aead::XNONCE_LEN + aead::TAG_LEN;

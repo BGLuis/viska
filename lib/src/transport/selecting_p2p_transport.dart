@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+
 import 'p2p_transport.dart';
 import 'webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 
@@ -67,7 +69,8 @@ class SelectingP2PTransport implements P2PTransport {
       }
       try {
         await candidate.connect().timeout(_candidateTimeout);
-      } catch (_) {
+      } catch (e) {
+        if (kDebugMode) debugPrint('[SelectingP2PTransport] ${candidate.runtimeType} falhou: $e');
         await _closeCandidate(candidate);
         continue;
       }

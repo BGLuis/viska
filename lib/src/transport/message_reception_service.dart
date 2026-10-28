@@ -8,6 +8,8 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
+import 'package:viska/src/transport/webrtc_transport.dart'
+    show TransportConnectionEvent, TransportConnectionState;
 
 /// Eventos emitidos pelo [MessageReceptionService] quando novos dados ou
 /// alterações de estado ocorrem para um contato.
@@ -44,15 +46,16 @@ class FileReceivedEvent extends MessageReceptionEvent {
   final String path;
 }
 
-/// Nota de voz recebida, verificada, decodificada para WAV e cacheada.
+/// Nota de voz recebida e verificada; carrega o áudio interno comprimido —
+/// o WAV é decodificado sob demanda por quem for tocar.
 class VoiceNoteReceivedEvent extends MessageReceptionEvent {
   const VoiceNoteReceivedEvent(
     super.contactId, {
     required this.fileId,
-    required this.wavBytes,
+    required this.internalBytes,
   });
   final Uint8List fileId;
-  final Uint8List wavBytes;
+  final Uint8List internalBytes;
 }
 
 /// Serviço de recepção contínua no nível do aplicativo.
@@ -84,7 +87,17 @@ class MessageReceptionService {
   final Future<String> Function()? _tempDirProvider;
   final Future<String> Function()? _receivedDirProvider;
 
-  final Set<ContactId> _registeredContacts = {};
+  /// Transporte ao qual a recepção de cada contato está ligada. O roteador
+  /// troca o transporte de um contato quando o anterior falha, e a recepção
+  /// precisa acompanhar a troca, senão as mensagens chegam num stream que
+  /// ninguém escuta.
+  final Map<ContactId, P2PTransport> _boundTransports = {};
+  final Map<ContactId, StreamSubscription<TransportConnectionEvent>> _connectionSubs = {};
+  final Map<ContactId, Timer> _retryTimers = {};
+
+  /// Espera antes de recriar o transporte de um contato que falhou: evita um
+  /// laço apertado de reconexão quando o par está simplesmente offline.
+  static const _retryDelay = Duration(seconds: 5);
   final Set<ContactId> _establishedContacts = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingSubs = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingFileSubs = {};
@@ -131,7 +144,25 @@ class MessageReceptionService {
   /// ainda não estiverem ativos.
   void ensureListening(ContactId contactId) {
     if (_disposed) return;
-    if (!_registeredContacts.add(contactId)) return;
+
+    // Garante que o transporte exista. Se ele for criado agora, o roteador
+    // chama este método de volta (onTransportCreated) e o vínculo é feito lá;
+    // aqui a comparação abaixo então encontra o transporte já ligado.
+    _router.incomingFor(contactId);
+    final transport = _router.transportFor(contactId);
+    if (transport == null || identical(_boundTransports[contactId], transport)) return;
+    _boundTransports[contactId] = transport;
+    _retryTimers.remove(contactId)?.cancel();
+    unawaited(_incomingSubs.remove(contactId)?.cancel());
+    unawaited(_incomingFileSubs.remove(contactId)?.cancel());
+    unawaited(_connectionSubs.remove(contactId)?.cancel());
+
+    _connectionSubs[contactId] = transport.connectionEvents.listen((event) {
+      if (event.state == TransportConnectionState.failed ||
+          event.state == TransportConnectionState.closed) {
+        _scheduleRetry(contactId, transport);
+      }
+    });
 
     final controlSub = _router.incomingFor(contactId).listen(
       (bytes) => _handleIncomingRaw(contactId, bytes),
@@ -152,6 +183,19 @@ class MessageReceptionService {
     // Se formos iniciador deste contato e houver handshake pendente,
     // despacha a INIT assim que o canal abrir.
     unawaited(_tryPublishOutgoingHandshake(contactId));
+  }
+
+  /// Recria o transporte de um contato depois que o atual falhou, para que o
+  /// par volte a ser alcançável sem precisar reiniciar o app. Com o app
+  /// bloqueado não tenta: `resume` ressincroniza todos os contatos.
+  void _scheduleRetry(ContactId contactId, P2PTransport failed) {
+    if (_disposed || _retryTimers.containsKey(contactId)) return;
+    _retryTimers[contactId] = Timer(_retryDelay, () {
+      _retryTimers.remove(contactId);
+      if (_disposed || _isPaused) return;
+      if (!identical(_boundTransports[contactId], failed)) return;
+      ensureListening(contactId);
+    });
   }
 
   Future<void> _handleIncomingRaw(ContactId contactId, Uint8List bytes) async {
@@ -322,9 +366,10 @@ class MessageReceptionService {
       await _router.sendToContact(contactId, sealedComplete);
 
       final internalBytes = await File(internalPath).readAsBytes();
-      final wav = await _core.decodeAudioToWav(internalBytes: internalBytes);
-      _voiceNoteAudio[_hex(fileId)] = wav;
-      _eventsController.add(VoiceNoteReceivedEvent(contactId, fileId: fileId, wavBytes: wav));
+      _voiceNoteAudio[_hex(fileId)] = internalBytes;
+      _eventsController.add(
+        VoiceNoteReceivedEvent(contactId, fileId: fileId, internalBytes: internalBytes),
+      );
     } catch (_) {
     } finally {
       unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
@@ -376,15 +421,15 @@ class MessageReceptionService {
     }
   }
 
-  /// Retorna os bytes WAV decodificados em cache de uma nota de voz pronta.
+  /// Retorna o áudio interno comprimido de uma nota de voz pronta.
   Uint8List? getVoiceNoteAudio(Uint8List fileId) => _voiceNoteAudio[_hex(fileId)];
 
-  /// Verifica se uma nota de voz já foi decodificada e está pronta para reprodução.
+  /// Verifica se o áudio de uma nota de voz já está disponível para reprodução.
   bool isVoiceNoteReady(Uint8List fileId) => _voiceNoteAudio.containsKey(_hex(fileId));
 
-  /// Cacheia os bytes WAV decodificados de uma nota de voz gerada localmente.
-  void cacheVoiceNoteAudio(Uint8List fileId, Uint8List wav) {
-    _voiceNoteAudio[_hex(fileId)] = wav;
+  /// Cacheia o áudio interno comprimido de uma nota de voz gerada localmente.
+  void cacheVoiceNoteAudio(Uint8List fileId, Uint8List internalBytes) {
+    _voiceNoteAudio[_hex(fileId)] = internalBytes;
   }
 
   /// Retorna o caminho temporário de um arquivo recebido.
@@ -409,6 +454,10 @@ class MessageReceptionService {
   /// Encerra as assinaturas de transporte e fecha o controlador de eventos.
   Future<void> dispose() async {
     _disposed = true;
+    for (final timer in _retryTimers.values) {
+      timer.cancel();
+    }
+    _retryTimers.clear();
     for (final sub in _incomingSubs.values) {
       await sub.cancel();
     }
@@ -420,7 +469,11 @@ class MessageReceptionService {
     _incomingFileSubs.clear();
     _lastFeedbackBlocksDone.clear();
     _lastFeedbackTime.clear();
-    _registeredContacts.clear();
+    for (final sub in _connectionSubs.values) {
+      await sub.cancel();
+    }
+    _connectionSubs.clear();
+    _boundTransports.clear();
     _establishedContacts.clear();
 
     await _eventsController.close();

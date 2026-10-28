@@ -1,123 +1,67 @@
 import 'package:flutter/material.dart';
 import '../../../common_widgets/actions/viska_button.dart';
+import '../../../common_widgets/identity/status_chip.dart';
+import '../../../common_widgets/identity/viska_avatar.dart';
 import '../../../theme/tokens/viska_colors.dart';
-import '../../../theme/tokens/viska_radii.dart';
 import '../../../theme/tokens/viska_spacing.dart';
 import '../../../theme/tokens/viska_typography.dart';
 
-/// Tela comemorativa de contato verificado com sucesso (Tela 19 do Figma).
+/// Confirmação de contato verificado (Tela 19 do Figma).
+///
+/// Devolve `true` pelo `Navigator` quando o usuário escolhe abrir a conversa.
 class VerifiedSuccessScreen extends StatelessWidget {
-  const VerifiedSuccessScreen({
-    super.key,
-    required this.contactName,
-    this.onStartChat,
-  });
+  const VerifiedSuccessScreen({super.key, required this.contactName});
 
   final String contactName;
-  final VoidCallback? onStartChat;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: ViskaColors.bgCanvas,
+      appBar: AppBar(title: Text('Verificar $contactName')),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(ViskaSpacing.space2xl),
+          padding: const EdgeInsets.all(ViskaSpacing.spaceLg),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Spacer(),
               Center(
-                child: Container(
-                  width: 88,
-                  height: 88,
-                  decoration: BoxDecoration(
-                    color: ViskaColors.trustContainer,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: ViskaColors.trustDefault,
-                      width: 2.0,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: ViskaColors.trustDefault.withAlpha(50),
-                        blurRadius: 24,
-                        spreadRadius: 4,
-                      ),
-                    ],
-                  ),
-                  child: const Icon(
-                    Icons.verified_rounded,
-                    size: 52,
-                    color: ViskaColors.trustDefault,
-                  ),
-                ),
-              ),
-              const SizedBox(height: ViskaSpacing.space2xl),
-              Text(
-                'Identidade Verificada',
-                textAlign: TextAlign.center,
-                style: ViskaTypography.headline.copyWith(
-                  color: ViskaColors.trustDefault,
-                ),
-              ),
-              const SizedBox(height: ViskaSpacing.spaceSm),
-              Text(
-                'A chave de $contactName foi confirmada com sucesso.',
-                textAlign: TextAlign.center,
-                style: ViskaTypography.titleMedium.copyWith(
-                  fontWeight: FontWeight.w600,
+                child: ViskaAvatar(
+                  name: contactName,
+                  size: ViskaAvatarSize.xl,
+                  isVerified: true,
                 ),
               ),
               const SizedBox(height: ViskaSpacing.spaceLg),
-              Container(
-                padding: const EdgeInsets.all(ViskaSpacing.spaceLg),
-                decoration: BoxDecoration(
-                  color: ViskaColors.bgSurfaceRaised,
-                  borderRadius: ViskaRadii.borderLg,
-                  border: Border.all(color: ViskaColors.borderDefault),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.lock_outline_rounded,
-                          size: 20,
-                          color: ViskaColors.trustDefault,
-                        ),
-                        const SizedBox(width: ViskaSpacing.spaceSm),
-                        Text(
-                          'PROTEÇÃO CONTRA INTERCEPTAÇÃO',
-                          style: ViskaTypography.labelOverline.copyWith(
-                            color: ViskaColors.trustDefault,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: ViskaSpacing.spaceSm),
-                    Text(
-                      'Todas as mensagens, notas de voz e arquivos trocados com este contato agora utilizam autenticação criptográfica imutável validada por você.',
-                      style: ViskaTypography.bodySmall.copyWith(
-                        color: ViskaColors.textSecondary,
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
+              Text(
+                contactName,
+                textAlign: TextAlign.center,
+                style: ViskaTypography.headline,
+              ),
+              const SizedBox(height: ViskaSpacing.spaceSm),
+              Text(
+                'Vocês conferiram as chaves pessoalmente. Se elas mudarem um dia, '
+                'o Viska avisa e bloqueia o envio até nova verificação.',
+                textAlign: TextAlign.center,
+                style: ViskaTypography.bodyMedium.copyWith(
+                  color: ViskaColors.textSecondary,
+                  height: 1.4,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(height: ViskaSpacing.spaceLg),
+              const Center(
+                child: StatusChip(
+                  label: 'Verificado agora',
+                  icon: Icons.verified_rounded,
+                  tone: StatusChipTone.trust,
+                ),
+              ),
+              const Spacer(flex: 2),
               ViskaButton(
-                label: 'INICIAR CONVERSA SEGURA',
-                style: ViskaButtonStyle.primary,
+                label: 'Abrir conversa',
                 isFullWidth: true,
-                onPressed: () {
-                  if (onStartChat != null) {
-                    onStartChat!();
-                  } else {
-                    Navigator.of(context).pop();
-                  }
-                },
+                onPressed: () => Navigator.of(context).pop(true),
               ),
             ],
           ),

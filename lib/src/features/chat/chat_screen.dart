@@ -969,6 +969,23 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+/// Exibe a forma de onda da nota de voz adiando a decodificação do áudio WAV
+/// estritamente para o momento do play, preservando o cache de 1 entrada do
+/// controlador e evitando a alocação de PCM na renderização das bolhas.
+class _VoiceNoteWaveform extends StatelessWidget {
+  const _VoiceNoteWaveform({required this.controller, required this.message});
+
+  final ChatController controller;
+  final MessageDto message;
+
+  @override
+  Widget build(BuildContext context) {
+    return AudioWaveformPlayer(
+      loadAudioBytes: () => controller.voiceNoteWav(message),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     required this.message,
@@ -1127,10 +1144,7 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final audioBytes = controller.getVoiceNoteAudio(message);
-    return AudioWaveformPlayer(
-      audioBytes: audioBytes,
-    );
+    return _VoiceNoteWaveform(controller: controller, message: message);
   }
 
   /// Renderiza um balão de arquivo genérico. Outgoing é sempre exibido como

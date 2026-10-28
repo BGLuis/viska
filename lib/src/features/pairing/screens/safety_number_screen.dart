@@ -1,34 +1,42 @@
 import 'package:flutter/material.dart';
 import '../../../common_widgets/actions/viska_button.dart';
+import '../../../common_widgets/identity/status_chip.dart';
 import '../../../common_widgets/security/safety_number_widget.dart';
 import '../../../rust/ffi/core.dart';
 import '../../../rust/ffi/types.dart';
 import '../../../theme/tokens/viska_colors.dart';
 import '../../../theme/tokens/viska_spacing.dart';
 import '../../../theme/tokens/viska_typography.dart';
+import '../widgets/safety_number_qr_dialog.dart';
 import '../widgets/safety_number_scanner.dart';
 
-/// Tela dedicada para verificação visual ou óptica do Safety Number (Tela 18 do Figma).
+/// Comparação do número de segurança (Tela 18 do Figma).
+///
+/// Devolve `true` pelo `Navigator` quando o contato acaba de ser verificado,
+/// por leitura do QR ou pela marcação manual.
 class SafetyNumberScreen extends StatefulWidget {
   const SafetyNumberScreen({
     super.key,
     required this.contact,
     required this.safetyNumber,
     required this.core,
-    this.onVerified,
   });
 
   final ContactDto contact;
   final SafetyNumberDto safetyNumber;
   final Core core;
-  final VoidCallback? onVerified;
 
   @override
   State<SafetyNumberScreen> createState() => _SafetyNumberScreenState();
 }
 
 class _SafetyNumberScreenState extends State<SafetyNumberScreen> {
-  late bool _isVerified = widget.contact.isVerified;
+  bool _isMarking = false;
+
+  String get _contactName {
+    final nickname = widget.contact.nickname?.trim();
+    return nickname == null || nickname.isEmpty ? 'contato' : nickname;
+  }
 
   Future<void> _openScanner() async {
     final verified = await Navigator.of(context).push<bool>(
@@ -40,94 +48,113 @@ class _SafetyNumberScreenState extends State<SafetyNumberScreen> {
         ),
       ),
     );
+    if (verified == true && mounted) Navigator.of(context).pop(true);
+  }
 
-    if (verified == true && mounted) {
-      setState(() => _isVerified = true);
-      widget.onVerified?.call();
-    }
+  /// A leitura do QR exige que a outra pessoa mostre o código dela; este é o
+  /// lado que mostra.
+  Future<void> _showMyCode() async {
+    final verified = await showDialog<bool>(
+      context: context,
+      builder: (_) => SafetyNumberQrDialog(
+        contact: widget.contact,
+        safetyNumber: widget.safetyNumber,
+        core: widget.core,
+      ),
+    );
+    if (verified == true && mounted) Navigator.of(context).pop(true);
   }
 
   Future<void> _markManuallyVerified() async {
-    await widget.core.verifyContact(
-      contactDeviceId: widget.contact.deviceId,
-      verified: true,
-    );
-    if (!mounted) return;
-    setState(() => _isVerified = true);
-    widget.onVerified?.call();
+    if (_isMarking) return;
+    setState(() => _isMarking = true);
+    try {
+      await widget.core.verifyContact(
+        contactDeviceId: widget.contact.deviceId,
+        verified: true,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isMarking = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível marcar o contato como verificado.')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final contactName = widget.contact.nickname ?? 'Contato';
+    final isVerified = widget.contact.isVerified;
 
     return Scaffold(
       backgroundColor: ViskaColors.bgCanvas,
       appBar: AppBar(
-        title: const Text('Número de Segurança'),
+        title: Text('Verificar $_contactName'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_2_rounded),
+            tooltip: 'Mostrar meu código',
+            onPressed: _showMyCode,
+          ),
+        ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: Padding(
           padding: const EdgeInsets.all(ViskaSpacing.spaceLg),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'Verificação com $contactName',
-                style: ViskaTypography.titleLarge,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: ViskaSpacing.spaceSm),
-              Text(
-                'Compare os 60 dígitos ou as 6 palavras abaixo para garantir que a criptografia pós-quântica (ML-KEM-768 + X25519) não sofreu adulteração.',
-                style: ViskaTypography.bodyMedium.copyWith(
-                  color: ViskaColors.textSecondary,
-                  height: 1.4,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: ViskaSpacing.space2xl),
-              SafetyNumberWidget(
-                digits: widget.safetyNumber.digits,
-                words: widget.safetyNumber.words,
-              ),
-              const SizedBox(height: ViskaSpacing.space2xl),
-              if (_isVerified)
-                Container(
-                  padding: const EdgeInsets.all(ViskaSpacing.spaceMd),
-                  decoration: BoxDecoration(
-                    color: ViskaColors.trustContainer,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: ViskaColors.trustBorder),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(Icons.verified, color: ViskaColors.trustDefault, size: 20),
-                      const SizedBox(width: ViskaSpacing.spaceSm),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: isVerified
+                            ? const StatusChip(
+                                label: 'Verificado',
+                                icon: Icons.verified_rounded,
+                                tone: StatusChipTone.trust,
+                              )
+                            : const StatusChip(
+                                label: 'Não verificado',
+                                icon: Icons.shield_outlined,
+                              ),
+                      ),
+                      const SizedBox(height: ViskaSpacing.spaceLg),
                       Text(
-                        'Contato Verificado Criptograficamente',
-                        style: ViskaTypography.labelLarge.copyWith(
-                          color: ViskaColors.trustOnContainer,
-                          fontWeight: FontWeight.w600,
+                        'Comparem pessoalmente. Se tudo bater, ninguém está no meio da conversa de vocês.',
+                        style: ViskaTypography.bodyMedium.copyWith(
+                          color: ViskaColors.textSecondary,
+                          height: 1.4,
                         ),
+                      ),
+                      const SizedBox(height: ViskaSpacing.spaceLg),
+                      SafetyNumberWidget(
+                        digits: widget.safetyNumber.digits,
+                        words: widget.safetyNumber.words,
                       ),
                     ],
                   ),
-                )
-              else ...[
+                ),
+              ),
+              if (!isVerified) ...[
+                const SizedBox(height: ViskaSpacing.spaceLg),
                 ViskaButton(
-                  label: 'ESCANEAR QR CODE DO CONTATO',
+                  label: 'Escanear para verificar',
                   icon: Icons.qr_code_scanner_rounded,
-                  style: ViskaButtonStyle.primary,
                   isFullWidth: true,
                   onPressed: _openScanner,
                 ),
-                const SizedBox(height: ViskaSpacing.spaceMd),
+                const SizedBox(height: ViskaSpacing.spaceSm),
                 ViskaButton(
-                  label: 'Marcar como Conferido Manualmente',
-                  style: ViskaButtonStyle.secondary,
+                  label: 'Os números batem — marcar como verificado',
+                  style: ViskaButtonStyle.ghost,
                   isFullWidth: true,
+                  isLoading: _isMarking,
                   onPressed: _markManuallyVerified,
                 ),
               ],

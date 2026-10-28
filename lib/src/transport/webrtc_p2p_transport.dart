@@ -33,7 +33,9 @@ class WebrtcP2PTransport implements P2PTransport {
     RawP2PChannel? webrtcTransport,
     SignalingBackend? signalingBackend,
     String signalingHost = 'broker.emqx.io',
+    Duration signalingRefreshInterval = const Duration(seconds: 4),
   })  : _core = core,
+        _signalingRefreshInterval = signalingRefreshInterval,
         _contactId = contactId,
         _webrtc = webrtcTransport ?? WebrtcTransport(),
         _signaling = signalingBackend ?? MqttSignalingBackend(host: signalingHost);
@@ -42,8 +44,28 @@ class WebrtcP2PTransport implements P2PTransport {
   final ContactId _contactId;
   final RawP2PChannel _webrtc;
   final SignalingBackend _signaling;
+  final Duration _signalingRefreshInterval;
 
   String? _publishTopic;
+  bool _isOfferer = false;
+  String? _offerSdp;
+  String? _answerSdp;
+  bool _answerApplied = false;
+  final List<SignalingPayload> _localCandidates = [];
+  Timer? _signalingRefreshTimer;
+  bool _refreshing = false;
+
+  /// Mensagens de sinalização processadas uma por vez: tratar a oferta é
+  /// assíncrono, e um candidato que chegasse no meio seria aplicado numa
+  /// conexão que ainda não existe.
+  Future<void> _signalingQueue = Future.value();
+
+  /// Candidatos remotos só podem ser aplicados depois da descrição remota
+  /// (oferta no respondedor, resposta no ofertante). Com a republicação de
+  /// §8.2, um candidato pode chegar antes dela; fica guardado até lá.
+  bool _remoteDescriptionApplied = false;
+  final List<SignalingPayload> _pendingRemoteCandidates = [];
+  final Set<String> _appliedRemoteCandidates = {};
   StreamSubscription<SignalingMessage>? _signalingSub;
   StreamSubscription<RTCIceCandidate>? _localIceSub;
   StreamSubscription<TransportConnectionEvent>? _webrtcEventsSub;
@@ -70,28 +92,65 @@ class WebrtcP2PTransport implements P2PTransport {
     if (_connectStarted) return;
     _connectStarted = true;
 
-    final topics = await _core.signalingTopics(peerDeviceId: _contactId.deviceId);
-    _publishTopic = topics.publishTopic;
-
-    await _signaling.connect();
-    await _signaling.subscribeTopics(topics.subscribeTopics);
-    _signalingSub = _signaling.incoming.listen(_handleSignalingMessage);
+    await _connectSignaling();
+    _signalingSub = _signaling.incoming.listen(_enqueueSignalingMessage);
     _webrtcEventsSub = _webrtc.connectionEvents.listen(_handleWebrtcConnectionEvent);
 
     final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-    final weAreOfferer = status.outgoingHandshake != null;
+    _isOfferer = status.outgoingHandshake != null;
 
-    if (weAreOfferer) {
-      final offerSdp = await _webrtc.createOffer();
+    if (_isOfferer) {
+      _offerSdp = await _webrtc.createOffer();
       _localIceSub = _webrtc.localIceCandidates.listen(_publishLocalCandidate);
-      await _publish(SignalingPayload.offer(offerSdp));
+      await _publish(SignalingPayload.offer(_offerSdp!));
     }
     // Respondedor: nada a fazer ainda — espera a oferta chegar por
     // `_handleSignalingMessage`.
+
+    // QoS 0 sem retain: o que é publicado enquanto o par não está inscrito se
+    // perde. §8.2 prevê que as pontas republiquem; até o DataChannel abrir,
+    // reconecta a sinalização se ela caiu e quem oferta republica oferta e
+    // candidatos.
+    _signalingRefreshTimer = Timer.periodic(
+      _signalingRefreshInterval,
+      (_) => unawaited(_refreshSignaling()),
+    );
+  }
+
+  /// Conecta (no-op se já conectado) e assina os tópicos recalculados agora,
+  /// porque a época pode ter virado desde a última vez.
+  Future<void> _connectSignaling() async {
+    final topics = await _core.signalingTopics(peerDeviceId: _contactId.deviceId);
+    _publishTopic = topics.publishTopic;
+    await _signaling.connect();
+    await _signaling.subscribeTopics(topics.subscribeTopics);
+  }
+
+  Future<void> _refreshSignaling() async {
+    if (_signalingClosed || _refreshing) return;
+    _refreshing = true;
+    try {
+      await _connectSignaling();
+      if (_isOfferer && !_answerApplied && _offerSdp != null) {
+        await _publish(SignalingPayload.offer(_offerSdp!));
+        await _republishLocalCandidates();
+      }
+    } catch (_) {
+      // Broker inalcançável agora: a próxima rodada tenta de novo.
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  Future<void> _republishLocalCandidates() async {
+    for (final candidate in List.of(_localCandidates)) {
+      await _publish(candidate);
+    }
   }
 
   @override
   Future<void> close() async {
+    _signalingRefreshTimer?.cancel();
     await _signalingSub?.cancel();
     await _localIceSub?.cancel();
     await _webrtcEventsSub?.cancel();
@@ -100,6 +159,14 @@ class WebrtcP2PTransport implements P2PTransport {
       await _signaling.disconnect();
     }
     await _webrtc.close();
+  }
+
+  void _enqueueSignalingMessage(SignalingMessage message) {
+    _signalingQueue = _signalingQueue
+        .then((_) => _handleSignalingMessage(message))
+        .catchError((Object _) {
+      // Uma mensagem que falha não pode travar a fila das seguintes.
+    });
   }
 
   Future<void> _handleSignalingMessage(SignalingMessage message) async {
@@ -121,30 +188,66 @@ class WebrtcP2PTransport implements P2PTransport {
 
     switch (decoded.kind) {
       case SignalingMessageKind.offer:
-        final answerSdp = await _webrtc.createAnswerForOffer(decoded.sdp!);
+        if (_isOfferer) return;
+        final cachedAnswer = _answerSdp;
+        if (cachedAnswer != null) {
+          // Oferta republicada: a nossa resposta provavelmente se perdeu.
+          // Responder de novo com a mesma SDP, sem renegociar a conexão.
+          await _publish(SignalingPayload.answer(cachedAnswer));
+          await _republishLocalCandidates();
+          return;
+        }
+        _answerSdp = await _webrtc.createAnswerForOffer(decoded.sdp!);
         _localIceSub ??= _webrtc.localIceCandidates.listen(_publishLocalCandidate);
-        await _publish(SignalingPayload.answer(answerSdp));
+        await _onRemoteDescriptionApplied();
+        await _publish(SignalingPayload.answer(_answerSdp!));
       case SignalingMessageKind.answer:
+        if (!_isOfferer || _answerApplied) return;
+        _answerApplied = true;
         await _webrtc.applyRemoteAnswer(decoded.sdp!);
+        await _onRemoteDescriptionApplied();
       case SignalingMessageKind.iceCandidate:
-        await _webrtc.addRemoteIceCandidate(
-          candidate: decoded.candidate!,
-          sdpMid: decoded.sdpMid,
-          sdpMLineIndex: decoded.sdpMLineIndex,
-        );
+        if (!_remoteDescriptionApplied) {
+          _pendingRemoteCandidates.add(decoded);
+          return;
+        }
+        await _applyRemoteCandidate(decoded);
     }
+  }
+
+  Future<void> _onRemoteDescriptionApplied() async {
+    _remoteDescriptionApplied = true;
+    final pending = List.of(_pendingRemoteCandidates);
+    _pendingRemoteCandidates.clear();
+    for (final candidate in pending) {
+      await _applyRemoteCandidate(candidate);
+    }
+  }
+
+  Future<void> _applyRemoteCandidate(SignalingPayload candidate) async {
+    // A republicação traz o mesmo candidato várias vezes.
+    if (!_appliedRemoteCandidates.add(candidate.candidate!)) return;
+    await _webrtc.addRemoteIceCandidate(
+      candidate: candidate.candidate!,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+    );
   }
 
   Future<void> _publishLocalCandidate(RTCIceCandidate candidate) async {
     final text = candidate.candidate;
     if (text == null) return;
-    await _publish(
-      SignalingPayload.iceCandidate(
-        candidate: text,
-        sdpMid: candidate.sdpMid,
-        sdpMLineIndex: candidate.sdpMLineIndex,
-      ),
+    final payload = SignalingPayload.iceCandidate(
+      candidate: text,
+      sdpMid: candidate.sdpMid,
+      sdpMLineIndex: candidate.sdpMLineIndex,
     );
+    _localCandidates.add(payload);
+    try {
+      await _publish(payload);
+    } catch (_) {
+      // Fica guardado em `_localCandidates` e sai na próxima republicação.
+    }
   }
 
   Future<void> _publish(SignalingPayload payload) async {
@@ -160,6 +263,7 @@ class WebrtcP2PTransport implements P2PTransport {
   void _handleWebrtcConnectionEvent(TransportConnectionEvent event) {
     if (event.state == TransportConnectionState.connected && !_signalingClosed) {
       _signalingClosed = true;
+      _signalingRefreshTimer?.cancel();
       unawaited(_signaling.disconnect());
     }
   }

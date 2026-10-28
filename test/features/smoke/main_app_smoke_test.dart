@@ -93,6 +93,13 @@ class _MockSmokeCore implements Core {
   @override
   Future<bool> isContactVerified({required List<int> contactDeviceId}) async => false;
 
+  final verifiedContacts = <List<int>>[];
+
+  @override
+  Future<void> verifyContact({required List<int> contactDeviceId, required bool verified}) async {
+    if (verified) verifiedContacts.add(contactDeviceId);
+  }
+
   @override
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
 
@@ -225,7 +232,7 @@ void main() {
     });
 
     testWidgets(
-        'MainApp tapping contact verifier opens SafetyNumberQrDialog and closes cleanly without freeze or crash', (
+        'MainApp tapping contact verifier opens SafetyNumberScreen and closes cleanly without freeze or crash', (
       WidgetTester tester,
     ) async {
       final sampleContact = ContactDto(
@@ -263,16 +270,67 @@ void main() {
         await tester.tap(verifierButton);
         await tester.pumpAndSettle();
 
-        // SafetyNumberQrDialog is displayed with QR Code and numbers
-        expect(find.text('Número de Segurança (Alice Segura)'), findsOneWidget);
-        expect(find.byKey(const Key('scan_partner_qr_button')), findsOneWidget);
-        expect(find.text('Fechar'), findsOneWidget);
+        // Contato já verificado: mostra o selo e não oferece verificar de novo
+        expect(find.text('Verificar Alice Segura'), findsOneWidget);
+        expect(find.text('Verificado'), findsOneWidget);
+        expect(find.text('Os números batem — marcar como verificado'), findsNothing);
 
-        // Close dialog cleanly
-        await tester.tap(find.text('Fechar'));
+        // Volta para a lista
+        await tester.tap(find.byType(BackButton));
         await tester.pumpAndSettle();
 
         // Screen is still intact and responsive
+        expect(find.text('Alice Segura'), findsOneWidget);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        controller.dispose();
+      }
+    });
+
+    testWidgets('marking an unverified contact as verified leads to the verified screen', (
+      WidgetTester tester,
+    ) async {
+      final sampleContact = ContactDto(
+        deviceId: Uint8List.fromList(List.generate(16, (i) => i + 10)),
+        signingPubkey: Uint8List(32),
+        dhPubkey: Uint8List(32),
+        pairedAtUnixSecs: 1700000000,
+        nickname: 'Alice Segura',
+        isVerified: false,
+      );
+
+      final core = _MockSmokeCore(contacts: [sampleContact]);
+      final controller = LockController(
+        core: core,
+        appDirPath: tempDir.path,
+        localAuth: localAuth,
+        autoLockTimeout: null,
+      );
+
+      try {
+        await tester.pumpWidget(
+          MainApp(
+            core: core,
+            router: P2PTransportRouter(core: core),
+            lockController: controller,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byIcon(Icons.verified_user_outlined));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Não verificado'), findsOneWidget);
+        await tester.tap(find.text('Os números batem — marcar como verificado'));
+        await tester.pumpAndSettle();
+
+        expect(core.verifiedContacts, [sampleContact.deviceId]);
+        expect(find.text('Verificado agora'), findsOneWidget);
+        expect(find.text('Abrir conversa'), findsOneWidget);
+
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
         expect(find.text('Alice Segura'), findsOneWidget);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -505,22 +563,22 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
 
-        expect(find.text('Adicionar Contato'), findsOneWidget);
+        expect(find.widgetWithText(AppBar, 'Adicionar contato'), findsOneWidget);
         expect(find.text('Proximidade'), findsOneWidget);
         expect(find.text('QR Code'), findsOneWidget);
-        expect(find.text('Manual'), findsOneWidget);
+        expect(find.text('Código'), findsOneWidget);
 
         // Aba QR Code
         await tester.tap(find.text('QR Code'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        // Aba Manual
-        await tester.tap(find.text('Manual'));
+        // Aba Código
+        await tester.tap(find.text('Código'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
-        expect(find.text('Copiar meu código Base64'), findsOneWidget);
-        expect(find.text('Inserir código recebido'), findsOneWidget);
+        expect(find.text('Mostrar para a outra pessoa'), findsOneWidget);
+        expect(find.text('Código da outra pessoa'), findsOneWidget);
 
         // Volta para a tela inicial
         final backButton = find.byType(BackButton);
