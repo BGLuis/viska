@@ -26,12 +26,13 @@ pub enum PacketType {
     AudioChunk,
     ControlPing,
     ControlRekem,
+    ControlSuites,
     Unknown(u8),
 }
 
 impl PacketType {
     /// Todas as variantes conhecidas, na ordem da spec. Usado pelos testes exaustivos.
-    pub const ALL: [PacketType; 12] = [
+    pub const ALL: [PacketType; 13] = [
         PacketType::MsgText,
         PacketType::MsgReceipt,
         PacketType::MsgTyping,
@@ -44,6 +45,7 @@ impl PacketType {
         PacketType::AudioChunk,
         PacketType::ControlPing,
         PacketType::ControlRekem,
+        PacketType::ControlSuites,
     ];
 
     /// Byte no fio (dentro do plaintext cifrado) correspondente a esta variante.
@@ -61,6 +63,7 @@ impl PacketType {
             Self::AudioChunk => 0x30,
             Self::ControlPing => 0x40,
             Self::ControlRekem => 0x41,
+            Self::ControlSuites => 0x42,
             Self::Unknown(val) => val,
         }
     }
@@ -90,6 +93,7 @@ impl PacketType {
             0x30 => Ok(Self::AudioChunk),
             0x40 => Ok(Self::ControlPing),
             0x41 => Ok(Self::ControlRekem),
+            0x42 => Ok(Self::ControlSuites),
             0x01 | 0x02 => Err(Error::Malformed(
                 "tipo de pacote pertence ao handshake (0x01/0x02) e nunca aparece dentro do envelope de sessão",
             )),
@@ -123,7 +127,7 @@ mod tests {
 
     #[test]
     fn decodes_unknown_values() {
-        for valor in [0x00, 0x03, 0x15, 0x1f, 0x24, 0x31, 0x42, 0x7f, 0xff] {
+        for valor in [0x00, 0x03, 0x15, 0x1f, 0x24, 0x31, 0x43, 0x7f, 0xff] {
             let parsed = PacketType::from_u8(valor).unwrap();
             assert_eq!(parsed, PacketType::Unknown(valor));
             assert_eq!(parsed.to_u8(), valor);

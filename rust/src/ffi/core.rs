@@ -45,6 +45,8 @@ pub struct Core {
     /// persistidas em si (`store::transfers` guarda só o necessário para
     /// retomar dentro da mesma execução, ver `file::transfer`).
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// Suítes acordadas para upgrade em memória (§6.2, D24), nunca persistidas.
+    pub(super) agreed_upgrades: Mutex<HashMap<[u8; 16], u8>>,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
@@ -77,6 +79,7 @@ impl Core {
             store,
             sessions: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
+            agreed_upgrades: Mutex::new(HashMap::new()),
             staging_dir,
             app_dir: dir.to_path_buf(),
         })
