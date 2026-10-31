@@ -145,6 +145,12 @@ class _FakeCore implements Core {
   @override
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
 
+  List<FileOfferDto> unconfirmedFileOffersToReturn = [];
+
+  @override
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async =>
+      unconfirmedFileOffersToReturn;
+
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -716,6 +722,35 @@ void main() {
       expect(find.text('foto.png'), findsOneWidget);
       expect(find.text('Enviado'), findsOneWidget);
       expect(find.byIcon(Icons.insert_drive_file_rounded), findsOneWidget);
+    });
+
+    testWidgets('unconfirmed file offer renders FileOfferCard with accept and reject options', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 42));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(
+          fileId: fileId,
+          name: 'large_dataset.tar.gz',
+          fileSize: BigInt.from(150 * 1024 * 1024),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('large_dataset.tar.gz'), findsOneWidget);
+      expect(find.text('150.0 MB • Oferta de transferência direta'), findsOneWidget);
+      expect(find.text('Aceitar'), findsOneWidget);
+      expect(find.text('Recusar'), findsOneWidget);
     });
   });
 }

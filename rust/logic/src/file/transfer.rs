@@ -593,13 +593,26 @@ impl<R: Read> SendTransfer<R> {
             advanced = true;
         }
 
-        if !advanced && self.mode == TransferMode::Fountain {
-            if let Some(encoder) = &self.current_encoder {
-                // Se recebeu feedback para o bloco corrente e ele ainda não terminou,
-                // estende o teto de reparo para permitir nova rajada proporcional (P-03).
-                let k = encoder.source_symbol_count();
-                let step = (k as f64 * 0.1).ceil().max(1.0) as u32;
-                self.repair_limit = self.next_repair_symbol_id.saturating_add(step);
+        if !advanced {
+            match self.mode {
+                TransferMode::Fountain => {
+                    if let Some(encoder) = &self.current_encoder {
+                        // Se recebeu feedback para o bloco corrente e ele ainda não terminou,
+                        // estende o teto de reparo para permitir nova rajada proporcional (P-03).
+                        let k = encoder.source_symbol_count();
+                        let step = (k as f64 * 0.1).ceil().max(1.0) as u32;
+                        self.repair_limit = self.next_repair_symbol_id.saturating_add(step);
+                    }
+                }
+                TransferMode::Offset => {
+                    // Na LAN por offset, se todos os k símbolos-fonte já foram enviados
+                    // mas o receptor confirmou que o bloco ainda está incompleto (por exemplo,
+                    // pacotes descartados antes do aceite da oferta), reinicia a emissão do
+                    // bloco do símbolo 0 para permitir recuperação (U-08).
+                    if self.next_repair_symbol_id >= self.repair_limit {
+                        self.restart_current_block();
+                    }
+                }
             }
         }
         Ok(())

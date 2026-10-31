@@ -46,12 +46,20 @@
 //! `hex(file_id)`, nunca texto de verdade — convenção só deste módulo e de
 //! `ffi/session.rs::message_dto`, que é quem decodifica de volta.
 //!
+//! ## Fluxo de aceitar/recusar oferta (Issue #23, U-08)
+//!
+//! Transferências com tamanho até o limite configurável (`auto_accept_file_size_limit`,
+//! padrão 100 MiB) são aceitas e iniciadas automaticamente. Ofertas acima do limite
+//! são retidas em memória volátil (`Core::unconfirmed_offers`) aguardando confirmação
+//! explícita do usuário via [`Core::accept_file_offer`] ou recusa via [`Core::reject_file_offer`],
+//! prevenindo que contatos preencham o disco silenciosamente.
+//!
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
-//! - **Fluxo de aceitar/recusar oferta**: transferências com tamanho até o limite
-//!   configurável (`auto_accept_file_size_limit`, padrão 100 MiB) continuam automáticas.
-//!   Ofertas que excederem o limite ficam retidas em memória aguardando confirmação
-//!   do usuário (`accept_file_offer` / `reject_file_offer`), prevenindo exaustão de disco (U-08).
+//! - **Sem sinal de recusa no fio para o emissor**: `reject_file_offer` descarta
+//!   a oferta localmente; o emissor continua até timeout ou cancelamento manual.
+//! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
+//!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe notificação de lock.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
 //!   `use_lan: bool`.** Nenhum ajuste fino exposto.
 //! - **Controle de taxa de envio é só o que `SendTransfer` já faz**
@@ -97,6 +105,12 @@ pub const DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT: u64 = 100 * 1024 * 1024;
 
 /// Chave em `app_config` que guarda o limite de auto-aceite configurado.
 pub const CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT: &str = "auto_accept_file_size_limit";
+
+/// Teto de ofertas retidas em memória por contato para evitar flood de RAM (Issue #23).
+pub const MAX_UNCONFIRMED_OFFERS_PER_CONTACT: usize = 16;
+
+/// Teto total de ofertas retidas em memória em todo o dispositivo.
+pub const MAX_UNCONFIRMED_OFFERS_TOTAL: usize = 64;
 
 /// Uma oferta de arquivo recebida com tamanho acima do limite de
 /// auto-aceite, retida em memória aguardando confirmação do usuário.
@@ -614,19 +628,34 @@ impl Core {
     pub fn accept_file_offer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
         let fid = to_file_id(file_id)?;
-        let offer = self
-            .lock_unconfirmed_offers()?
-            .remove(&fid)
-            .ok_or(FfiError::Internal)?;
+
+        // Não remove a oferta antes de saber se o recebimento começou com sucesso (Menor 2).
+        // Se start_receiving_transfer falhar (ex: disco cheio ao criar .staging),
+        // a oferta continua em unconfirmed_offers para permitir nova tentativa.
+        let (contact_device_id, kind, secret, manifest, manifest_cbor, received_at) = {
+            let unconfirmed = self.lock_unconfirmed_offers()?;
+            let offer = unconfirmed.get(&fid).ok_or(FfiError::OfferNotFound)?;
+            (
+                offer.contact_device_id,
+                offer.kind,
+                *offer.transfer_secret,
+                offer.manifest.clone(),
+                offer.manifest_cbor.clone(),
+                offer.received_at,
+            )
+        };
 
         self.start_receiving_transfer(
-            offer.contact_device_id,
-            offer.kind,
-            offer.transfer_secret.as_ref(),
-            offer.manifest,
-            offer.manifest_cbor,
-            offer.received_at,
-        )
+            contact_device_id,
+            kind,
+            &secret,
+            manifest,
+            manifest_cbor,
+            received_at,
+        )?;
+
+        self.lock_unconfirmed_offers()?.remove(&fid);
+        Ok(())
     }
 
     /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
@@ -637,7 +666,7 @@ impl Core {
         let fid = to_file_id(file_id)?;
         self.lock_unconfirmed_offers()?
             .remove(&fid)
-            .ok_or(FfiError::Internal)?;
+            .ok_or(FfiError::OfferNotFound)?;
         Ok(())
     }
 
@@ -691,7 +720,23 @@ impl Core {
 
         let auto_accept_limit = self.auto_accept_file_size_limit()?;
         if manifest.file_size > auto_accept_limit {
-            self.lock_unconfirmed_offers()?.insert(
+            let mut unconfirmed = self.lock_unconfirmed_offers()?;
+            if unconfirmed.contains_key(&manifest.file_id) {
+                // Não sobrescreve oferta já retida com o mesmo file_id (Menor 1).
+                return Ok(());
+            }
+            if unconfirmed.len() >= MAX_UNCONFIRMED_OFFERS_TOTAL {
+                return Ok(());
+            }
+            let contact_count = unconfirmed
+                .values()
+                .filter(|o| o.contact_device_id == contact_device_id)
+                .count();
+            if contact_count >= MAX_UNCONFIRMED_OFFERS_PER_CONTACT {
+                return Ok(());
+            }
+
+            unconfirmed.insert(
                 manifest.file_id,
                 UnconfirmedOffer {
                     contact_device_id,
@@ -1762,5 +1807,113 @@ mod tests {
             .unconfirmed_file_offers(pair.device_id_a.clone())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn late_accept_on_lan_with_exhausted_sender_completes() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        // Limite de 10 KB para reter o arquivo de 150 KB.
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+
+        let original: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "lan_late_accept.bin", &original);
+
+        // use_lan = true: ativa TransferMode::Offset (D6, D23).
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, true)
+            .unwrap();
+
+        // Receptor recebe o FILE_METADATA e retém a oferta (sem auto-aceite).
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        assert_eq!(
+            pair.core_b
+                .unconfirmed_file_offers(pair.device_id_a.clone())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Emissor bombeia todos os símbolos até next_outgoing_wire_chunk retornar None
+        // ANTES de o receptor aceitar a oferta (reprodução do Bloqueante 1 da revisão).
+        let mut pumped_before_accept = 0;
+        while let Some(wire_chunk) = pair
+            .core_a
+            .next_outgoing_wire_chunk(started.file_id.clone())
+            .unwrap()
+        {
+            // Receptor descarta silenciosamente porque a oferta ainda não foi aceita.
+            let res = pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+            assert!(res.is_none());
+            pumped_before_accept += 1;
+        }
+        assert!(pumped_before_accept > 0, "emissor deve ter bombeado símbolos");
+
+        // Agora o usuário aceita tardiamente a oferta:
+        pair.core_b
+            .accept_file_offer(started.file_id.clone())
+            .unwrap();
+
+        // Loop de troca de feedback e chunks na LAN:
+        for _ in 0..10_000 {
+            let progress = pair
+                .core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap();
+            if progress.map(|p| p.is_complete).unwrap_or(false) {
+                break;
+            }
+
+            // Receptor gera FILE_FEEDBACK e entrega ao emissor.
+            if let Ok(sealed_fb) = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            {
+                pair.core_a
+                    .decrypt_incoming(pair.device_id_b.clone(), sealed_fb)
+                    .unwrap();
+            }
+
+            // Emissor (tendo reiniciado o bloco via ingest_feedback) volta a emitir!
+            while let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            {
+                pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+            }
+        }
+
+        let dst_path = dir_dst.path().join("lan_late_accept_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    #[test]
+    fn unconfirmed_offers_limits_and_not_found_handling() {
+        let pair = established_pair();
+
+        // file_id inexistente retorna OfferNotFound
+        let fake_fid = vec![42u8; FILE_ID_LEN];
+        assert_eq!(
+            pair.core_b.accept_file_offer(fake_fid.clone()),
+            Err(FfiError::OfferNotFound)
+        );
+        assert_eq!(
+            pair.core_b.reject_file_offer(fake_fid),
+            Err(FfiError::OfferNotFound)
+        );
     }
 }

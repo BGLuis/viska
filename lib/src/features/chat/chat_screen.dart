@@ -755,6 +755,25 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
 
+          // Ofertas de arquivo que excederam o limite de auto-aceite (Issue #23)
+          if (controller.unconfirmedOffers.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final offer in controller.unconfirmedOffers)
+                    FileOfferCard(
+                      key: ValueKey(offer.fileId),
+                      fileName: offer.name,
+                      fileSizeBytes: offer.fileSize.toInt(),
+                      onReject: () => controller.rejectFileOffer(offer.fileId),
+                      onAccept: () => controller.acceptFileOffer(offer.fileId),
+                    ),
+                ],
+              ),
+            ),
+
           // Pré-visualização de resposta citada
           if (_replyingTo != null)
             ReplyPreview(
