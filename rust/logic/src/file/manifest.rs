@@ -45,12 +45,13 @@ const _: () = assert!(MAX_BLOCK_SYMBOLS as u32 <= 56_403);
 /// manifesto malicioso com `file_size` astronômico (mas ainda consistente)
 /// faria `ReceiveTransfer::start` alocar um `Vec<bool>` de gigabytes (um
 /// `bool` por bloco) só para registrar o progresso, antes de qualquer
-/// símbolo chegar. Não há aceitar/recusar oferta ainda (Fase 4): qualquer
-/// contato pareado pode mandar um `FILE_METADATA`, então este teto é a
-/// única defesa contra esse vetor. 65.536 blocos, no maior tamanho de
-/// bloco possível (1024 símbolos × 65536 B, D6), já cobre 4 TB — bem acima
-/// de qualquer transferência real neste app; o `Vec<bool>` correspondente
-/// nunca passa de 64 KB.
+/// símbolo chegar. Embora a camada FFI (`ffi/transfer.rs`) retenha ofertas
+/// acima do limite configurável para aprovação manual do usuário (U-08),
+/// este teto de decodificação CBOR continua sendo a defesa estrutural contra
+/// alocações desproporcionais de vetores no início do recebimento. 65.536
+/// blocos, no maior tamanho de bloco possível (1024 símbolos × 65536 B, D6),
+/// já cobre 4 TB — bem acima de qualquer transferência real neste app; o
+/// `Vec<bool>` correspondente nunca passa de 64 KB.
 pub const MAX_SOURCE_BLOCKS: u32 = 65_536;
 
 /// Único valor de `mime` que já trafegou ou trafegará no fio — o tipo real

@@ -408,12 +408,7 @@ de tamanho dentro do tráfego da LAN, que tem o mesmo conjunto de dois tamanhos,
 **Custo de reverter:** passar `Transport` por par a `encrypt_outgoing`/`decrypt_incoming` em
 `ffi/session.rs` e `ffi/transfer.rs`, e expô-lo ao Dart.
 
-**Limitações conhecidas do modo offset:** o emissor envia cada símbolo-fonte uma única vez, então
-um símbolo perdido (queda de conexão) deixa o bloco incompleto e o laço de envio espera feedback
-indefinidamente, até `restart_current_block` ganhar um chamador via FFI. Além disso, 65535 não é
-potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e
-`merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por
-posição. A raiz completa do manifesto não é afetada.
+**Recuperação de bloco no modo offset:** O emissor envia inicialmente os `k` símbolos-fonte do bloco atual em sequência. Se o feedback do receptor indicar que o bloco não foi concluído (`!advanced`) e todos os símbolos já foram transmitidos (`next_repair_symbol_id >= repair_limit`), o emissor aciona automaticamente `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco a partir do cache `current_source_symbols`. Isso garante que aceites tardios de arquivos pesados ou perdas pontuais na LAN não congelem a transferência. Além disso, 65535 não é potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e `merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por posição. A raiz completa do manifesto não é afetada.
 
 ---
 
@@ -431,3 +426,16 @@ O ciclo de vida de convivência e migração de suítes rege-se por sete princí
 7. **Limite declarado de segurança:** a autenticação da Suíte `0x01` repousa na chave clássica X25519 (`IK_dh`). Caso o X25519 seja quebrado, o anúncio autenticado dentro da sessão não oferece garantia contra atacantes ativos; nessa hipótese, a transição para uma nova suíte exige estritamente re-pareamento presencial.
 
 **Custo de reverter:** reverter `suite_id` para um `PROTOCOL_VERSION = 0x01` fixo, remover o pacote `CONTROL_SUITES`, a coluna `suite_id` da tabela `contacts` e as colunas/prefixos de versão em repouso, tornando qualquer alteração de primitiva incompatível com pareamentos e dados históricos existentes.
+
+---
+
+## D25 — Limite de auto-aceite de arquivos em 100 MB com retenção volátil
+**Spec:** §5, todas as ofertas de arquivos recebidas (`FILE_METADATA`) iniciavam imediatamente a recepção em disco de forma irrestrita.
+**Aqui:** ofertas com `file_size > auto_accept_file_size_limit` (padrão de 100 MB, configurável via FFI) não iniciam recepção automática. Ficam retidas em memória volátil (`unconfirmed_offers`) aguardando confirmação explícita do usuário.
+
+A recepção irrestrita e automática de arquivos pesados expõe dispositivos móveis a exaustão de plano de dados, consumo abusivo de bateria e saturação de espaço de armazenamento por contatos maliciosos ou inadvertidos. A retenção volátil mitiga esses riscos:
+1. **Memória volátil:** `unconfirmed_offers` não grava metadados no SQLite até o aceite explícito. A fila é limitada a 16 ofertas por contato e 64 globais para evitar flood de memória.
+2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), toda a lista de ofertas não confirmadas é destruída da memória.
+3. **Controle na UI:** O usuário tem a faculdade de aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`). Ao aceitar, o receptor registra o `ReceiveTransfer` em `active_receives` e dispara um `FILE_FEEDBACK` inicial para engajar o emissor.
+
+**Custo de reverter:** remover a verificação de limite em `handle_incoming_file_metadata`, iniciando `start_receiving_transfer` para qualquer tamanho e expondo o aparelho móvel a downloads massivos não consentidos.

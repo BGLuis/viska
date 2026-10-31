@@ -20,8 +20,8 @@ class _LoopbackP2PTransport implements P2PTransport {
 
   _LoopbackP2PTransport? peer;
 
-  final _incoming = StreamController<Uint8List>();
-  final _incomingFile = StreamController<Uint8List>();
+  final _incoming = StreamController<Uint8List>.broadcast();
+  final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
   @override

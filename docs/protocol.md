@@ -466,6 +466,15 @@ destino final e apaga o staging. Se abortar, `K_staging` é destruída — o res
 criptograficamente inacessível, o que é mais confiável que sobrescrever bytes em armazenamento
 com wear leveling.
 
+### 7.6 Limite de auto-aceite e retenção volátil de ofertas
+
+Para proteger a largura de banda e o armazenamento de aparelhos móveis contra transferências pesadas não solicitadas, o receptor impõe um limite de auto-aceite configurável (`auto_accept_file_size_limit`, padrão de 100 MB).
+
+1. **Retenção volátil:** Ao receber `FILE_METADATA`, se `file_size > auto_accept_file_size_limit`, a transferência receptora não é iniciada automaticamente. A oferta é retida em memória volátil (`unconfirmed_offers`), limitada a 16 ofertas por contato e 64 no total do processo para conter exaustão de RAM.
+2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), todas as ofertas não confirmadas em `unconfirmed_offers` são imediatamente destruídas da memória volátil.
+3. **Confirmação e recuperação:** O usuário pode aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`) explicitamente a oferta pela UI. Ao aceitar, o receptor inicializa o `ReceiveTransfer` em `active_receives` e despacha um pacote de `FILE_FEEDBACK` para acordar o emissor.
+4. **Retransmissão em LAN Offset:** No modo LAN (`TransferMode::Offset`), se o emissor já tiver enviado todos os seus `k` símbolos e o receptor ainda não tiver completado o bloco (`!advanced`), a recepção de feedback aciona `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco atual utilizando o cache em memória `current_source_symbols`, recuperando perdas ou aceites tardios sem travar a transferência.
+
 ---
 
 ## 8. Sinalização remota (D8)

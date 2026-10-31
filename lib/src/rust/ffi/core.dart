@@ -14,6 +14,11 @@ import 'types.dart';
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
 abstract class Core implements RustOpaqueInterface {
+  /// Aceita manualmente uma oferta de arquivo retida por exceder o limite
+  /// de auto-aceite. Cria o registro em `file_transfers`, inicializa o
+  /// `ReceiveTransfer` em `.staging` e passa a aceitar os pacotes do arquivo.
+  Future<void> acceptFileOffer({required List<int> fileId});
+
   /// Adiciona uma reação emoji a uma mensagem persistida (Fase 9).
   Future<void> addReaction({
     required U8Array16 contactDeviceId,
@@ -27,6 +32,13 @@ abstract class Core implements RustOpaqueInterface {
     required String targetGlobalId,
     required String emoji,
   });
+
+  /// Consulta o teto de tamanho de arquivo em bytes para aceitação automática.
+  /// Retorna `DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT` se não configurado.
+  Future<BigInt> autoAcceptFileSizeLimit();
+
+  /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`. Do lado receptor, também apaga o
@@ -277,6 +289,15 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> peerDeviceId,
   });
 
+  /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
+  /// a oferta e zera o material de chave sem criar registro em banco ou
+  /// arquivo em staging.
+  Future<void> rejectFileOffer({required List<int> fileId});
+
+  /// Re-pareamento presencial com um contato existente (§10, D24):
+  /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
+  Future<ContactDto> repairFromQr({required List<int> payload});
+
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
@@ -327,6 +348,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Status atual da sessão com um contato, sem alterar nada — `None` se
   /// `ensure_session` nunca foi chamado para ele.
   Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId});
+
+  /// Define o teto de tamanho de arquivo em bytes para aceitação automática.
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes});
 
   /// Define chave de configuração arbitrária.
   Future<void> setConfig({required String key, required String value});
@@ -387,6 +411,12 @@ abstract class Core implements RustOpaqueInterface {
   /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
   /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
   Future<TransferProgressDto?> transferProgress({required List<int> fileId});
+
+  /// Lista as ofertas de arquivo pendentes de confirmação do usuário para
+  /// o contato especificado (Issue #23, U-08).
+  Future<List<FileOfferDto>> unconfirmedFileOffers({
+    required List<int> peerDeviceId,
+  });
 
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
   /// mestre e reabre a conexão do SQLCipher.

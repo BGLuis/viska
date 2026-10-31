@@ -46,10 +46,20 @@
 //! `hex(file_id)`, nunca texto de verdade — convenção só deste módulo e de
 //! `ffi/session.rs::message_dto`, que é quem decodifica de volta.
 //!
+//! ## Fluxo de aceitar/recusar oferta (Issue #23, U-08)
+//!
+//! Transferências com tamanho até o limite configurável (`auto_accept_file_size_limit`,
+//! padrão 100 MiB) são aceitas e iniciadas automaticamente. Ofertas acima do limite
+//! são retidas em memória volátil (`Core::unconfirmed_offers`) aguardando confirmação
+//! explícita do usuário via [`Core::accept_file_offer`] ou recusa via [`Core::reject_file_offer`],
+//! prevenindo que contatos preencham o disco silenciosamente.
+//!
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
-//! - **Sem fluxo de aceitar/recusar oferta**, arquivo ou áudio — decisão do
-//!   usuário: manter automático por ora, mesmo comportamento de sempre.
+//! - **Sem sinal de recusa no fio para o emissor**: `reject_file_offer` descarta
+//!   a oferta localmente; o emissor continua até timeout ou cancelamento manual.
+//! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
+//!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe notificação de lock.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
 //!   `use_lan: bool`.** Nenhum ajuste fino exposto.
 //! - **Controle de taxa de envio é só o que `SendTransfer` já faz**
@@ -86,6 +96,44 @@ use viska_proto::wire::transport::Transport;
 pub(super) enum TransferHandle {
     Send(SendTransfer<File>),
     Receive(ReceiveTransfer),
+}
+
+/// Teto padrão em bytes para aceitação automática de arquivos (100 MiB).
+/// Ofertas que excederem este valor ficam retidas aguardando confirmação explícita
+/// do usuário para evitar exaustão silenciosa de disco (Issue #23, U-08).
+pub const DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT: u64 = 100 * 1024 * 1024;
+
+/// Chave em `app_config` que guarda o limite de auto-aceite configurado.
+pub const CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT: &str = "auto_accept_file_size_limit";
+
+/// Teto de ofertas retidas em memória por contato para evitar flood de RAM (Issue #23).
+pub const MAX_UNCONFIRMED_OFFERS_PER_CONTACT: usize = 16;
+
+/// Teto total de ofertas retidas em memória em todo o dispositivo.
+pub const MAX_UNCONFIRMED_OFFERS_TOTAL: usize = 64;
+
+/// Uma oferta de arquivo recebida com tamanho acima do limite de
+/// auto-aceite, retida em memória aguardando confirmação do usuário.
+pub(super) struct UnconfirmedOffer {
+    pub(super) contact_device_id: [u8; DEVICE_ID_LEN],
+    pub(super) kind: TransferKind,
+    pub(super) transfer_secret: zeroize::Zeroizing<[u8; TRANSFER_SECRET_LEN]>,
+    pub(super) manifest: Manifest,
+    pub(super) manifest_cbor: Vec<u8>,
+    pub(super) received_at: i64,
+}
+
+impl std::fmt::Debug for UnconfirmedOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnconfirmedOffer")
+            .field("contact_device_id", &hex::encode(self.contact_device_id))
+            .field("kind", &self.kind)
+            .field("transfer_secret", &"<redigido>")
+            .field("file_id", &hex::encode(self.manifest.file_id))
+            .field("file_size", &self.manifest.file_size)
+            .field("received_at", &self.received_at)
+            .finish()
+    }
 }
 
 /// Resultado interno de [`Core::start_send`] — `start_send_file`/
@@ -513,6 +561,7 @@ impl Core {
     /// foi fechado a cada bloco completado). Ver §7.5/D15.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
+        self.lock_unconfirmed_offers()?.remove(&file_id);
         self.lock_transfers()?.remove(&file_id);
         self.store.delete_file_transfer(&file_id)?;
         let mut active = HashSet::new();
@@ -537,30 +586,105 @@ impl Core {
         self.transfers.lock().map_err(|_| FfiError::Internal)
     }
 
-    /// Chamado de dentro de `Core::decrypt_incoming` (`ffi/session.rs`)
-    /// quando um `FILE_METADATA` chega — não é público porque só faz
-    /// sentido depois que o AEAD do envelope já abriu. `kind` (Fase 5, D16)
-    /// decide, aqui, se `ReceiveTransfer::start` deriva `K_symbol` ou
-    /// `K_audio_chunk`. Para `kind == Audio`, também insere a linha
-    /// `Delivered` na timeline única (`store::messages`) — a nota de voz
-    /// aparece na conversa assim que a oferta chega, antes do primeiro
-    /// `AUDIO_CHUNK` sequer existir; a UI decide "ainda recebendo" olhando
-    /// se o `file_id` já tem conteúdo pronto, não pelo `delivery_state`.
-    pub(super) fn handle_incoming_file_metadata(
+    fn lock_unconfirmed_offers(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], UnconfirmedOffer>>, FfiError>
+    {
+        self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)
+    }
+
+    /// Lista as ofertas de arquivo pendentes de confirmação do usuário para
+    /// o contato especificado (Issue #23, U-08).
+    pub fn unconfirmed_file_offers(
+        &self,
+        peer_device_id: Vec<u8>,
+    ) -> Result<Vec<FileOfferDto>, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id = to_device_id(peer_device_id)?;
+        let unconfirmed = self.lock_unconfirmed_offers()?;
+
+        let mut offers = Vec::new();
+        for offer in unconfirmed.values() {
+            if offer.contact_device_id != device_id {
+                continue;
+            }
+            let name = manifest::decrypt_name(
+                offer.transfer_secret.as_ref(),
+                &offer.manifest.file_id,
+                &offer.manifest.name_encrypted,
+            )?;
+            offers.push(FileOfferDto {
+                file_id: offer.manifest.file_id.to_vec(),
+                name,
+                file_size: offer.manifest.file_size,
+            });
+        }
+        Ok(offers)
+    }
+
+    /// Aceita manualmente uma oferta de arquivo retida por exceder o limite
+    /// de auto-aceite. Cria o registro em `file_transfers`, inicializa o
+    /// `ReceiveTransfer` em `.staging` e passa a aceitar os pacotes do arquivo.
+    pub fn accept_file_offer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let fid = to_file_id(file_id)?;
+
+        // Não remove a oferta antes de saber se o recebimento começou com sucesso (Menor 2).
+        // Se start_receiving_transfer falhar (ex: disco cheio ao criar .staging),
+        // a oferta continua em unconfirmed_offers para permitir nova tentativa.
+        let (contact_device_id, kind, secret, manifest, manifest_cbor, received_at) = {
+            let unconfirmed = self.lock_unconfirmed_offers()?;
+            let offer = unconfirmed.get(&fid).ok_or(FfiError::OfferNotFound)?;
+            (
+                offer.contact_device_id,
+                offer.kind,
+                *offer.transfer_secret,
+                offer.manifest.clone(),
+                offer.manifest_cbor.clone(),
+                offer.received_at,
+            )
+        };
+
+        self.start_receiving_transfer(
+            contact_device_id,
+            kind,
+            &secret,
+            manifest,
+            manifest_cbor,
+            received_at,
+        )?;
+
+        self.lock_unconfirmed_offers()?.remove(&fid);
+        Ok(())
+    }
+
+    /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
+    /// a oferta e zera o material de chave sem criar registro em banco ou
+    /// arquivo em staging.
+    pub fn reject_file_offer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        let fid = to_file_id(file_id)?;
+        self.lock_unconfirmed_offers()?
+            .remove(&fid)
+            .ok_or(FfiError::OfferNotFound)?;
+        Ok(())
+    }
+
+    fn start_receiving_transfer(
         &self,
         contact_device_id: [u8; DEVICE_ID_LEN],
-        body: Vec<u8>,
+        kind: TransferKind,
+        transfer_secret: &[u8],
+        manifest: Manifest,
+        manifest_cbor: Vec<u8>,
+        received_at: i64,
     ) -> Result<(), FfiError> {
-        let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
-        let manifest_cbor = manifest.encode()?;
-        let received_at = viska_proto::util::time::unix_seconds() as i64;
-
         self.store.insert_file_transfer(
             &manifest.file_id,
             Direction::Receiving,
             &contact_device_id,
             &manifest_cbor,
-            &transfer_secret,
+            transfer_secret,
             received_at,
             kind,
         )?;
@@ -574,10 +698,66 @@ impl Core {
             )?;
         }
 
-        let receive = ReceiveTransfer::start(manifest.clone(), kind, &transfer_secret, &self.staging_dir)?;
+        let receive = ReceiveTransfer::start(manifest.clone(), kind, transfer_secret, &self.staging_dir)?;
         self.lock_transfers()?
             .insert(manifest.file_id, TransferHandle::Receive(receive));
         Ok(())
+    }
+
+    /// Chamado de dentro de `Core::decrypt_incoming` (`ffi/session.rs`)
+    /// quando um `FILE_METADATA` chega — não é público porque só faz
+    /// sentido depois que o AEAD do envelope já abriu. Se `manifest.file_size`
+    /// exceder o limite de auto-aceite configurado, retém a oferta em memória
+    /// para confirmação explícita do usuário (Issue #23, U-08).
+    pub(super) fn handle_incoming_file_metadata(
+        &self,
+        contact_device_id: [u8; DEVICE_ID_LEN],
+        body: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
+        let manifest_cbor = manifest.encode()?;
+        let received_at = viska_proto::util::time::unix_seconds() as i64;
+
+        let auto_accept_limit = self.auto_accept_file_size_limit()?;
+        if manifest.file_size > auto_accept_limit {
+            let mut unconfirmed = self.lock_unconfirmed_offers()?;
+            if unconfirmed.contains_key(&manifest.file_id) {
+                // Não sobrescreve oferta já retida com o mesmo file_id (Menor 1).
+                return Ok(());
+            }
+            if unconfirmed.len() >= MAX_UNCONFIRMED_OFFERS_TOTAL {
+                return Ok(());
+            }
+            let contact_count = unconfirmed
+                .values()
+                .filter(|o| o.contact_device_id == contact_device_id)
+                .count();
+            if contact_count >= MAX_UNCONFIRMED_OFFERS_PER_CONTACT {
+                return Ok(());
+            }
+
+            unconfirmed.insert(
+                manifest.file_id,
+                UnconfirmedOffer {
+                    contact_device_id,
+                    kind,
+                    transfer_secret: zeroize::Zeroizing::new(transfer_secret),
+                    manifest,
+                    manifest_cbor,
+                    received_at,
+                },
+            );
+            return Ok(());
+        }
+
+        self.start_receiving_transfer(
+            contact_device_id,
+            kind,
+            &transfer_secret,
+            manifest,
+            manifest_cbor,
+            received_at,
+        )
     }
 
     /// Chamado de dentro de `Core::decrypt_incoming` quando um
@@ -1362,6 +1542,378 @@ mod tests {
         assert!(
             !staging_file.exists(),
             ".staging deve sumir após aborto por lock/unlock"
+        );
+    }
+
+    #[test]
+    fn file_metadata_above_limit_does_not_create_file_transfers_row_or_staging() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+
+        // Limite padrão é 100 MiB.
+        assert_eq!(
+            pair.core_b.auto_accept_file_size_limit().unwrap(),
+            DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT
+        );
+
+        // Configura teto de auto-aceite para 10 KB.
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+        assert_eq!(pair.core_b.auto_accept_file_size_limit().unwrap(), 10_000);
+        assert_eq!(
+            pair.core_b
+                .store
+                .get_config(CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT)
+                .unwrap()
+                .as_deref(),
+            Some("10000")
+        );
+
+        // Arquivo com 20 KB (> 10 KB de teto).
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "arquivo_pesado.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        let opened = pair
+            .core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+        assert!(opened.is_none());
+
+        // CRITÉRIO DE ACEITE DA ISSUE #23:
+        // FILE_METADATA acima do limite NÃO cria linha em file_transfers.
+        assert!(
+            pair.core_b
+                .store
+                .find_file_transfer(&fid(&started.file_id))
+                .unwrap()
+                .is_none(),
+            "FILE_METADATA acima do limite não deve criar linha em file_transfers"
+        );
+        assert!(
+            pair.core_b
+                .list_active_file_transfer_ids()
+                .unwrap()
+                .is_empty(),
+            "nenhuma transferência deve estar ativa no banco"
+        );
+
+        // Também não deve alocar arquivo .staging em disco.
+        let staging_file = pair
+            .core_b
+            .staging_dir
+            .join(format!("{}.staging", hex::encode(&started.file_id)));
+        assert!(
+            !staging_file.exists(),
+            "arquivo .staging não deve ser criado em disco sem confirmação do usuário"
+        );
+
+        // Não aparece em pending_file_offers (que lista transferências já em curso no banco).
+        let pending = pair
+            .core_b
+            .pending_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert!(pending.is_empty());
+
+        // Oferta deve estar listada em unconfirmed_file_offers aguardando confirmação.
+        let unconfirmed = pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert_eq!(unconfirmed.len(), 1);
+        assert_eq!(unconfirmed[0].file_id, started.file_id);
+        assert_eq!(unconfirmed[0].name, "arquivo_pesado.bin");
+        assert_eq!(unconfirmed[0].file_size, 20_000);
+    }
+
+    #[test]
+    fn unconfirmed_file_offer_can_be_accepted_and_completed() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "aprovado.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        // Inicialmente retida:
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_none());
+
+        // Usuário aceita a oferta:
+        pair.core_b
+            .accept_file_offer(started.file_id.clone())
+            .unwrap();
+
+        // Agora a linha em file_transfers e o arquivo .staging devem existir:
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_some());
+        let staging_file = pair
+            .core_b
+            .staging_dir
+            .join(format!("{}.staging", hex::encode(&started.file_id)));
+        assert!(staging_file.exists());
+
+        // Saiu de unconfirmed e entrou em pending_file_offers:
+        assert!(pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap()
+            .is_empty());
+        let pending = pair
+            .core_b
+            .pending_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].file_id, started.file_id);
+
+        // Transfere o arquivo normalmente:
+        for _ in 0..10_000 {
+            let progress = pair
+                .core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap();
+            if progress.map(|p| p.is_complete).unwrap_or(false) {
+                break;
+            }
+            let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            else {
+                break;
+            };
+            pair.core_b
+                .ingest_incoming_wire_bytes(wire_chunk)
+                .unwrap();
+        }
+
+        let dst_path = dir_dst.path().join("aprovado_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    #[test]
+    fn unconfirmed_file_offer_can_be_rejected() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+
+        pair.core_b.set_auto_accept_file_size_limit(5_000).unwrap();
+
+        let original: Vec<u8> = (0..15_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "rejeitado.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        assert_eq!(
+            pair.core_b
+                .unconfirmed_file_offers(pair.device_id_a.clone())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Usuário rejeita a oferta:
+        pair.core_b
+            .reject_file_offer(started.file_id.clone())
+            .unwrap();
+
+        // Oferta é removida da memória:
+        assert!(pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap()
+            .is_empty());
+
+        // Nenhuma linha criada em file_transfers nem em staging:
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_none());
+        let staging_file = pair
+            .core_b
+            .staging_dir
+            .join(format!("{}.staging", hex::encode(&started.file_id)));
+        assert!(!staging_file.exists());
+    }
+
+    #[test]
+    fn cancel_transfer_removes_unconfirmed_offer() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+
+        pair.core_b.set_auto_accept_file_size_limit(5_000).unwrap();
+
+        let original: Vec<u8> = (0..15_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "cancelado.bin", &original);
+
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        assert_eq!(
+            pair.core_b
+                .unconfirmed_file_offers(pair.device_id_a.clone())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+
+        assert!(pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn late_accept_on_lan_with_exhausted_sender_completes() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+
+        // Limite de 10 KB para reter o arquivo de 150 KB.
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+
+        let original: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "lan_late_accept.bin", &original);
+
+        // use_lan = true: ativa TransferMode::Offset (D6, D23).
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, true)
+            .unwrap();
+
+        // Receptor recebe o FILE_METADATA e retém a oferta (sem auto-aceite).
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        assert_eq!(
+            pair.core_b
+                .unconfirmed_file_offers(pair.device_id_a.clone())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Emissor bombeia todos os símbolos até next_outgoing_wire_chunk retornar None
+        // ANTES de o receptor aceitar a oferta (reprodução do Bloqueante 1 da revisão).
+        let mut pumped_before_accept = 0;
+        while let Some(wire_chunk) = pair
+            .core_a
+            .next_outgoing_wire_chunk(started.file_id.clone())
+            .unwrap()
+        {
+            // Receptor descarta silenciosamente porque a oferta ainda não foi aceita.
+            let res = pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+            assert!(res.is_none());
+            pumped_before_accept += 1;
+        }
+        assert!(pumped_before_accept > 0, "emissor deve ter bombeado símbolos");
+
+        // Agora o usuário aceita tardiamente a oferta:
+        pair.core_b
+            .accept_file_offer(started.file_id.clone())
+            .unwrap();
+
+        // Loop de troca de feedback e chunks na LAN:
+        for _ in 0..10_000 {
+            let progress = pair
+                .core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap();
+            if progress.map(|p| p.is_complete).unwrap_or(false) {
+                break;
+            }
+
+            // Receptor gera FILE_FEEDBACK e entrega ao emissor.
+            if let Ok(sealed_fb) = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            {
+                pair.core_a
+                    .decrypt_incoming(pair.device_id_b.clone(), sealed_fb)
+                    .unwrap();
+            }
+
+            // Emissor (tendo reiniciado o bloco via ingest_feedback) volta a emitir!
+            while let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            {
+                pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+            }
+        }
+
+        let dst_path = dir_dst.path().join("lan_late_accept_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    #[test]
+    fn unconfirmed_offers_limits_and_not_found_handling() {
+        let pair = established_pair();
+
+        // file_id inexistente retorna OfferNotFound
+        let fake_fid = vec![42u8; FILE_ID_LEN];
+        assert_eq!(
+            pair.core_b.accept_file_offer(fake_fid.clone()),
+            Err(FfiError::OfferNotFound)
+        );
+        assert_eq!(
+            pair.core_b.reject_file_offer(fake_fid),
+            Err(FfiError::OfferNotFound)
         );
     }
 }

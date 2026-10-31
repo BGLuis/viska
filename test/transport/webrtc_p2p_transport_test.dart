@@ -323,6 +323,30 @@ class _FakeCore implements Core {
   @override
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) =>
       throw UnimplementedError();
+
+  @override
+  Future<void> acceptFileOffer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<void> rejectFileOffer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<BigInt> autoAcceptFileSizeLimit() => throw UnimplementedError();
+
+  @override
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<ContactDto> repairFromQr({required List<int> payload}) => throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {

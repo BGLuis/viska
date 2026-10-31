@@ -102,6 +102,9 @@ class ChatController extends ChangeNotifier {
   List<MessageDto> _messages = [];
   List<MessageDto> get messages => List.unmodifiable(_messages);
 
+  List<FileOfferDto> _unconfirmedOffers = [];
+  List<FileOfferDto> get unconfirmedOffers => List.unmodifiable(_unconfirmedOffers);
+
   bool _established = false;
   bool get isEstablished => _established;
 
@@ -322,6 +325,7 @@ class ChatController extends ChangeNotifier {
 
       await _core.ensureSession(peerDeviceId: _contactId.deviceId);
       await refreshTrustState();
+      await loadUnconfirmedOffers();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
@@ -334,6 +338,7 @@ class ChatController extends ChangeNotifier {
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
       case MessageReceivedEvent(:final message):
+        unawaited(loadUnconfirmedOffers());
         if (message != null && message.messageId != null) {
           _fetchIncrementalMessages();
         } else {
@@ -447,6 +452,52 @@ class ChatController extends ChangeNotifier {
     } finally {
       _sendingFile = false;
       notifyListeners();
+    }
+  }
+
+  /// Recarrega do Rust as ofertas de arquivo deste contato que excederam o limite
+  /// de auto-aceite e aguardam confirmação do usuário (Issue #23).
+  Future<void> loadUnconfirmedOffers() async {
+    try {
+      final offers = await _core.unconfirmedFileOffers(peerDeviceId: _contactId.deviceId);
+      if (_disposed) return;
+      _unconfirmedOffers = offers;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Aceita explicitamente uma oferta de arquivo pendente (Issue #23).
+  ///
+  /// Inicia a transferência receptora no Rust e envia um pacote de feedback
+  /// inicial para acordar o emissor caso este já tenha concluído o envio de
+  /// seu primeiro bloco enquanto aguardava a confirmação.
+  Future<void> acceptFileOffer(Uint8List fileId) async {
+    try {
+      await _core.acceptFileOffer(fileId: fileId);
+      try {
+        final sealedFeedback = await _core.fileFeedback(
+          peerDeviceId: _contactId.deviceId,
+          fileId: fileId,
+        );
+        await _router.sendToContact(_contactId, sealedFeedback);
+      } catch (_) {
+        // Envio do feedback inicial pode falhar se o canal estiver temporariamente fechado
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao aceitar oferta de arquivo: $e');
+    } finally {
+      await loadUnconfirmedOffers();
+    }
+  }
+
+  /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23).
+  Future<void> rejectFileOffer(Uint8List fileId) async {
+    try {
+      await _core.rejectFileOffer(fileId: fileId);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao recusar oferta de arquivo: $e');
+    } finally {
+      await loadUnconfirmedOffers();
     }
   }
 
