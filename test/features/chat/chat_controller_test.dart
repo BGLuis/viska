@@ -8,6 +8,7 @@ import 'package:permission_handler_platform_interface/permission_handler_platfor
 import 'package:viska/src/features/chat/chat_controller.dart';
 import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
@@ -287,12 +288,20 @@ class _FakeCore implements Core {
   @override
   Future<void> cancelTransfer({required List<int> fileId}) async {}
 
+  Uint8List? fileFeedbackResponse;
+  final fileFeedbackCalls = <Uint8List>[];
+
   @override
   Future<Uint8List> fileFeedback({
     required List<int> peerDeviceId,
     required List<int> fileId,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    fileFeedbackCalls.add(Uint8List.fromList(fileId));
+    if (fileFeedbackResponse != null) {
+      return fileFeedbackResponse!;
+    }
+    throw UnimplementedError();
+  }
 
   @override
   Future<Uint8List> finishReceiveFile({
@@ -494,6 +503,39 @@ class _FakeCore implements Core {
   @override
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) async =>
       keyChanged;
+
+  List<FileOfferDto> unconfirmedFileOffersToReturn = [];
+  final acceptFileOfferCalls = <Uint8List>[];
+  final rejectFileOfferCalls = <Uint8List>[];
+  FfiError? offerActionError;
+
+  @override
+  Future<void> acceptFileOffer({required List<int> fileId}) async {
+    acceptFileOfferCalls.add(Uint8List.fromList(fileId));
+    if (offerActionError != null) throw offerActionError!;
+  }
+
+  @override
+  Future<void> rejectFileOffer({required List<int> fileId}) async {
+    rejectFileOfferCalls.add(Uint8List.fromList(fileId));
+    if (offerActionError != null) throw offerActionError!;
+  }
+
+  @override
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async =>
+      unconfirmedFileOffersToReturn;
+
+  @override
+  Future<BigInt> autoAcceptFileSizeLimit() async => BigInt.from(100 * 1024 * 1024);
+
+  @override
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes}) async {}
+
+  @override
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId}) async => null;
+
+  @override
+  Future<ContactDto> repairFromQr({required List<int> payload}) => throw UnimplementedError();
 }
 
 class _FakeP2PTransport implements P2PTransport {
@@ -1296,6 +1338,94 @@ void main() {
 
       expect(controller.fileError, isNull);
       expect(controller.connectionError, isNull);
+    });
+
+    test('loadUnconfirmedOffers loads unconfirmed file offers into state', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      final offer = FileOfferDto(
+        fileId: fileId,
+        name: 'huge_archive.zip',
+        fileSize: BigInt.from(200 * 1024 * 1024),
+      );
+      core.unconfirmedFileOffersToReturn = [offer];
+      controller = makeController();
+
+      await controller.initialize();
+
+      expect(controller.unconfirmedOffers, hasLength(1));
+      expect(controller.unconfirmedOffers.first.name, 'huge_archive.zip');
+      expect(controller.unconfirmedOffers.first.fileSize, BigInt.from(200 * 1024 * 1024));
+    });
+
+    test('acceptFileOffer calls core, transmits initial feedback, and refreshes list', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 5));
+      final offer = FileOfferDto(
+        fileId: fileId,
+        name: 'backup.iso',
+        fileSize: BigInt.from(500 * 1024 * 1024),
+      );
+      core.unconfirmedFileOffersToReturn = [offer];
+      core.fileFeedbackResponse = Uint8List.fromList([9, 9, 9]);
+      controller = makeController();
+      await controller.initialize();
+      expect(controller.unconfirmedOffers, hasLength(1));
+
+      // Ao aceitar, o fake core deve receber a chamada e simular a remoção da oferta pendente
+      core.unconfirmedFileOffersToReturn = [];
+      await controller.acceptFileOffer(fileId);
+
+      expect(core.acceptFileOfferCalls, hasLength(1));
+      expect(core.acceptFileOfferCalls.single, fileId);
+      expect(core.fileFeedbackCalls, hasLength(1));
+      expect(core.fileFeedbackCalls.single, fileId);
+      expect(transport.sendCalls, [Uint8List.fromList([9, 9, 9])]);
+      expect(controller.unconfirmedOffers, isEmpty);
+    });
+
+    test('acceptFileOffer failure surfaces through fileError and keeps the offer listed', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(fileId: fileId, name: 'a.zip', fileSize: BigInt.from(200 * 1024 * 1024)),
+      ];
+      core.offerActionError = FfiError.storeFailure;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.acceptFileOffer(fileId);
+
+      expect(controller.fileError, 'Não foi possível aceitar o arquivo.');
+      expect(core.fileFeedbackCalls, isEmpty, reason: 'sem recebimento não há feedback a mandar');
+      expect(controller.unconfirmedOffers, hasLength(1));
+    });
+
+    test('rejecting a lost offer says it is gone instead of a generic failure', () async {
+      core.offerActionError = FfiError.offerNotFound;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.rejectFileOffer(Uint8List.fromList(List.filled(16, 9)));
+
+      expect(controller.fileError, 'Esta oferta de arquivo não está mais disponível.');
+    });
+
+    test('rejectFileOffer calls core and refreshes list', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 8));
+      final offer = FileOfferDto(
+        fileId: fileId,
+        name: 'huge_video.mov',
+        fileSize: BigInt.from(1024 * 1024 * 1024),
+      );
+      core.unconfirmedFileOffersToReturn = [offer];
+      controller = makeController();
+      await controller.initialize();
+      expect(controller.unconfirmedOffers, hasLength(1));
+
+      core.unconfirmedFileOffersToReturn = [];
+      await controller.rejectFileOffer(fileId);
+
+      expect(core.rejectFileOfferCalls, hasLength(1));
+      expect(core.rejectFileOfferCalls.single, fileId);
+      expect(controller.unconfirmedOffers, isEmpty);
     });
   });
 }

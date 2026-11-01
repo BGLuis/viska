@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 
 import '../../transport/lan/lan_transport.dart';
@@ -101,6 +102,9 @@ class ChatController extends ChangeNotifier {
 
   List<MessageDto> _messages = [];
   List<MessageDto> get messages => List.unmodifiable(_messages);
+
+  List<FileOfferDto> _unconfirmedOffers = [];
+  List<FileOfferDto> get unconfirmedOffers => List.unmodifiable(_unconfirmedOffers);
 
   bool _established = false;
   bool get isEstablished => _established;
@@ -322,6 +326,7 @@ class ChatController extends ChangeNotifier {
 
       await _core.ensureSession(peerDeviceId: _contactId.deviceId);
       await refreshTrustState();
+      await loadUnconfirmedOffers();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
@@ -334,6 +339,7 @@ class ChatController extends ChangeNotifier {
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
       case MessageReceivedEvent(:final message):
+        unawaited(loadUnconfirmedOffers());
         if (message != null && message.messageId != null) {
           _fetchIncrementalMessages();
         } else {
@@ -447,6 +453,53 @@ class ChatController extends ChangeNotifier {
     } finally {
       _sendingFile = false;
       notifyListeners();
+    }
+  }
+
+  static const _offerGoneMessage = 'Esta oferta de arquivo não está mais disponível.';
+
+  /// Recarrega do Rust as ofertas de arquivo deste contato que excederam o limite
+  /// de auto-aceite e aguardam confirmação do usuário (Issue #23).
+  Future<void> loadUnconfirmedOffers() async {
+    try {
+      final offers = await _core.unconfirmedFileOffers(peerDeviceId: _contactId.deviceId);
+      if (_disposed) return;
+      _unconfirmedOffers = offers;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Aceita explicitamente uma oferta de arquivo pendente (Issue #23).
+  ///
+  /// Inicia a transferência receptora no Rust e o feedback periódico, que
+  /// acorda o emissor caso este já tenha esgotado o bloco enquanto aguardava a
+  /// confirmação. Falha alto via [fileError]; a oferta continua disponível
+  /// para nova tentativa, salvo se já tiver se perdido.
+  Future<void> acceptFileOffer(Uint8List fileId) async {
+    _fileError = null;
+    try {
+      await _core.acceptFileOffer(fileId: fileId);
+      await _receptionService.watchIncomingTransfer(_contactId, fileId);
+    } catch (e) {
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível aceitar o arquivo.';
+    } finally {
+      await loadUnconfirmedOffers();
+    }
+  }
+
+  /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23).
+  Future<void> rejectFileOffer(Uint8List fileId) async {
+    _fileError = null;
+    try {
+      await _core.rejectFileOffer(fileId: fileId);
+    } catch (e) {
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível recusar o arquivo.';
+    } finally {
+      await loadUnconfirmedOffers();
     }
   }
 

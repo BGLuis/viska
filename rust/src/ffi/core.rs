@@ -12,7 +12,7 @@ use std::sync::{Mutex, RwLock};
 use zeroize::Zeroize;
 
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::TransferHandle;
+use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
 use crate::ffi::types::{ContactDto, SafetyNumberDto};
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
@@ -47,6 +47,9 @@ pub struct Core {
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
     /// Suítes acordadas para upgrade em memória (§6.2, D24), nunca persistidas.
     pub(super) agreed_upgrades: Mutex<HashMap<[u8; 16], u8>>,
+    /// Ofertas de arquivo recebidas com tamanho acima do limite de auto-aceite,
+    /// aguardando confirmação do usuário (Issue #23, U-08).
+    pub(super) unconfirmed_offers: Mutex<HashMap<[u8; 16], UnconfirmedOffer>>,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
@@ -80,6 +83,7 @@ impl Core {
             sessions: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
+            unconfirmed_offers: Mutex::new(HashMap::new()),
             staging_dir,
             app_dir: dir.to_path_buf(),
         })
@@ -90,6 +94,7 @@ impl Core {
     /// limpa a chave mestra nativa injetada.
     pub fn lock(&self) -> Result<(), FfiError> {
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)?.clear();
         {
             let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
             for file_id in transfers.keys() {
@@ -344,6 +349,28 @@ impl Core {
     pub fn set_config(&self, key: String, value: String) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
         self.store.set_config(&key, &value)?;
+        Ok(())
+    }
+
+    /// Consulta o teto de tamanho de arquivo em bytes para aceitação automática.
+    /// Retorna `DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT` se não configurado.
+    pub fn auto_accept_file_size_limit(&self) -> Result<u64, FfiError> {
+        self.ensure_not_locked()?;
+        if let Some(val_str) = self.store.get_config(crate::ffi::transfer::CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT)? {
+            if let Ok(limit) = val_str.trim().parse::<u64>() {
+                return Ok(limit);
+            }
+        }
+        Ok(crate::ffi::transfer::DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT)
+    }
+
+    /// Define o teto de tamanho de arquivo em bytes para aceitação automática.
+    pub fn set_auto_accept_file_size_limit(&self, limit_bytes: u64) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        self.store.set_config(
+            crate::ffi::transfer::CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT,
+            &limit_bytes.to_string(),
+        )?;
         Ok(())
     }
 

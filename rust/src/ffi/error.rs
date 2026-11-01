@@ -49,6 +49,8 @@ pub enum FfiError {
     ContactKeyMismatch,
     /// A suíte criptográfica do contato foi desativada e requer re-pareamento presencial.
     SuiteRetired,
+    /// Oferta de arquivo retida não encontrada ou já limpa por auto-lock/cancelamento (U-08).
+    OfferNotFound,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }

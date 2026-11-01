@@ -60,6 +60,12 @@ enum FfiError {
   /// diferentes. Requer confirmação explícita para evitar substituição de identidade.
   contactKeyMismatch,
 
+  /// A suíte criptográfica do contato foi desativada e requer re-pareamento presencial.
+  suiteRetired,
+
+  /// Oferta de arquivo retida não encontrada ou já limpa por auto-lock/cancelamento (U-08).
+  offerNotFound,
+
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,
 }

@@ -38,6 +38,10 @@ String pairingErrorMessage(FfiError error) {
       return 'Falha de decifragem ou autenticação dos dados.';
     case FfiError.malformed:
       return 'Dados recebidos em formato inválido ou corrompido.';
+    case FfiError.suiteRetired:
+      return 'A suíte criptográfica deste contato foi desativada e requer novo pareamento.';
+    case FfiError.offerNotFound:
+      return 'A oferta de arquivo não foi encontrada ou já foi cancelada.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

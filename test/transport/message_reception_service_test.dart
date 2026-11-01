@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:viska/src/rust/ffi/core.dart';
@@ -61,6 +62,20 @@ class _FakeReceptionCore implements Core {
   List<SealedMessageDto> pendingToFlush = [];
   List<FileOfferDto> pendingOffers = [];
   IngestedChunkDto? Function(Uint8List)? ingestWireChunkHandler;
+  var fileFeedbackCalls = 0;
+  TransferProgressDto? receiveProgress;
+
+  @override
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) async {
+    fileFeedbackCalls++;
+    return Uint8List.fromList([0xFB]);
+  }
+
+  @override
+  Future<TransferProgressDto?> transferProgress({required List<int> fileId}) async => receiveProgress;
 
   @override
   Future<List<ContactDto>> listContacts() async => contacts;
@@ -376,6 +391,120 @@ void main() {
       expect(events.whereType<VoiceNoteReceivedEvent>(), hasLength(1));
 
       await sub.cancel();
+    });
+
+    group('FILE_FEEDBACK cadence', () {
+      final fileId = Uint8List.fromList(List.filled(16, 7));
+      TransferProgressDto progress({required int blocksDone, bool isComplete = false}) =>
+          TransferProgressDto(
+            blocksDone: blocksDone,
+            totalBlocks: 4,
+            bytesDone: BigInt.zero,
+            isComplete: isComplete,
+          );
+
+      // Encerra pelo caminho normal: sem isso o timer periódico sobrevive ao fakeAsync.
+      void stopCadence(FakeAsync async) {
+        core.receiveProgress = null;
+        async.elapse(const Duration(milliseconds: 500));
+        expect(async.periodicTimerCount, 0);
+      }
+
+      test('keeps sending every 500 ms with no chunks arriving, which is what wakes an exhausted sender', () {
+        fakeAsync((async) {
+          core.receiveProgress = progress(blocksDone: 0);
+          router.incomingFor(contact);
+
+          unawaited(service.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, 1, reason: 'o primeiro vai no aceite, sem esperar o timer');
+
+          async.elapse(const Duration(milliseconds: 1500));
+          expect(core.fileFeedbackCalls, 4);
+          expect(transport.sendCalls, hasLength(4));
+
+          stopCadence(async);
+        });
+      });
+
+      test('first chunk starts the cadence of a transfer that was auto-accepted', () {
+        fakeAsync((async) {
+          core.receiveProgress = progress(blocksDone: 0);
+          core.ingestWireChunkHandler = (_) =>
+              IngestedChunkDto(fileId: fileId, progress: progress(blocksDone: 0));
+          unawaited(service.start());
+          async.flushMicrotasks();
+
+          transport.emitIncomingFile(Uint8List.fromList([1]));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, 1);
+
+          async.elapse(const Duration(milliseconds: 500));
+          expect(core.fileFeedbackCalls, 2);
+
+          stopCadence(async);
+        });
+      });
+
+      test('completed block is reported at once, without waiting for the tick', () {
+        fakeAsync((async) {
+          core.receiveProgress = progress(blocksDone: 0);
+          var blocksDone = 0;
+          core.ingestWireChunkHandler = (_) =>
+              IngestedChunkDto(fileId: fileId, progress: progress(blocksDone: blocksDone));
+          unawaited(service.start());
+          async.flushMicrotasks();
+          transport.emitIncomingFile(Uint8List.fromList([1]));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, 1);
+
+          transport.emitIncomingFile(Uint8List.fromList([2]));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, 1, reason: 'mesmo bloco: fica para o tick');
+
+          blocksDone = 1;
+          transport.emitIncomingFile(Uint8List.fromList([3]));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, 2);
+
+          stopCadence(async);
+        });
+      });
+
+      test('stops when the transfer ends or disappears', () {
+        fakeAsync((async) {
+          core.receiveProgress = progress(blocksDone: 0);
+          router.incomingFor(contact);
+          unawaited(service.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+
+          core.receiveProgress = null;
+          async.elapse(const Duration(seconds: 5));
+
+          expect(core.fileFeedbackCalls, 1);
+          expect(async.periodicTimerCount, 0);
+        });
+      });
+
+      test('does not recreate a forgotten transport while the peer is offline', () {
+        fakeAsync((async) {
+          core.receiveProgress = progress(blocksDone: 0);
+          router.incomingFor(contact);
+          unawaited(service.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+
+          unawaited(router.closeContact(contact));
+          async.flushMicrotasks();
+          final connectsBefore = transport.connectCalls;
+
+          async.elapse(const Duration(seconds: 2));
+
+          expect(core.fileFeedbackCalls, 1);
+          expect(transport.connectCalls, connectsBefore);
+
+          stopCadence(async);
+        });
+      });
     });
 
     test('pause stops processing and resume re-enables processing', () async {
