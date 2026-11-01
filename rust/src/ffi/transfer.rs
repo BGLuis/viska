@@ -57,7 +57,8 @@
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
 //! - **Sem sinal de recusa no fio para o emissor**: `reject_file_offer` descarta
-//!   a oferta localmente; o emissor continua até timeout ou cancelamento manual.
+//!   a oferta localmente; o emissor continua esperando feedback até o cancelamento
+//!   manual, porque não há timeout.
 //! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
 //!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe notificação de lock.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
@@ -629,16 +630,15 @@ impl Core {
         self.ensure_not_locked()?;
         let fid = to_file_id(file_id)?;
 
-        // Não remove a oferta antes de saber se o recebimento começou com sucesso (Menor 2).
-        // Se start_receiving_transfer falhar (ex: disco cheio ao criar .staging),
-        // a oferta continua em unconfirmed_offers para permitir nova tentativa.
+        // A oferta só sai do mapa depois do sucesso: se o .staging falhar (disco
+        // cheio), o usuário pode tentar de novo, e o emissor não reenvia FILE_METADATA.
         let (contact_device_id, kind, secret, manifest, manifest_cbor, received_at) = {
             let unconfirmed = self.lock_unconfirmed_offers()?;
             let offer = unconfirmed.get(&fid).ok_or(FfiError::OfferNotFound)?;
             (
                 offer.contact_device_id,
                 offer.kind,
-                *offer.transfer_secret,
+                offer.transfer_secret.clone(),
                 offer.manifest.clone(),
                 offer.manifest_cbor.clone(),
                 offer.received_at,
@@ -648,7 +648,7 @@ impl Core {
         self.start_receiving_transfer(
             contact_device_id,
             kind,
-            &secret,
+            &secret[..],
             manifest,
             manifest_cbor,
             received_at,
@@ -679,6 +679,11 @@ impl Core {
         manifest_cbor: Vec<u8>,
         received_at: i64,
     ) -> Result<(), FfiError> {
+        // O staging vem antes do banco: uma falha aqui não deixa linha em
+        // `file_transfers`, que impediria o novo aceite por conflito de chave.
+        // Tentar de novo trunca o arquivo, e `sweep_orphaned` recolhe o que sobrar.
+        let receive = ReceiveTransfer::start(manifest.clone(), kind, transfer_secret, &self.staging_dir)?;
+
         self.store.insert_file_transfer(
             &manifest.file_id,
             Direction::Receiving,
@@ -698,7 +703,6 @@ impl Core {
             )?;
         }
 
-        let receive = ReceiveTransfer::start(manifest.clone(), kind, transfer_secret, &self.staging_dir)?;
         self.lock_transfers()?
             .insert(manifest.file_id, TransferHandle::Receive(receive));
         Ok(())
@@ -1902,10 +1906,253 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_offers_limits_and_not_found_handling() {
+    fn late_accept_mid_block_on_lan_recovers_once_feedback_follows_exhaustion() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+
+        let original: Vec<u8> = (0..650_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "lan_mid_block.bin", &original);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, true)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let dropped = pair
+            .core_a
+            .next_outgoing_wire_chunk(started.file_id.clone())
+            .unwrap()
+            .unwrap();
+        assert!(pair.core_b.ingest_incoming_wire_bytes(dropped).unwrap().is_none());
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+
+        let deliver_feedback = || {
+            let feedback = pair
+                .core_b
+                .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+                .unwrap();
+            pair.core_a
+                .decrypt_incoming(pair.device_id_b.clone(), feedback)
+                .unwrap();
+        };
+        let pump = || {
+            while let Some(chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            {
+                pair.core_b.ingest_incoming_wire_bytes(chunk).unwrap();
+            }
+        };
+        let is_complete = || {
+            pair.core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap()
+                .unwrap()
+                .is_complete
+        };
+
+        // O feedback que chega antes do esgotamento não reinicia o bloco. É
+        // por isso que o receptor precisa continuar mandando sem chegar chunk.
+        deliver_feedback();
+        pump();
+        assert!(!is_complete(), "falta o símbolo descartado antes do aceite");
+
+        deliver_feedback();
+        pump();
+        assert!(is_complete());
+
+        let dst_path = dir_dst.path().join("lan_mid_block_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    #[test]
+    fn accept_can_be_retried_after_staging_failure() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(10_000).unwrap();
+
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "nova_tentativa.bin", &original);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        // Um arquivo no lugar do diretório faz a criação do .staging falhar.
+        let staging = pair.core_b.staging_dir.clone();
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::write(&staging, b"nao e um diretorio").unwrap();
+
+        assert!(pair.core_b.accept_file_offer(started.file_id.clone()).is_err());
+        assert!(
+            pair.core_b
+                .store
+                .find_file_transfer(&fid(&started.file_id))
+                .unwrap()
+                .is_none(),
+            "aceite que falhou não pode deixar linha em file_transfers"
+        );
+        assert_eq!(
+            pair.core_b
+                .unconfirmed_file_offers(pair.device_id_a.clone())
+                .unwrap()
+                .len(),
+            1,
+            "aceite que falhou não pode perder a oferta"
+        );
+
+        std::fs::remove_file(&staging).unwrap();
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+        assert!(pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap()
+            .is_empty());
+
+        while let Some(chunk) = pair
+            .core_a
+            .next_outgoing_wire_chunk(started.file_id.clone())
+            .unwrap()
+        {
+            pair.core_b.ingest_incoming_wire_bytes(chunk).unwrap();
+        }
+        let dst_path = dir_dst.path().join("nova_tentativa_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    /// Retém em `core_b` uma oferta nova de `core_a` e devolve seu `file_id`.
+    fn retain_offer(pair: &EstablishedPair, dir: &tempfile::TempDir, name: &str) -> Vec<u8> {
+        let src_path = write_temp_file(dir, name, &[7u8; 2_000]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+        started.file_id
+    }
+
+    #[test]
+    fn retained_offers_stop_at_the_per_contact_cap() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+
+        let file_ids: Vec<Vec<u8>> = (0..=MAX_UNCONFIRMED_OFFERS_PER_CONTACT)
+            .map(|i| retain_offer(&pair, &dir_src, &format!("oferta_{i}.bin")))
+            .collect();
+
+        let retained = pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert_eq!(retained.len(), MAX_UNCONFIRMED_OFFERS_PER_CONTACT);
+        assert!(
+            retained.iter().all(|o| &o.file_id != file_ids.last().unwrap()),
+            "a oferta acima do teto é a descartada, não uma já retida"
+        );
+    }
+
+    #[test]
+    fn retained_offers_stop_at_the_total_cap_across_contacts() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+
+        let template_id = fid(&retain_offer(&pair, &dir_src, "modelo.bin"));
+        {
+            let mut offers = pair.core_b.lock_unconfirmed_offers().unwrap();
+            let (manifest, manifest_cbor, secret) = {
+                let template = offers.get(&template_id).unwrap();
+                (
+                    template.manifest.clone(),
+                    template.manifest_cbor.clone(),
+                    template.transfer_secret.clone(),
+                )
+            };
+            for i in 1..MAX_UNCONFIRMED_OFFERS_TOTAL {
+                let mut file_id = [0u8; FILE_ID_LEN];
+                file_id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                let mut contact_device_id = [0xEE; DEVICE_ID_LEN];
+                contact_device_id[0] = (i % MAX_UNCONFIRMED_OFFERS_PER_CONTACT) as u8;
+                offers.insert(
+                    file_id,
+                    UnconfirmedOffer {
+                        contact_device_id,
+                        kind: TransferKind::File,
+                        transfer_secret: secret.clone(),
+                        manifest: manifest.clone(),
+                        manifest_cbor: manifest_cbor.clone(),
+                        received_at: 0,
+                    },
+                );
+            }
+            assert_eq!(offers.len(), MAX_UNCONFIRMED_OFFERS_TOTAL);
+        }
+
+        retain_offer(&pair, &dir_src, "acima_do_teto.bin");
+
+        assert_eq!(
+            pair.core_b.lock_unconfirmed_offers().unwrap().len(),
+            MAX_UNCONFIRMED_OFFERS_TOTAL
+        );
+    }
+
+    #[test]
+    fn repeated_file_id_does_not_overwrite_retained_offer() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+
+        let file_id = fid(&retain_offer(&pair, &dir_src, "original.bin"));
+        let body = {
+            let mut offers = pair.core_b.lock_unconfirmed_offers().unwrap();
+            let offer = offers.get_mut(&file_id).unwrap();
+            offer.received_at = -1;
+            transfer::encode_metadata_body(
+                offer.kind,
+                &offer.transfer_secret,
+                &offer.manifest,
+            )
+            .unwrap()
+        };
+        let contact = to_device_id(pair.device_id_a.clone()).unwrap();
+
+        pair.core_b.handle_incoming_file_metadata(contact, body).unwrap();
+
+        let offers = pair.core_b.lock_unconfirmed_offers().unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers.get(&file_id).unwrap().received_at, -1);
+    }
+
+    #[test]
+    fn accept_and_reject_of_unknown_offer_return_offer_not_found() {
         let pair = established_pair();
 
-        // file_id inexistente retorna OfferNotFound
         let fake_fid = vec![42u8; FILE_ID_LEN];
         assert_eq!(
             pair.core_b.accept_file_offer(fake_fid.clone()),
