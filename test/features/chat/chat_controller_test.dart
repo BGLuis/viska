@@ -8,6 +8,7 @@ import 'package:permission_handler_platform_interface/permission_handler_platfor
 import 'package:viska/src/features/chat/chat_controller.dart';
 import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
@@ -506,15 +507,18 @@ class _FakeCore implements Core {
   List<FileOfferDto> unconfirmedFileOffersToReturn = [];
   final acceptFileOfferCalls = <Uint8List>[];
   final rejectFileOfferCalls = <Uint8List>[];
+  FfiError? offerActionError;
 
   @override
   Future<void> acceptFileOffer({required List<int> fileId}) async {
     acceptFileOfferCalls.add(Uint8List.fromList(fileId));
+    if (offerActionError != null) throw offerActionError!;
   }
 
   @override
   Future<void> rejectFileOffer({required List<int> fileId}) async {
     rejectFileOfferCalls.add(Uint8List.fromList(fileId));
+    if (offerActionError != null) throw offerActionError!;
   }
 
   @override
@@ -1376,6 +1380,32 @@ void main() {
       expect(core.fileFeedbackCalls.single, fileId);
       expect(transport.sendCalls, [Uint8List.fromList([9, 9, 9])]);
       expect(controller.unconfirmedOffers, isEmpty);
+    });
+
+    test('acceptFileOffer failure surfaces through fileError and keeps the offer listed', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(fileId: fileId, name: 'a.zip', fileSize: BigInt.from(200 * 1024 * 1024)),
+      ];
+      core.offerActionError = FfiError.storeFailure;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.acceptFileOffer(fileId);
+
+      expect(controller.fileError, 'Não foi possível aceitar o arquivo.');
+      expect(core.fileFeedbackCalls, isEmpty, reason: 'sem recebimento não há feedback a mandar');
+      expect(controller.unconfirmedOffers, hasLength(1));
+    });
+
+    test('rejecting a lost offer says it is gone instead of a generic failure', () async {
+      core.offerActionError = FfiError.offerNotFound;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.rejectFileOffer(Uint8List.fromList(List.filled(16, 9)));
+
+      expect(controller.fileError, 'Esta oferta de arquivo não está mais disponível.');
     });
 
     test('rejectFileOffer calls core and refreshes list', () async {

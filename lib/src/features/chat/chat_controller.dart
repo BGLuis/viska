@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 
 import '../../transport/lan/lan_transport.dart';
@@ -455,6 +456,8 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  static const _offerGoneMessage = 'Esta oferta de arquivo não está mais disponível.';
+
   /// Recarrega do Rust as ofertas de arquivo deste contato que excederam o limite
   /// de auto-aceite e aguardam confirmação do usuário (Issue #23).
   Future<void> loadUnconfirmedOffers() async {
@@ -468,23 +471,19 @@ class ChatController extends ChangeNotifier {
 
   /// Aceita explicitamente uma oferta de arquivo pendente (Issue #23).
   ///
-  /// Inicia a transferência receptora no Rust e envia um pacote de feedback
-  /// inicial para acordar o emissor caso este já tenha concluído o envio de
-  /// seu primeiro bloco enquanto aguardava a confirmação.
+  /// Inicia a transferência receptora no Rust e o feedback periódico, que
+  /// acorda o emissor caso este já tenha esgotado o bloco enquanto aguardava a
+  /// confirmação. Falha alto via [fileError]; a oferta continua disponível
+  /// para nova tentativa, salvo se já tiver se perdido.
   Future<void> acceptFileOffer(Uint8List fileId) async {
+    _fileError = null;
     try {
       await _core.acceptFileOffer(fileId: fileId);
-      try {
-        final sealedFeedback = await _core.fileFeedback(
-          peerDeviceId: _contactId.deviceId,
-          fileId: fileId,
-        );
-        await _router.sendToContact(_contactId, sealedFeedback);
-      } catch (_) {
-        // Envio do feedback inicial pode falhar se o canal estiver temporariamente fechado
-      }
+      await _receptionService.watchIncomingTransfer(_contactId, fileId);
     } catch (e) {
-      if (kDebugMode) debugPrint('[ChatController] Erro ao aceitar oferta de arquivo: $e');
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível aceitar o arquivo.';
     } finally {
       await loadUnconfirmedOffers();
     }
@@ -492,10 +491,13 @@ class ChatController extends ChangeNotifier {
 
   /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23).
   Future<void> rejectFileOffer(Uint8List fileId) async {
+    _fileError = null;
     try {
       await _core.rejectFileOffer(fileId: fileId);
     } catch (e) {
-      if (kDebugMode) debugPrint('[ChatController] Erro ao recusar oferta de arquivo: $e');
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível recusar o arquivo.';
     } finally {
       await loadUnconfirmedOffers();
     }

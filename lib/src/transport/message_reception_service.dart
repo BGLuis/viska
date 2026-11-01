@@ -105,7 +105,11 @@ class MessageReceptionService {
   final Map<String, Uint8List> _voiceNoteAudio = {};
   final Map<String, String> _receivedFilePaths = {};
   final Map<String, int> _lastFeedbackBlocksDone = {};
-  final Map<String, DateTime> _lastFeedbackTime = {};
+
+  /// Cadência de `FILE_FEEDBACK` de §7.4.
+  static const _feedbackInterval = Duration(milliseconds: 500);
+  final Map<String, Timer> _feedbackTimers = {};
+  final Set<String> _feedbackTicksInFlight = {};
 
   final _eventsController = StreamController<MessageReceptionEvent>.broadcast();
 
@@ -264,33 +268,19 @@ class MessageReceptionService {
       if (!ingested.progress.isComplete) {
         final currentBlocksDone = ingested.progress.blocksDone;
         final lastBlocksDone = _lastFeedbackBlocksDone[hexId] ?? 0;
-        final lastTime = _lastFeedbackTime[hexId];
-        final now = DateTime.now();
-
-        // Envia FILE_FEEDBACK (§7.4, U-02):
-        // 1. A cada bloco concluído (avançar o emissor para o próximo bloco).
-        // 2. A cada 500 ms de transferência contínua dentro de um bloco.
         final blockCompleted = currentBlocksDone > lastBlocksDone;
-        final intervalElapsed = lastTime == null || now.difference(lastTime) >= const Duration(milliseconds: 500);
 
-        if (blockCompleted || intervalElapsed) {
-          _lastFeedbackBlocksDone[hexId] = currentBlocksDone;
-          _lastFeedbackTime[hexId] = now;
-          try {
-            final sealedFeedback = await _core.fileFeedback(
-              peerDeviceId: contactId.deviceId,
-              fileId: ingested.fileId,
-            );
-            await _router.sendToContact(contactId, sealedFeedback);
-          } catch (_) {
-            // Falha temporária ao enviar feedback; retransmite no próximo chunk/intervalo.
-          }
+        if (_feedbackTimers.containsKey(hexId)) {
+          // Não espera o próximo tick para o emissor avançar de bloco (U-02).
+          if (blockCompleted) await _sendFeedback(contactId, ingested.fileId);
+        } else {
+          await watchIncomingTransfer(contactId, ingested.fileId);
         }
+        _lastFeedbackBlocksDone[hexId] = currentBlocksDone;
         return;
       }
 
-      _lastFeedbackBlocksDone.remove(hexId);
-      _lastFeedbackTime.remove(hexId);
+      _stopFeedback(hexId);
 
       try {
         final fileOffers = await _core.pendingFileOffers(peerDeviceId: contactId.deviceId);
@@ -305,6 +295,58 @@ class MessageReceptionService {
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
     }
+  }
+
+  /// Manda `FILE_FEEDBACK` agora e a cada [_feedbackInterval] até o
+  /// recebimento terminar (§7.4). Precisa ser independente da chegada de
+  /// chunks: o emissor parado no fim do bloco só volta a emitir com feedback,
+  /// e sem chunks um feedback dependente deles nunca sairia.
+  Future<void> watchIncomingTransfer(ContactId contactId, Uint8List fileId) async {
+    final hexId = _hex(fileId);
+    if (_disposed || _feedbackTimers.containsKey(hexId)) return;
+    _feedbackTimers[hexId] = Timer.periodic(
+      _feedbackInterval,
+      (_) => unawaited(_feedbackTick(contactId, fileId, hexId)),
+    );
+    await _sendFeedback(contactId, fileId);
+  }
+
+  Future<void> _feedbackTick(ContactId contactId, Uint8List fileId, String hexId) async {
+    if (_isPaused || _disposed) return;
+    if (!_feedbackTicksInFlight.add(hexId)) return;
+    try {
+      final progress = await _core.transferProgress(fileId: fileId);
+      if (progress == null || progress.isComplete) {
+        _stopFeedback(hexId);
+        return;
+      }
+      // Sem transporte ativo, enviar criaria outro a cada tick e furaria o
+      // intervalo de `_scheduleRetry` quando o par está offline.
+      if (_router.transportFor(contactId) == null) return;
+      await _sendFeedback(contactId, fileId);
+    } catch (_) {
+      // Sem progresso legível não há o que relatar; o próximo chunk religa o timer.
+      _stopFeedback(hexId);
+    } finally {
+      _feedbackTicksInFlight.remove(hexId);
+    }
+  }
+
+  Future<void> _sendFeedback(ContactId contactId, Uint8List fileId) async {
+    try {
+      final sealedFeedback = await _core.fileFeedback(
+        peerDeviceId: contactId.deviceId,
+        fileId: fileId,
+      );
+      await _router.sendToContact(contactId, sealedFeedback);
+    } catch (_) {
+      // Falha temporária; o próximo tick tenta de novo.
+    }
+  }
+
+  void _stopFeedback(String hexId) {
+    _feedbackTimers.remove(hexId)?.cancel();
+    _lastFeedbackBlocksDone.remove(hexId);
   }
 
   Future<String> _getReceivedDirectory() async {
@@ -467,8 +509,11 @@ class MessageReceptionService {
       await sub.cancel();
     }
     _incomingFileSubs.clear();
+    for (final timer in _feedbackTimers.values) {
+      timer.cancel();
+    }
+    _feedbackTimers.clear();
     _lastFeedbackBlocksDone.clear();
-    _lastFeedbackTime.clear();
     for (final sub in _connectionSubs.values) {
       await sub.cancel();
     }
