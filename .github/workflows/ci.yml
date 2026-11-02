@@ -7,87 +7,85 @@ on:
     branches: [ main, develop, developer ]
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
 
-permissions:
-  contents: read
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   rust-check:
-    name: Núcleo Rust — Testes, Clippy e Features
+    name: Núcleo Rust — Clippy, Features e Testes
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Instalar Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: stable
-          components: clippy
+          persist-credentials: false
 
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
+      - name: Cache de dependências e artefatos Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: |
-            rust -> rust/target
-
-      - name: Instalar dependências nativas
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev
-
-      - name: Testes do Núcleo
-        working-directory: rust
-        run: cargo test --workspace
+          workspaces: rust
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Clippy (zero warnings)
         working-directory: rust
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Compilação com todas as features (GEMINI.md)
         working-directory: rust
-        run: cargo build --all-features
+        run: cargo build --locked --all-features
 
-      - name: Compilação sem features padrão (GEMINI.md)
+      - name: Compilação sem features padrão e geração de cdylib (GEMINI.md)
         working-directory: rust
-        run: cargo build --no-default-features
+        run: cargo build --locked --no-default-features
 
-      - name: Compilar biblioteca nativa (cdylib)
+      - name: Testes do Núcleo
         working-directory: rust
-        run: cargo build
+        run: cargo test --locked --workspace
 
       - name: Upload da biblioteca nativa Rust (para testes E2E do Flutter)
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: viska-core-linux-x64
           path: rust/target/debug/libviska_core.so
           retention-days: 1
+          if-no-files-found: error
 
   flutter-check:
     name: Flutter — Análise Estática e Testes
     needs: [rust-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Baixar biblioteca nativa Rust
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: viska-core-linux-x64
           path: rust/target/debug/
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
           cache: true
 
       - name: Obter dependências Flutter
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Análise estática do Flutter
         run: flutter analyze
@@ -97,40 +95,42 @@ jobs:
 
   android-audit:
     name: Android — Build APK e Auditoria Zero Telemetria (D13 / F6)
-    needs: [flutter-check]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Configurar Java
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165  # v5.0.0
+      - name: Configurar Java 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
           cache: true
 
-      - name: Instalar Rust para compilação FFI
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
-        with:
-          toolchain: stable
-          targets: aarch64-linux-android, x86_64-linux-android
+      - name: Adicionar alvos Android ao Rust
+        run: rustup target add aarch64-linux-android x86_64-linux-android
 
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
+      - name: Cache de dependências Rust (Cargokit Android)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
-            rust -> rust/target
+            rust -> ../build/viska_core/build
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Obter dependências Flutter
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Build do APK em modo Release
         run: flutter build apk --release --target-platform android-arm64,android-x64
@@ -140,7 +140,7 @@ jobs:
           chmod +x scripts/audit_apk.sh
           ./scripts/audit_apk.sh build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Verificação de Integridade do APK
+      - name: Verificação de Integridade e ABIs do APK
         run: |
           APK_PATH="build/app/outputs/flutter-apk/app-release.apk"
           if [ ! -f "${APK_PATH}" ]; then
@@ -153,5 +153,7 @@ jobs:
             echo "[-] Erro: Tamanho do APK suspeito ou corrompido (${TAMANHO} bytes, esperado > 5 MB)" >&2
             exit 1
           fi
+          unzip -l "${APK_PATH}" | grep -q "lib/arm64-v8a/libviska_core.so"
+          unzip -l "${APK_PATH}" | grep -q "lib/x86_64/libviska_core.so"
           SHA256=$(sha256sum "${APK_PATH}" | awk '{print $1}')
           echo "[+] SHA256 do APK: ${SHA256}"
