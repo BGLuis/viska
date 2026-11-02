@@ -54,7 +54,6 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON(needs.changes.outputs.packages), 'ios') }}
     runs-on: macos-15
     timeout-minutes: 30
-    cache-mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
     permissions:
       contents: read # checkout do código
     steps:

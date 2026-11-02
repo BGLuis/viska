@@ -21,7 +21,6 @@ jobs:
     name: Núcleo Rust — Clippy, Features e Testes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    cache-mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
     permissions:
       contents: read # checkout do código
     steps:
@@ -65,7 +64,6 @@ jobs:
     needs: [rust-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    cache-mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
     permissions:
       contents: read # checkout do código
     steps:
@@ -99,7 +97,6 @@ jobs:
     name: Android — Build APK e Auditoria Zero Telemetria (D13 / F6)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    cache-mode: ${{ github.event_name == 'pull_request' && 'read' || 'write' }}
     permissions:
       contents: read # checkout do código
     steps:
