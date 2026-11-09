@@ -10,6 +10,7 @@ import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/transport/lan/lan_transport.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
@@ -281,6 +282,7 @@ class _FakeCore implements Core {
   // mesmo padrão dos stubs de áudio (Fase 5) acima.
   FutureOr<SendFileStartedDto> Function(String filePath)? startSendFileHandler;
   final startSendFileCalls = <String>[];
+  final startSendFileUseLan = <bool>[];
   final finishReceiveFileCalls = <String>[];
   Uint8List Function(Uint8List fileId, String destinationPath)? finishReceiveFileHandler;
   List<FileOfferDto> pendingFileOffersToReturn = [];
@@ -328,6 +330,7 @@ class _FakeCore implements Core {
     required bool useLan,
   }) async {
     startSendFileCalls.add(filePath);
+    startSendFileUseLan.add(useLan);
     if (startSendFileHandler != null) return await startSendFileHandler!(filePath);
     return SendFileStartedDto(
       fileId: Uint8List.fromList(List.filled(16, 5)),
@@ -571,6 +574,13 @@ class _FakeP2PTransport implements P2PTransport {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
+/// `LanTransport` real abre sockets e mDNS; o controller só faz `is LanTransport`,
+/// então basta um fake que satisfaça o tipo.
+class _FakeLanTransport extends _FakeP2PTransport implements LanTransport {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
   late ContactId contact;
   late _FakeCore core;
@@ -631,6 +641,51 @@ void main() {
 
     expect(controller.messages, hasLength(1));
     expect(controller.messages.single.body, 'oi');
+  });
+
+  test('initialize reads established session', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+
+    await controller.initialize();
+
+    expect(controller.isEstablished, isTrue, reason: 'sem SessionEstablishedEvent: o evento já passou');
+  });
+
+  test('initialize keeps handshaking', () async {
+    core.sessionState = SessionStateKind.handshaking;
+    controller = makeController();
+
+    await controller.initialize();
+
+    expect(controller.isEstablished, isFalse);
+  });
+
+  test('initialize does not drain the outbox', () async {
+    core.sessionState = SessionStateKind.established;
+    core.pendingToFlush = [
+      SealedMessageDto(messageId: 42, bytes: Uint8List.fromList([5, 5, 5])),
+    ];
+    controller = makeController();
+
+    await controller.initialize();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(transport.sendCalls, isEmpty, reason: 'quem drena é o MessageReceptionService');
+    expect(core.markSentCalls, isEmpty);
+  });
+
+  test('useLan with established session', () async {
+    core.sessionState = SessionStateKind.established;
+    final lan = _FakeLanTransport();
+    router = P2PTransportRouter(core: core, transportFactory: (_, _) => lan);
+    controller = makeController();
+    await controller.initialize();
+
+    expect(controller.activeTransport, ActiveTransportType.lanDirect);
+    await controller.sendFile('/tmp/documento.pdf');
+
+    expect(core.startSendFileUseLan, [true]);
   });
 
   test('as initiator: initialize publishes pending INIT', () async {

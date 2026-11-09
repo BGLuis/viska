@@ -324,7 +324,18 @@ class ChatController extends ChangeNotifier {
       _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
       _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
-      await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      // O MessageReceptionService estabelece a sessão em segundo plano ao abrir
+      // o app; se a conversa abre depois, o SessionEstablishedEvent já passou.
+      // Só lê o estado, sem drenar o outbox: quem drena é o serviço, e drenar
+      // aqui também poderia selar e enviar a mesma mensagem duas vezes.
+      // Só promove a verdadeiro: um SessionEstablishedEvent que chegue durante
+      // o await já pode ter setado o estado, e este valor lido antes não deve
+      // sobrescrevê-lo.
+      if (session.state == SessionStateKind.established && !_established) {
+        _established = true;
+        notifyListeners();
+      }
       await refreshTrustState();
       await loadUnconfirmedOffers();
     } catch (e, stack) {
