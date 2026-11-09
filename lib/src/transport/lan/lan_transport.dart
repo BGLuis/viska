@@ -97,6 +97,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
   bool _connectStarted = false;
   bool _closed = false;
 
+  /// Preâmbulo sob o qual `connect` registrou a espera no [LanListener] — é
+  /// diferente do `device_id` do contato, e `close` precisa cancelar pela
+  /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
+  Uint8List? _waitPreamble;
+
   @override
   Stream<Uint8List> get incoming => _incomingController.stream;
 
@@ -155,22 +160,49 @@ class LanTransport implements P2PTransport, TransportReadiness {
           final instanceName = toHexInstanceName(beacons.advertiseBeacon);
           await _discovery.advertise(instanceName: instanceName, port: port);
           if (kDebugMode) debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
+          // `close` pode ter rodado durante o `advertise` (lento no mDNS real),
+          // quando ainda não havia espera a cancelar: registrar agora deixaria
+          // uma espera órfã para o próximo transporte do contato.
+          if (_closed) return;
           final listenPreambles = beacons.listenPreambles.map(Uint8List.fromList).toList();
-          _control = await _listener.waitForConnection(
-            deviceId: listenPreambles.first,
-            channel: LanChannel.control,
-            alternativeIdentifiers: listenPreambles.length > 1 ? listenPreambles.sublist(1) : null,
-          );
-          _file = await _listener.waitForConnection(
-            deviceId: listenPreambles.first,
-            channel: LanChannel.file,
-            alternativeIdentifiers: listenPreambles.length > 1 ? listenPreambles.sublist(1) : null,
-          );
+          final alternatives = listenPreambles.length > 1 ? listenPreambles.sublist(1) : null;
+          _waitPreamble = listenPreambles.first;
+          try {
+            _control = await _listener.waitForConnection(
+              deviceId: listenPreambles.first,
+              channel: LanChannel.control,
+              alternativeIdentifiers: alternatives,
+            );
+            // Mesma janela entre as duas esperas: `close` já cancelou a do canal
+            // `file` (ainda inexistente), então não registrar a dele.
+            if (_closed) {
+              _control!.destroy();
+              return;
+            }
+            _file = await _listener.waitForConnection(
+              deviceId: listenPreambles.first,
+              channel: LanChannel.file,
+              alternativeIdentifiers: alternatives,
+            );
+          } finally {
+            // Esperas resolvidas (ou falhas): a chave deixa de ser nossa. Um
+            // `close` tardio não pode cancelar a espera de um transporte mais
+            // novo do mesmo contato que reutilizou o preâmbulo.
+            _waitPreamble = null;
+          }
         }
       } finally {
         // Sockets TCP já abertos (sucesso) ou primeira exceção (falha) —
         // mDNS não é mais necessário em nenhum dos dois casos.
         await MulticastLock.release();
+      }
+
+      if (_closed) {
+        // `close` correu enquanto esperávamos: os controladores já estão
+        // fechados e a conexão não tem dono — descarta em vez de vazar.
+        _control!.destroy();
+        _file!.destroy();
+        return;
       }
 
       _pump(_control!, _incomingController);
@@ -262,8 +294,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
   @override
   Future<void> close() async {
     _closed = true;
-    _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.control);
-    _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.file);
+    final waitPreamble = _waitPreamble;
+    if (waitPreamble != null) {
+      _listener.cancelWait(deviceId: waitPreamble, channel: LanChannel.control);
+      _listener.cancelWait(deviceId: waitPreamble, channel: LanChannel.file);
+    }
     try {
       await _discovery.stopAdvertising();
     } catch (_) {}

@@ -134,6 +134,34 @@ Future<void> _emitOnceBrowsing(_FakeLanDiscovery discovery, LanPeer peer) async 
   discovery.emitDiscovered(peer);
 }
 
+/// Atenção: voltar daqui não garante que o transporte já registrou a espera no
+/// listener; os testes toleram qualquer ordem porque sonda e transporte
+/// compartilham o `Completer` via `putIfAbsent`.
+///
+/// Espera o anúncio com limite de tempo, para uma regressão falhar o teste em
+/// vez de travá-lo.
+Future<void> _untilAdvertised(_FakeLanDiscovery discovery) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (discovery.advertiseCalls.isEmpty) {
+    if (DateTime.now().isAfter(deadline)) throw TimeoutException('anúncio nunca ocorreu');
+    await Future<void>.delayed(Duration.zero);
+  }
+}
+
+/// Anúncio que só termina quando o teste libera — simula o `advertise` lento
+/// do mDNS real.
+class _SlowAdvertiseDiscovery extends _FakeLanDiscovery {
+  _SlowAdvertiseDiscovery(this._gate);
+
+  final Future<void> _gate;
+
+  @override
+  Future<void> advertise({required String instanceName, required int port}) async {
+    advertiseCalls.add((instanceName: instanceName, port: port));
+    await _gate;
+  }
+}
+
 void main() {
   late LanListener passiveListener;
   late LanListener activeListener;
@@ -373,5 +401,184 @@ void main() {
 
     await expectLater(transport.connect(), throwsA(isA<StateError>()));
     expect(discovery.advertiseCalls, isEmpty);
+  });
+
+  LanTransport passiveFor(LanListener listener, _FakeLanDiscovery discovery) => LanTransport(
+        core: _FakeCore(
+          myDeviceId_: _deviceIdPassive,
+          advertiseBeacon: _beacon,
+          scanBeacons: [_beacon],
+          weAreActive: false,
+        ),
+        contactId: ContactId(_deviceIdActive),
+        listener: listener,
+        discovery: discovery,
+        frame: _fakeFrame,
+        extractFrame: _fakeExtractFrame,
+        listNetworkInterfaces: _noNetworkInterfaces,
+      );
+
+  test('close cancels preamble wait', () async {
+    final discovery = _FakeLanDiscovery();
+    final transport = passiveFor(passiveListener, discovery);
+
+    final connect = transport.connect();
+    await _untilAdvertised(discovery);
+    // Mesma espera que o transporte registrou (putIfAbsent devolve o Completer
+    // já existente) — serve de sonda para saber se `close` a cancelou.
+    final probe = passiveListener.waitForConnection(
+      deviceId: _beacon,
+      channel: LanChannel.control,
+    );
+    final probeCancelled = expectLater(probe, throwsA(isA<StateError>()));
+
+    await transport.close();
+    await connect;
+    await probeCancelled;
+
+    final next = passiveListener.waitForConnection(deviceId: _beacon, channel: LanChannel.control);
+    expect(identical(next, probe), isFalse);
+    passiveListener.cancelWait(deviceId: _beacon, channel: LanChannel.control);
+    await next.then<void>((_) {}, onError: (Object _) {});
+  });
+
+  test('connection goes to live transport', () async {
+    final deadDiscovery = _FakeLanDiscovery();
+    final liveDiscovery = _FakeLanDiscovery();
+    final activeDiscovery = _FakeLanDiscovery();
+
+    final dead = passiveFor(passiveListener, deadDiscovery);
+    final deadConnect = dead.connect();
+    await _untilAdvertised(deadDiscovery);
+    await dead.close();
+    await deadConnect;
+
+    final live = passiveFor(passiveListener, liveDiscovery);
+    addTearDown(live.close);
+    final liveConnect = live.connect();
+    await _untilAdvertised(liveDiscovery);
+    final announced = liveDiscovery.advertiseCalls.single;
+
+    final active = LanTransport(
+      core: _FakeCore(
+        myDeviceId_: _deviceIdActive,
+        advertiseBeacon: _beacon,
+        scanBeacons: [_beacon],
+        weAreActive: true,
+      ),
+      contactId: ContactId(_deviceIdPassive),
+      listener: activeListener,
+      discovery: activeDiscovery,
+      frame: _fakeFrame,
+      extractFrame: _fakeExtractFrame,
+      listNetworkInterfaces: _noNetworkInterfaces,
+    );
+    addTearDown(active.close);
+    final activeConnect = active.connect();
+    await _emitOnceBrowsing(
+      activeDiscovery,
+      LanPeer(instanceName: announced.instanceName, host: '127.0.0.1', port: announced.port),
+    );
+
+    await Future.wait([activeConnect, liveConnect]).timeout(const Duration(seconds: 5));
+  });
+
+  test('connect destroys sockets and stays silent when closed before pumping', () async {
+    final discovery = _FakeLanDiscovery();
+    final transport = passiveFor(passiveListener, discovery);
+    final events = <TransportConnectionState>[];
+    transport.connectionEvents.listen((e) => events.add(e.state));
+
+    final connect = transport.connect();
+    await _untilAdvertised(discovery);
+    final announced = discovery.advertiseCalls.single;
+
+    // Conexão chega e `close` ocorre antes de `connect` retomar: ambos acontecem
+    // no mesmo turno do event loop em que a espera completa.
+    final socketControl = await Socket.connect(InternetAddress.loopbackIPv4, announced.port);
+    addTearDown(socketControl.destroy);
+    final controlClosed = Completer<void>();
+    socketControl.listen(
+      (_) {},
+      onDone: controlClosed.complete,
+      onError: (Object _) {
+        if (!controlClosed.isCompleted) controlClosed.complete();
+      },
+    );
+    socketControl.add(encodePreamble(deviceId: _beacon, channel: LanChannel.control));
+    await socketControl.flush();
+    final socketFile = await Socket.connect(InternetAddress.loopbackIPv4, announced.port);
+    addTearDown(socketFile.destroy);
+    socketFile.add(encodePreamble(deviceId: _beacon, channel: LanChannel.file));
+    await socketFile.flush();
+
+    final closed = transport.close();
+    await connect.timeout(const Duration(seconds: 5));
+    await closed;
+    await controlClosed.future.timeout(const Duration(seconds: 5));
+    expect(events, isNot(contains(TransportConnectionState.connected)));
+  });
+
+  test('close during advertise leaves no orphan wait', () async {
+    final gate = Completer<void>();
+    final discovery = _SlowAdvertiseDiscovery(gate.future);
+    final transport = passiveFor(passiveListener, discovery);
+
+    final connect = transport.connect();
+    await _untilAdvertised(discovery);
+    await transport.close();
+    gate.complete();
+    await connect.timeout(const Duration(seconds: 5));
+
+    // Nenhuma espera deve ter sobrado: a próxima recebe um Completer novo e
+    // não herda o do transporte morto.
+    final probe = passiveListener.waitForConnection(deviceId: _beacon, channel: LanChannel.control);
+    final cancelled = expectLater(probe, throwsA(isA<StateError>()));
+    passiveListener.cancelWait(deviceId: _beacon, channel: LanChannel.control);
+    await cancelled;
+  });
+
+  test('late close does not cancel the wait of a newer transport', () async {
+    final oldDiscovery = _FakeLanDiscovery();
+    final activeDiscovery = _FakeLanDiscovery();
+    final old = passiveFor(passiveListener, oldDiscovery);
+    final oldConnect = old.connect();
+    await _untilAdvertised(oldDiscovery);
+
+    final active = LanTransport(
+      core: _FakeCore(
+        myDeviceId_: _deviceIdActive,
+        advertiseBeacon: _beacon,
+        scanBeacons: [_beacon],
+        weAreActive: true,
+      ),
+      contactId: ContactId(_deviceIdPassive),
+      listener: activeListener,
+      discovery: activeDiscovery,
+      frame: _fakeFrame,
+      extractFrame: _fakeExtractFrame,
+      listNetworkInterfaces: _noNetworkInterfaces,
+    );
+    addTearDown(active.close);
+    final activeConnect = active.connect();
+    await _emitOnceBrowsing(
+      activeDiscovery,
+      LanPeer(
+        instanceName: oldDiscovery.advertiseCalls.single.instanceName,
+        host: '127.0.0.1',
+        port: oldDiscovery.advertiseCalls.single.port,
+      ),
+    );
+    await Future.wait([activeConnect, oldConnect]).timeout(const Duration(seconds: 5));
+
+    // Um transporte mais novo registra a mesma chave; fechar o antigo agora não
+    // pode cancelá-la.
+    final newer = passiveListener.waitForConnection(deviceId: _beacon, channel: LanChannel.control);
+    var newerFailed = false;
+    unawaited(newer.then<void>((_) {}, onError: (Object _) => newerFailed = true));
+    await old.close();
+    await Future<void>.delayed(Duration.zero);
+    expect(newerFailed, isFalse);
+    passiveListener.cancelWait(deviceId: _beacon, channel: LanChannel.control);
   });
 }
