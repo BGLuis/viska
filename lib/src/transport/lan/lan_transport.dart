@@ -28,6 +28,9 @@ typedef FrameFn = Future<Uint8List> Function({required List<int> envelope});
 /// [FrameFn].
 typedef ExtractFrameFn = Future<(Uint8List?, Uint8List)> Function({required List<int> buffer});
 
+/// Par de conexões TCP `control`/`file` de um mesmo anúncio.
+typedef LanConnectionPair = (LanConnection, LanConnection);
+
 /// [P2PTransport] concreto sobre mDNS/DNS-SD (descoberta) + socket TCP
 /// (dados) na mesma LAN — Fase 6, F1.
 ///
@@ -49,7 +52,9 @@ class LanTransport implements P2PTransport, TransportReadiness {
     FrameFn? frame,
     ExtractFrameFn? extractFrame,
     ListNetworkInterfacesFn? listNetworkInterfaces,
-  })  : _core = core,
+    Duration dialTimeout = const Duration(seconds: 2),
+  })  : _dialTimeout = dialTimeout,
+        _core = core,
         _contactId = contactId,
         _listener = listener,
         _discovery = discovery,
@@ -68,6 +73,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
   final FrameFn _frame;
   final ExtractFrameFn _extractFrame;
   final ListNetworkInterfacesFn _listNetworkInterfaces;
+
+  /// Limite de cada discagem. Um registro mDNS velho pode apontar para um IP
+  /// que sumiu da rede: sem limite, `Socket.connect` pendura até o timeout do
+  /// SO e o anúncio atual do mesmo par chegaria com ninguém para tentá-lo.
+  final Duration _dialTimeout;
 
   /// Otimista até a primeira checagem terminar — nunca queremos pular um
   /// candidato só porque a checagem de interfaces de rede ainda não voltou.
@@ -101,6 +111,12 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// diferente do `device_id` do contato, e `close` precisa cancelar pela
   /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
   Uint8List? _waitPreamble;
+
+  /// Resultado da busca ativa em andamento, para `close` poder encerrá-la: o
+  /// `timeout` de `SelectingP2PTransport` não cancela o `connect`, e é o
+  /// `close` dele que impede o loop de seguir escutando mDNS depois do
+  /// fallback para o próximo candidato.
+  Completer<LanConnectionPair?>? _activeResult;
 
   @override
   Stream<Uint8List> get incoming => _incomingController.stream;
@@ -143,11 +159,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
         if (kDebugMode) debugPrint('[LanTransport] connect(): porta=$port weAreActive=$weAreActive peer=${_hex(_contactId.deviceId)}');
 
         if (weAreActive) {
-          final peer = await _findPeer(beacons.scanBeacons);
-          if (kDebugMode) debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
           final dialPreamble = Uint8List.fromList(beacons.dialPreamble);
-          _control = await _dial(peer, LanChannel.control, dialPreamble);
-          _file = await _dial(peer, LanChannel.file, dialPreamble);
+          final pair = await _connectActive(beacons.scanBeacons, dialPreamble);
+          if (pair == null) return; // `close` encerrou a busca
+          _control = pair.$1;
+          _file = pair.$2;
         } else {
           if (!_policy.shouldAdvertise(_contactId)) {
             // Sem anúncio, o lado ativo nunca vai nos achar por mDNS — falha
@@ -200,8 +216,8 @@ class LanTransport implements P2PTransport, TransportReadiness {
       if (_closed) {
         // `close` correu enquanto esperávamos: os controladores já estão
         // fechados e a conexão não tem dono — descarta em vez de vazar.
-        _control!.destroy();
-        _file!.destroy();
+        _control?.destroy();
+        _file?.destroy();
         return;
       }
 
@@ -225,24 +241,82 @@ class LanTransport implements P2PTransport, TransportReadiness {
   }
 
 
-  /// Procura, entre os peers anunciados na LAN agora, o primeiro cujo nome
-  /// de instância bate com algum dos beacons da janela de três épocas.
-  Future<LanPeer> _findPeer(List<Uint8List> scanBeacons) async {
+  /// Disca o par assim que um anúncio cujo nome de instância bate com algum
+  /// beacon da janela de três épocas aparece, e continua escutando até algum
+  /// anúncio render um par `control`+`file` completo ou o transporte fechar.
+  ///
+  /// O nome da instância deriva do beacon, não da porta: o registro de uma
+  /// execução anterior do app tem o mesmo nome e uma porta morta, e o NSD
+  /// pode entregá-lo antes do atual. Por isso uma recusa não encerra a busca.
+  ///
+  /// Os dials são concorrentes, no máximo um por porta: o mesmo serviço pode
+  /// vir por mais de um endereço (IPv4/IPv6) ou ser reemitido, e dois dials
+  /// no mesmo listener passivo deixariam um `control` órfão lá. Porta que já
+  /// falhou também não é tentada de novo. Devolve `null` se `close` encerrou.
+  Future<LanConnectionPair?> _connectActive(
+    List<Uint8List> scanBeacons,
+    Uint8List dialPreamble,
+  ) async {
+    if (_closed) return null;
     final wanted = scanBeacons.map(toHexInstanceName).toSet();
+    final result = Completer<LanConnectionPair?>();
+    _activeResult = result;
+    final triedPorts = <int>{};
+
     await _discovery.startBrowsing();
+    // Uma única assinatura durante toda a busca: o stream é broadcast e um
+    // anúncio emitido enquanto um dial está em andamento se perderia.
+    final subscription = _discovery.discovered.listen((peer) {
+      if (_closed || result.isCompleted) return;
+      if (!wanted.contains(peer.instanceName)) return;
+      // A chave é só a porta, de propósito: o mesmo serviço chega por mais de
+      // um endereço e dois dials no mesmo listener deixariam `control` órfão.
+      // O custo é não tentar outro host da mesma porta que falhou.
+      if (!triedPorts.add(peer.port)) return;
+      unawaited(_tryPeer(peer, dialPreamble, result));
+    });
     try {
-      return await _discovery.discovered.firstWhere((peer) => wanted.contains(peer.instanceName));
+      return await result.future;
     } finally {
+      await subscription.cancel();
       try {
         await _discovery.stopBrowsing();
       } catch (_) {}
     }
   }
 
+  Future<void> _tryPeer(
+    LanPeer peer,
+    Uint8List dialPreamble,
+    Completer<LanConnectionPair?> result,
+  ) async {
+    LanConnection? control;
+    try {
+      control = await _dial(peer, LanChannel.control, dialPreamble);
+      final file = await _dial(peer, LanChannel.file, dialPreamble);
+      if (result.isCompleted) {
+        // Outro anúncio ganhou (ou `close` rodou) enquanto este discava.
+        control.destroy();
+        file.destroy();
+        return;
+      }
+      result.complete((control, file));
+    } catch (e) {
+      // O par é atômico: um `control` já aberto não pode sobrar sem `file`.
+      control?.destroy();
+      if (kDebugMode) debugPrint('[LanTransport] dial falhou em $peer: $e');
+    }
+  }
+
   Future<LanConnection> _dial(LanPeer peer, LanChannel channel, Uint8List preambleId) async {
-    final socket = await Socket.connect(peer.host, peer.port);
-    socket.add(encodePreamble(deviceId: preambleId, channel: channel));
-    await socket.flush();
+    final socket = await Socket.connect(peer.host, peer.port, timeout: _dialTimeout);
+    try {
+      socket.add(encodePreamble(deviceId: preambleId, channel: channel));
+      await socket.flush();
+    } catch (_) {
+      socket.destroy();
+      rethrow;
+    }
     return LanConnection(socket: socket, incoming: socket);
   }
 
@@ -294,6 +368,8 @@ class LanTransport implements P2PTransport, TransportReadiness {
   @override
   Future<void> close() async {
     _closed = true;
+    final activeResult = _activeResult;
+    if (activeResult != null && !activeResult.isCompleted) activeResult.complete(null);
     final waitPreamble = _waitPreamble;
     if (waitPreamble != null) {
       _listener.cancelWait(deviceId: waitPreamble, channel: LanChannel.control);

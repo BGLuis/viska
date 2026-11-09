@@ -418,6 +418,125 @@ void main() {
         listNetworkInterfaces: _noNetworkInterfaces,
       );
 
+  LanTransport activeFor(LanListener listener, _FakeLanDiscovery discovery) => LanTransport(
+        core: _FakeCore(
+          myDeviceId_: _deviceIdActive,
+          advertiseBeacon: _beacon,
+          scanBeacons: [_beacon],
+          weAreActive: true,
+        ),
+        contactId: ContactId(_deviceIdPassive),
+        listener: listener,
+        discovery: discovery,
+        frame: _fakeFrame,
+        extractFrame: _fakeExtractFrame,
+        listNetworkInterfaces: _noNetworkInterfaces,
+      );
+
+  /// Porta em que ninguém escuta — o que um registro mDNS de uma execução
+  /// anterior do app deixa para trás.
+  Future<int> deadPort() async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = server.port;
+    await server.close();
+    return port;
+  }
+
+  test('retries next announcement after a refused one', () async {
+    final passiveDiscovery = _FakeLanDiscovery();
+    final activeDiscovery = _FakeLanDiscovery();
+    final passive = passiveFor(passiveListener, passiveDiscovery);
+    final active = activeFor(activeListener, activeDiscovery);
+    addTearDown(active.close);
+    addTearDown(passive.close);
+
+    final passiveConnect = passive.connect();
+    await _untilAdvertised(passiveDiscovery);
+    final announced = passiveDiscovery.advertiseCalls.single;
+
+    final activeConnect = active.connect();
+    final name = announced.instanceName;
+    await _emitOnceBrowsing(
+      activeDiscovery,
+      LanPeer(instanceName: name, host: '127.0.0.1', port: await deadPort()),
+    );
+    // O registro velho chega primeiro e é recusado; o atual chega depois.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    activeDiscovery.emitDiscovered(
+      LanPeer(instanceName: name, host: '127.0.0.1', port: announced.port),
+    );
+
+    await Future.wait([activeConnect, passiveConnect]).timeout(const Duration(seconds: 5));
+  });
+
+  test('connect stays pending without a valid announcement and ends silently on close', () async {
+    final discovery = _FakeLanDiscovery();
+    final active = activeFor(activeListener, discovery);
+    final events = <TransportConnectionState>[];
+    active.connectionEvents.listen((e) => events.add(e.state));
+
+    var completed = false;
+    final connect = active.connect().then((_) => completed = true);
+    await _emitOnceBrowsing(
+      discovery,
+      LanPeer(
+        instanceName: toHexInstanceName(_beacon),
+        host: '127.0.0.1',
+        port: await deadPort(),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(completed, isFalse);
+
+    await active.close();
+    await connect.timeout(const Duration(seconds: 5));
+    expect(events, isNot(contains(TransportConnectionState.connected)));
+    expect(events, isNot(contains(TransportConnectionState.failed)));
+  });
+
+  test('dials each announced port once', () async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    final accepted = <Socket>[];
+    server.listen(accepted.add);
+
+    final discovery = _FakeLanDiscovery();
+    final active = activeFor(activeListener, discovery);
+    addTearDown(active.close);
+
+    final connect = active.connect();
+    final name = toHexInstanceName(_beacon);
+    await _emitOnceBrowsing(
+      discovery,
+      LanPeer(instanceName: name, host: '127.0.0.1', port: server.port),
+    );
+    // Mesma porta anunciada por outro endereço (IPv4/IPv6) ou reemitida pelo
+    // NSD: não pode virar um segundo par de conexões no listener do par.
+    discovery.emitDiscovered(LanPeer(instanceName: name, host: 'localhost', port: server.port));
+    discovery.emitDiscovered(LanPeer(instanceName: name, host: '127.0.0.1', port: server.port));
+    await connect.timeout(const Duration(seconds: 5));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(accepted, hasLength(2)); // control + file, de um único par
+  });
+
+  test('ignores announcements of other peers', () async {
+    final discovery = _FakeLanDiscovery();
+    final active = activeFor(activeListener, discovery);
+    var completed = false;
+    final connect = active.connect().then((_) => completed = true);
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    await _emitOnceBrowsing(
+      discovery,
+      LanPeer(instanceName: 'ff' * 16, host: '127.0.0.1', port: server.port),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(completed, isFalse);
+    await active.close();
+    await connect.timeout(const Duration(seconds: 5));
+  });
+
   test('close cancels preamble wait', () async {
     final discovery = _FakeLanDiscovery();
     final transport = passiveFor(passiveListener, discovery);
