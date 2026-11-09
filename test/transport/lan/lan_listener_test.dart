@@ -153,6 +153,24 @@ void main() {
     await expectation;
   });
 
+  test('cancelWait other contact keeps the wait of the matching contact', () async {
+    final port = await listener.ensureListening();
+    final contactA = _deviceId(0x20);
+    final contactB = _deviceId(0x21);
+
+    final waitA = listener.waitForConnection(deviceId: contactA, channel: LanChannel.control);
+    final waitB = listener.waitForConnection(deviceId: contactB, channel: LanChannel.control);
+
+    final expectationA = expectLater(waitA, throwsA(isA<StateError>()));
+    listener.cancelWait(deviceId: contactA, channel: LanChannel.control);
+    await expectationA;
+
+    final dialSocket = await _dial(port, deviceId: contactB, channel: LanChannel.control);
+    addTearDown(dialSocket.destroy);
+    final connection = await waitB.timeout(const Duration(seconds: 5));
+    expect(connection, isNotNull);
+  });
+
   test('connection with alternative identifier is routed to waiter and cleans up', () async {
     final port = await listener.ensureListening();
     final primaryId = _deviceId(0x10);
