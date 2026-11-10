@@ -251,6 +251,8 @@ impl Core {
         kind: TransferKind,
     ) -> Result<StartedTransfer, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
 
         let file_size = std::fs::metadata(&file_path)
             .map_err(|_| FfiError::Internal)?
@@ -474,6 +476,8 @@ impl Core {
         file_id: Vec<u8>,
     ) -> Result<Vec<u8>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let file_id = to_file_id(file_id)?;
 
         let feedback_body = {
@@ -507,6 +511,8 @@ impl Core {
         destination_path: String,
     ) -> Result<Vec<u8>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let file_id = to_file_id(file_id)?;
 
         let handle = self
@@ -687,6 +693,7 @@ impl Core {
             .remove(&fid)
             .ok_or(FfiError::OfferNotFound)?;
 
+        let _publish = self.publish_on_exit(offer.contact_device_id);
         let mut sessions = self.lock_sessions()?;
         let Some(session) = sessions.get_mut(&offer.contact_device_id) else {
             return Ok(None);
@@ -866,7 +873,7 @@ impl Core {
 mod tests {
     use super::*;
     use crate::ffi::core::Core;
-    use crate::ffi::types::{DeliveryStateDto, MessageKindDto};
+    use crate::ffi::types::{DeliveryStateDto, MessageKindDto, SessionStateKind};
     use std::io::Write;
 
     fn open_core(dir: &tempfile::TempDir) -> Core {
@@ -1429,6 +1436,51 @@ mod tests {
 
         // `file_id` desconhecido: não deveria errar.
         pair.core_a.cancel_transfer(vec![0u8; 16]).unwrap();
+    }
+
+    #[test]
+    fn reset_session_cancels_outgoing_transfer_and_fails_its_row() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let src_path = write_temp_file(&dir_src, "a.bin", &[7u8; 4096]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        // `core_b` precisa de cadeia de envio para adulterar mensagens a `core_a`.
+        let hello = pair
+            .core_a
+            .seal_outgoing_text(pair.device_id_b.clone(), "oi".to_owned())
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), hello.bytes.unwrap())
+            .unwrap();
+        for _ in 0..9 {
+            let mut bytes = pair
+                .core_b
+                .seal_outgoing_text(pair.device_id_a.clone(), "x".to_owned())
+                .unwrap()
+                .bytes
+                .unwrap();
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            let _ = pair.core_a.decrypt_incoming(pair.device_id_b.clone(), bytes);
+        }
+        assert!(pair.core_a.session_status(pair.device_id_b.clone()).unwrap().unwrap().state
+            == SessionStateKind::Failed);
+
+        pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
+
+        assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().is_none());
+        assert!(pair.core_a.list_active_file_transfer_ids().unwrap().is_empty());
+        let row = pair
+            .core_a
+            .list_messages(pair.device_id_b.clone())
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == started.message_id)
+            .unwrap();
+        assert_eq!(row.delivery_state, DeliveryStateDto::Failed);
     }
 
     /// Testa que transferência multibloko (> 16 MiB no DataChannel WebRTC, D6)

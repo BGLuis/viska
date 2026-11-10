@@ -12,6 +12,7 @@ use std::sync::{Mutex, RwLock};
 use zeroize::Zeroize;
 
 use crate::ffi::error::FfiError;
+use crate::session_events::SessionEvents;
 use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
 use crate::ffi::types::{ContactDto, SafetyNumberDto};
 use viska_proto::crypto::identity::LocalIdentity;
@@ -45,6 +46,11 @@ pub struct Core {
     /// persistidas em si (`store::transfers` guarda só o necessário para
     /// retomar dentro da mesma execução, ver `file::transfer`).
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// Destinatário dos eventos de estado de sessão e o último estado entregue
+    /// por contato. Ordem de travas: `sessions` antes de `session_events`,
+    /// sempre — quem publica lê a sessão e emite sob as duas, para que o
+    /// último evento entregue seja sempre o estado mais recente.
+    pub(super) session_events: Mutex<SessionEvents>,
     /// Suítes acordadas para upgrade em memória (§6.2, D24), nunca persistidas.
     pub(super) agreed_upgrades: Mutex<HashMap<[u8; 16], u8>>,
     /// Ofertas de arquivo recebidas com tamanho acima do limite de auto-aceite,
@@ -95,6 +101,7 @@ impl Core {
             identity: RwLock::new(identity),
             store,
             sessions: Mutex::new(HashMap::new()),
+            session_events: Mutex::new(SessionEvents::default()),
             transfers: Mutex::new(HashMap::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
@@ -108,6 +115,8 @@ impl Core {
     /// limpa a chave mestra nativa injetada.
     pub fn lock(&self) -> Result<(), FfiError> {
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        // O Dart não pode seguir achando que há sessão estabelecida.
+        self.publish_all_sessions();
         self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)?.clear();
         {
             let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
@@ -255,6 +264,7 @@ impl Core {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(&candidate.device_id);
         }
+        self.publish_session(&candidate.device_id);
         if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
             upgrades.remove(&candidate.device_id);
         }

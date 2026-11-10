@@ -1,13 +1,17 @@
 //! Superfície FFI de sessão e mensagem — Fase 3, F2.
 //!
-//! Sem `StreamSink`/callback assíncrono: o núcleo Rust é síncrono por
-//! desenho (`viska_proto` não depende de nenhum runtime assíncrono). Todo
-//! evento de rede — canal abriu, bytes chegaram — nasce do lado Dart
-//! (`flutter_webrtc`/`mqtt_client`, Fase 3 F3/F4), que então chama estes
-//! métodos de forma síncrona; não há nada que o Rust precise empurrar por
-//! conta própria, então os métodos abaixo são só request/response comuns,
-//! que o `flutter_rust_bridge` já despacha em thread própria e devolve como
-//! `Future` ao Dart automaticamente.
+//! O núcleo Rust é síncrono por desenho (`viska_proto` não depende de nenhum
+//! runtime assíncrono). Todo evento de rede — canal abriu, bytes chegaram —
+//! nasce do lado Dart (`flutter_webrtc`/`mqtt_client`, Fase 3 F3/F4), que
+//! então chama estes métodos de forma síncrona; os métodos abaixo são
+//! request/response comuns, que o `flutter_rust_bridge` já despacha em thread
+//! própria e devolve como `Future` ao Dart automaticamente.
+//!
+//! Única exceção: [`Core::subscribe_session_events`]. O estado de uma sessão
+//! muda dentro do Rust sem que o Dart tenha chamado nada (o limiar de falhas
+//! de AEAD leva a `Failed`, §11.1), então aqui há algo que só o Rust sabe e
+//! precisa empurrar. É o único `StreamSink` do crate; não o replique para o
+//! que o Dart já consegue descobrir perguntando.
 
 use std::collections::HashMap;
 use std::sync::MutexGuard;
@@ -16,10 +20,13 @@ use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
     DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto, MessageKindDto,
-    SealedMessageDto, SessionStateKind, SessionStatusDto,
+    SealedMessageDto, SessionStateEventDto, SessionStateKind, SessionStatusDto,
 };
+use crate::frb_generated::StreamSink;
+use crate::session_events::{PublishOnExit, SessionEventSink};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
+use viska_proto::store::transfers::Direction as TransferDirection;
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
 
@@ -40,12 +47,137 @@ impl Core {
     /// `viska_proto::session::Session::pending_outgoing_handshake`.
     pub fn ensure_session(&self, peer_device_id: Vec<u8>) -> Result<SessionStatusDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let mut sessions = self.lock_sessions()?;
 
         if let Some(session) = sessions.get(&device_id) {
             return Ok(status_dto(session));
         }
 
+        self.open_session(&mut sessions, device_id)
+    }
+
+    /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
+    /// uma nova com o mesmo contato — o que `ensure_session` nunca faz.
+    ///
+    /// Só age quando a sessão realmente não serve: com ela `Established` sã ou
+    /// em handshake, devolve o status atual sem tocar em nada, para um toque
+    /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
+    ///
+    /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
+    /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
+    /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+    ///
+    /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
+    /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
+    /// andamento com este contato são cancelados e marcados como falha, porque
+    /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+    pub fn reset_session(&self, peer_device_id: Vec<u8>) -> Result<SessionStatusDto, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
+        let status = {
+            let mut sessions = self.lock_sessions()?;
+            if let Some(session) = sessions.get(&device_id) {
+                if !session.is_failed() && !session.needs_rehandshake() {
+                    return Ok(status_dto(session));
+                }
+                sessions.remove(&device_id);
+            }
+            self.open_session(&mut sessions, device_id)?
+        };
+
+        self.abort_outgoing_transfers(&device_id)?;
+        self.store.requeue_sending_messages_for_contact(&device_id)?;
+        Ok(status)
+    }
+
+    /// Cancela os envios de arquivo e voz deste contato e falha as linhas.
+    fn abort_outgoing_transfers(&self, device_id: &[u8; DEVICE_ID_LEN]) -> Result<(), FfiError> {
+        let outgoing = self
+            .store
+            .list_file_transfers_for_contact(device_id, TransferDirection::Sending)?;
+        {
+            let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
+            for transfer in &outgoing {
+                transfers.remove(&transfer.file_id);
+            }
+        }
+        for transfer in &outgoing {
+            self.store.delete_file_transfer(&transfer.file_id)?;
+        }
+        let active: std::collections::HashSet<_> =
+            self.store.list_active_file_transfer_ids()?.into_iter().collect();
+        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &active)?;
+        self.store.fail_pending_transfers_for_contact(device_id)?;
+        Ok(())
+    }
+
+    /// Passa a receber os eventos de mudança de estado das sessões, a partir
+    /// do estado atual de cada uma (replay): um evento emitido antes da
+    /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
+    /// a anterior.
+    pub fn subscribe_session_events(
+        &self,
+        sink: StreamSink<SessionStateEventDto>,
+    ) -> Result<(), FfiError> {
+        self.set_session_event_sink(Box::new(move |event| {
+            // Erro aqui é o Dart já ter fechado o stream: nada a fazer.
+            let _ = sink.add(event);
+        }))
+    }
+
+    /// Núcleo de [`Self::subscribe_session_events`], sem o `StreamSink`, para
+    /// que os testes observem os eventos sem subir a ponte.
+    pub(crate) fn set_session_event_sink(
+        &self,
+        sink: SessionEventSink,
+    ) -> Result<(), FfiError> {
+        let sessions = self.sessions.lock().map_err(|_| FfiError::Internal)?;
+        let mut events = self.session_events.lock().map_err(|_| FfiError::Internal)?;
+        events.set_sink(
+            sink,
+            sessions.iter().map(|(id, session)| (*id, Some(snapshot(session)))),
+        );
+        Ok(())
+    }
+
+    /// Emite o estado atual da sessão de `device_id` se ele mudou desde o
+    /// último evento entregue.
+    pub(crate) fn publish_session(&self, device_id: &[u8; DEVICE_ID_LEN]) {
+        let (Ok(sessions), Ok(mut events)) = (self.sessions.lock(), self.session_events.lock())
+        else {
+            return;
+        };
+        events.publish(device_id, sessions.get(device_id).map(snapshot));
+    }
+
+    /// Como [`Self::publish_session`] para todos os contatos já entregues —
+    /// usado quando as sessões somem de uma vez (bloqueio do cofre).
+    pub(crate) fn publish_all_sessions(&self) {
+        let (Ok(sessions), Ok(mut events)) = (self.sessions.lock(), self.session_events.lock())
+        else {
+            return;
+        };
+        for id in events.published_ids() {
+            events.publish(&id, sessions.get(&id).map(snapshot));
+        }
+    }
+
+    /// Publica o estado da sessão ao sair do escopo, por qualquer caminho
+    /// (inclusive `?`): as transições nascem em pontos demais para lembrar de
+    /// chamar `publish_session` em cada `return`.
+    pub(crate) fn publish_on_exit(&self, device_id: [u8; DEVICE_ID_LEN]) -> PublishOnExit<'_> {
+        PublishOnExit { core: self, device_id }
+    }
+
+    /// Abre a sessão com um contato pareado e a registra em `sessions`.
+    fn open_session(
+        &self,
+        sessions: &mut HashMap<[u8; 16], Session>,
+        device_id: [u8; DEVICE_ID_LEN],
+    ) -> Result<SessionStatusDto, FfiError> {
         let (peer, _, _, _) = self
             .store
             .find_contact(&device_id)?
@@ -78,6 +210,8 @@ impl Core {
         bytes: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let mut sessions = self.lock_sessions()?;
         let session = sessions
             .get_mut(&device_id)
@@ -98,6 +232,8 @@ impl Core {
         peer_device_id: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let mut sessions = self.lock_sessions()?;
         let session = sessions
             .get_mut(&device_id)
@@ -128,6 +264,8 @@ impl Core {
         body: String,
     ) -> Result<SealedMessageDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let created_at = viska_proto::util::time::unix_seconds() as i64;
 
         // Se o corpo for uma reação, vincula à mensagem no banco local:
@@ -192,6 +330,8 @@ impl Core {
         envelope: Vec<u8>,
     ) -> Result<Option<IncomingMessageDto>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let mut sessions = self.lock_sessions()?;
         let session = sessions
             .get_mut(&device_id)
@@ -289,6 +429,8 @@ impl Core {
         target_id: String,
     ) -> Result<SealedMessageDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         let mut sessions = self.lock_sessions()?;
         let session = sessions
             .get_mut(&device_id)
@@ -350,6 +492,8 @@ impl Core {
         peer_device_id: Vec<u8>,
     ) -> Result<Vec<SealedMessageDto>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
         // Listar sob o lock de sessões: duas drenagens concorrentes não podem
         // ver a mesma linha `Pending` antes de a primeira marcá-la `Sending`.
         let mut sessions = self.lock_sessions()?;
@@ -469,6 +613,11 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         view_once: message.view_once,
         reactions: message.reactions,
     }
+}
+
+fn snapshot(session: &Session) -> (SessionStateKind, bool) {
+    let status = status_dto(session);
+    (status.state, status.needs_rehandshake)
 }
 
 fn status_dto(session: &Session) -> SessionStatusDto {
@@ -1252,5 +1401,144 @@ mod tests {
         assert_eq!(msgs_after.len(), 1);
         assert_eq!(msgs_after[0].delivery_state, DeliveryStateDto::Delivered);
     }
-}
 
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<SessionStateEventDto>>>;
+
+    fn record_events(core: &Core) -> Seen {
+        let seen: Seen = Default::default();
+        let sink_seen = std::sync::Arc::clone(&seen);
+        core.set_session_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+        seen
+    }
+
+    fn last_state(seen: &Seen) -> Option<SessionStateKind> {
+        seen.lock().unwrap().last().expect("nenhum evento").state
+    }
+
+    /// Leva a sessão de `victim` com `sender` a `Failed` entregando envelopes
+    /// adulterados até passar do limiar de §11.1. `sender` precisa já ter
+    /// cadeia de envio (ter recebido ao menos uma mensagem do par).
+    fn fail_session(sender: &Core, sender_peer: &[u8], victim: &Core, victim_peer: &[u8]) {
+        for _ in 0..9 {
+            let sealed = sender
+                .seal_outgoing_text(sender_peer.to_vec(), "x".to_owned())
+                .unwrap();
+            let mut bytes = sealed.bytes.expect("sessão do emissor deve cifrar");
+            let last = bytes.len() - 1;
+            bytes[last] ^= 0xff;
+            let _ = victim.decrypt_incoming(victim_peer.to_vec(), bytes);
+        }
+        let status = victim.session_status(victim_peer.to_vec()).unwrap().unwrap();
+        assert_eq!(status.state, SessionStateKind::Failed);
+    }
+
+    /// `a` manda uma mensagem a `b` para que `b` ganhe cadeia de envio.
+    fn give_b_a_send_chain(p: &PairedCores) -> i64 {
+        let first = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "oi".to_owned()).unwrap();
+        p.core_b
+            .decrypt_incoming(p.device_id_a.clone(), first.bytes.unwrap())
+            .unwrap()
+            .unwrap();
+        first.message_id
+    }
+
+    #[test]
+    fn session_failing_inside_decrypt_is_pushed_without_being_asked() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        let seen = record_events(&p.core_a);
+        give_b_a_send_chain(&p);
+
+        fail_session(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b);
+
+        assert_eq!(last_state(&seen), Some(SessionStateKind::Failed));
+        assert_eq!(seen.lock().unwrap().last().unwrap().peer_device_id, p.device_id_b);
+    }
+
+    #[test]
+    fn subscribing_replays_the_current_state() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+
+        let seen = record_events(&p.core_a);
+
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(last_state(&seen), Some(SessionStateKind::Established));
+    }
+
+    #[test]
+    fn ensure_session_does_not_reopen_a_failed_session() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+        fail_session(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b);
+
+        let status = p.core_a.ensure_session(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(status.state, SessionStateKind::Failed);
+    }
+
+    #[test]
+    fn reset_reopens_a_failed_session_and_announces_it() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+        fail_session(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b);
+        let seen = record_events(&p.core_a);
+        assert_eq!(last_state(&seen), Some(SessionStateKind::Failed));
+
+        let status = p.core_a.reset_session(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(status.state, SessionStateKind::Handshaking);
+        // `core_a` inicia: a INIT nova é entregue no mesmo status.
+        assert!(status.outgoing_handshake.is_some());
+        assert_eq!(last_state(&seen), Some(SessionStateKind::Handshaking));
+    }
+
+    #[test]
+    fn reset_leaves_a_healthy_session_alone() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        let seen = record_events(&p.core_a);
+
+        let status = p.core_a.reset_session(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(status.state, SessionStateKind::Established);
+        assert_eq!(seen.lock().unwrap().len(), 1, "só o replay da assinatura");
+    }
+
+    #[test]
+    fn reset_returns_in_flight_text_to_the_queue() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        // "oi" fica `Sending` em `core_a`: cifrada, nunca marcada como enviada.
+        let in_flight = give_b_a_send_chain(&p);
+        fail_session(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b);
+        let state_of = |core: &Core| {
+            core.list_messages(p.device_id_b.clone())
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == in_flight)
+                .unwrap()
+                .delivery_state
+        };
+        assert_eq!(state_of(&p.core_a), DeliveryStateDto::Sending);
+
+        p.core_a.reset_session(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(state_of(&p.core_a), DeliveryStateDto::Pending);
+    }
+
+    #[test]
+    fn locking_announces_that_sessions_are_gone() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        let seen = record_events(&p.core_a);
+
+        p.core_a.lock().unwrap();
+
+        assert_eq!(last_state(&seen), None);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+}

@@ -287,6 +287,16 @@ impl Store {
         self.with_conn(messages::requeue_all_sending)
     }
 
+    /// Devolve à fila os envios em `Sending` de um único contato.
+    pub fn requeue_sending_messages_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| messages::requeue_sending_for_contact(conn, contact_device_id))
+    }
+
+    /// Marca como falha os envios de arquivo e voz `Pending` de um contato.
+    pub fn fail_pending_transfers_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| messages::fail_pending_transfers_for_contact(conn, contact_device_id))
+    }
+
     /// Marca uma mensagem de saída `Pending` como falha.
     pub fn mark_message_failed(&self, message_id: i64) -> Result<()> {
         self.with_conn(|conn| messages::mark_failed(conn, message_id))

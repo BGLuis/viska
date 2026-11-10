@@ -17,3 +17,4 @@
 
 mod frb_generated; // Gerado por `flutter_rust_bridge_codegen generate`.
 pub mod ffi;
+mod session_events;

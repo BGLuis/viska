@@ -55,7 +55,8 @@ pub enum SessionStateKind {
     Handshaking,
     /// Pronta para cifrar/decifrar mensagens.
     Established,
-    /// Precisa de uma sessão nova (`Core::ensure_session` de novo).
+    /// Precisa de uma sessão nova: `Core::reset_session` (`ensure_session`
+    /// devolve a sessão falha como está, nunca a reabre).
     Failed,
 }
 
@@ -75,6 +76,18 @@ pub struct SessionStatusDto {
     /// de uma parte do app pode precisar deles em momentos diferentes (ver
     /// `Session::pending_outgoing_handshake`).
     pub outgoing_handshake: Option<Vec<u8>>,
+}
+
+/// Mudança de estado de uma sessão, empurrada pelo stream de
+/// `Core::subscribe_session_events`. Só dado público: o mesmo que
+/// `Core::session_status` já devolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStateEventDto {
+    pub peer_device_id: Vec<u8>,
+    /// `None` quando a sessão deixou de existir (bloqueio do cofre,
+    /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
+    pub state: Option<SessionStateKind>,
+    pub needs_rehandshake: bool,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão

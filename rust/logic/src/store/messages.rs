@@ -622,6 +622,25 @@ pub fn requeue_all_sending(conn: &rusqlite::Connection) -> Result<usize> {
     .map_err(|_| Error::Store)
 }
 
+/// Como [`requeue_all_sending`], restrita a um contato: o reset de uma sessão
+/// falha não pode mexer nos envios em voo das sessões saudáveis dos outros.
+pub fn requeue_sending_for_contact(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1
+         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4",
+        rusqlite::params![
+            DeliveryState::Pending as i64,
+            contact_device_id.as_slice(),
+            Direction::Outgoing as i64,
+            DeliveryState::Sending as i64
+        ],
+    )
+    .map_err(|_| Error::Store)
+}
+
 /// Marca uma mensagem de saída como falha. Só sai de `Pending` ou `Sending`:
 /// uma mensagem que já foi `Sent` ou `Delivered` chegou ao par, e rebaixá-la a
 /// falha faria a UI oferecer um reenvio de algo que ele já recebeu. `Sending`
@@ -651,6 +670,27 @@ pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
          WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)",
         rusqlite::params![
             DeliveryState::Failed as i64,
+            Direction::Outgoing as i64,
+            DeliveryState::Pending as i64,
+            PacketType::FileMetadata.to_u8() as i64,
+            PacketType::AudioChunk.to_u8() as i64,
+        ],
+    )
+    .map_err(|_| Error::Store)
+}
+
+/// Como [`fail_pending_transfers`], restrita a um contato.
+pub fn fail_pending_transfers_for_contact(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1
+         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
+           AND packet_type IN (?5, ?6)",
+        rusqlite::params![
+            DeliveryState::Failed as i64,
+            contact_device_id.as_slice(),
             Direction::Outgoing as i64,
             DeliveryState::Pending as i64,
             PacketType::FileMetadata.to_u8() as i64,
@@ -1294,6 +1334,37 @@ mod tests {
 
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, text);
+    }
+
+    #[test]
+    fn contact_scoped_requeue_and_fail_leave_other_contacts_alone() {
+        let a = [31u8; 16];
+        let b = [32u8; 16];
+        let conn = conn_with_contact(a);
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, NULL)",
+            rusqlite::params![b.as_slice(), [1u8; 32], [2u8; 32]],
+        )
+        .unwrap();
+        let text_a = insert_pending(&conn, &a, PacketType::MsgText, "a", 1).unwrap();
+        let text_b = insert_pending(&conn, &b, PacketType::MsgText, "b", 2).unwrap();
+        let file_a = insert_pending(&conn, &a, PacketType::FileMetadata, "a.bin", 3).unwrap();
+        let file_b = insert_pending(&conn, &b, PacketType::FileMetadata, "b.bin", 4).unwrap();
+        mark_sending(&conn, text_a).unwrap();
+        mark_sending(&conn, text_b).unwrap();
+
+        assert_eq!(requeue_sending_for_contact(&conn, &a).unwrap(), 1);
+        assert_eq!(fail_pending_transfers_for_contact(&conn, &a).unwrap(), 1);
+
+        let state = |id: i64| -> i64 {
+            conn.query_row("SELECT delivery_state FROM messages WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(state(text_a), DeliveryState::Pending as i64);
+        assert_eq!(state(file_a), DeliveryState::Failed as i64);
+        assert_eq!(state(text_b), DeliveryState::Sending as i64);
+        assert_eq!(state(file_b), DeliveryState::Pending as i64);
     }
 
     #[test]
