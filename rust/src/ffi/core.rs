@@ -57,6 +57,19 @@ pub struct Core {
     pub(super) app_dir: PathBuf,
 }
 
+/// Acerta as linhas de saída que dependiam de estado só em memória.
+///
+/// Sem handle ativo o envio de arquivo não retoma, e a linha não pode
+/// continuar "Enviando…". Já o envio de texto em voo não sobrevive à Core, e
+/// sem a volta à fila a linha ficaria em `Sending` para sempre. Falhar as
+/// transferências primeiro é defesa em profundidade: `list_pending` já ignora
+/// linhas que não são texto, mas reverter `Sending` antes devolveria à fila
+/// qualquer linha de arquivo que ali tivesse parado.
+fn reset_inflight_state(store: &Store) {
+    let _ = store.fail_pending_transfers();
+    let _ = store.requeue_sending_messages();
+}
+
 impl Core {
     /// Abre (criando na primeira execução) a identidade e o banco cifrado em
     /// `app_dir` — o diretório de dados privados do app, não um segredo.
@@ -74,9 +87,7 @@ impl Core {
         for id in &active_ids {
             let _ = store.delete_file_transfer(id);
         }
-        // Sem handle em memória o envio não retoma; a linha na timeline não pode
-        // continuar "Enviando…" depois de reiniciar.
-        let _ = store.fail_pending_transfers();
+        reset_inflight_state(&store);
         let surviving = std::collections::HashSet::new();
         viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
 
@@ -106,7 +117,7 @@ impl Core {
             transfers.clear();
         }
         // As transferências acima foram abortadas: o mesmo vale para as linhas.
-        let _ = self.store.fail_pending_transfers();
+        reset_inflight_state(&self.store);
         if let Ok(active_ids) = self.store.list_active_file_transfer_ids() {
             for id in &active_ids {
                 let _ = self.store.delete_file_transfer(id);

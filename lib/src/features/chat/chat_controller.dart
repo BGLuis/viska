@@ -344,8 +344,9 @@ class ChatController extends ChangeNotifier {
       final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
       // O MessageReceptionService estabelece a sessão em segundo plano ao abrir
       // o app; se a conversa abre depois, o SessionEstablishedEvent já passou.
-      // Só lê o estado, sem drenar o outbox: quem drena é o serviço, e drenar
-      // aqui também poderia selar e enviar a mesma mensagem duas vezes.
+      // Só lê o estado, sem drenar o outbox: quem drena é o serviço (inclusive
+      // ao ligar o ouvinte de uma sessão restaurada), e drenar aqui também
+      // duplicaria o trabalho dele.
       // Só promove a verdadeiro: um SessionEstablishedEvent que chegue durante
       // o await já pode ter setado o estado, e este valor lido antes não deve
       // sobrescrevê-lo.
@@ -734,15 +735,21 @@ class ChatController extends ChangeNotifier {
   }
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
-  /// continua `pending` porque `markMessageSent` não chegou a rodar. Hoje o
-  /// outbox só é drenado quando a sessão se estabelece
-  /// (`MessageReceptionService`); reenviar depois de uma reconexão com a
-  /// sessão já estabelecida depende da reconexão do #54.
+  /// volta à fila (`pending`) via `requeueMessage`, porque o Rust a deixou em
+  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia no próximo
+  /// pacote recebido ou ao reiniciar.
   Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);
     } catch (e) {
-      if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem segue pendente: $e');
+      if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem volta à fila: $e');
+      try {
+        await _core.requeueMessage(messageId: messageId);
+        await _refreshMessages();
+      } catch (e) {
+        // Fica `Sending` até a Core reabrir ou travar; só dá para registrar.
+        if (kDebugMode) debugPrint('[ChatController] falha ao devolver $messageId à fila: $e');
+      }
       // O motivo do transporte (evento `failed`) é mais informativo: só
       // preenche se ele ainda não chegou.
       if (!_disposed) {

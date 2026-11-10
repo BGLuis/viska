@@ -119,6 +119,7 @@ pub enum DeliveryStateDto {
     Sent,
     Delivered,
     Failed,
+    Sending,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —

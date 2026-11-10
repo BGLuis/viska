@@ -250,17 +250,22 @@ class MessageReceptionService {
 
       if (incoming?.isTyping == true) {
         _eventsController.add(TypingIndicatorEvent(contactId));
-        return;
+      } else {
+        // Envia recibo de entrega (MSG_RECEIPT) se for mensagem de texto recebida válida
+        if (incoming?.messageId != null) {
+          unawaited(_sendReceipt(contactId, incoming!.messageId.toString()));
+        }
+
+        // Notifica com a mensagem decifrada ou atualização de timeline (metadados
+        // de arquivo salvos como efeito colateral no Rust).
+        _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
       }
 
-      // Envia recibo de entrega (MSG_RECEIPT) se for mensagem de texto recebida válida
-      if (incoming?.messageId != null) {
-        unawaited(_sendReceipt(contactId, incoming!.messageId.toString()));
-      }
-
-      // Notifica com a mensagem decifrada ou atualização de timeline (metadados
-      // de arquivo salvos como efeito colateral no Rust).
-      _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
+      // Qualquer pacote decifrado pode ter criado a cadeia de envio do
+      // respondedor (§5.1), o que destrava o que ele escreveu antes disso. A
+      // sessão já estava estabelecida, então nenhuma transição dispara a
+      // drenagem. Sem pendentes o Rust devolve lista vazia.
+      await _flushPending(contactId);
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao decifrar pacote de $contactId: $e\n$stack');
     }
@@ -472,6 +477,9 @@ class MessageReceptionService {
       final status = await _core.ensureSession(peerDeviceId: contactId.deviceId);
       if (status.state == SessionStateKind.established) {
         _establishedContacts.add(contactId);
+        // Sessão restaurada já estabelecida: nenhuma transição vai drenar o
+        // que ficou pendente antes de o app fechar.
+        await _flushPending(contactId);
         return;
       }
 
@@ -497,11 +505,24 @@ class MessageReceptionService {
   Future<void> _flushPending(ContactId contactId) async {
     try {
       final sealed = await _core.flushPending(peerDeviceId: contactId.deviceId);
-      for (final message in sealed) {
-        final bytes = message.bytes;
-        if (bytes != null) {
+      // O Rust já marcou o lote inteiro como `Sending`: o que não sair aqui
+      // precisa voltar à fila, senão fica fora dela até o app reiniciar.
+      for (var i = 0; i < sealed.length; i++) {
+        final bytes = sealed[i].bytes;
+        // O Rust só devolve linhas com bytes, então isto não ocorre hoje.
+        if (bytes == null) continue;
+        try {
           await _router.sendToContact(contactId, bytes);
-          await _core.markMessageSent(messageId: message.messageId);
+        } catch (_) {
+          await _requeueUnsent(sealed.skip(i));
+          rethrow;
+        }
+        try {
+          await _core.markMessageSent(messageId: sealed[i].messageId);
+        } catch (_) {
+          // Os bytes já saíram: devolver esta à fila a enviaria duas vezes.
+          await _requeueUnsent(sealed.skip(i + 1));
+          rethrow;
         }
       }
       if (sealed.isNotEmpty) {
@@ -509,6 +530,17 @@ class MessageReceptionService {
       }
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');
+    }
+  }
+
+  Future<void> _requeueUnsent(Iterable<SealedMessageDto> unsent) async {
+    for (final message in unsent) {
+      try {
+        await _core.requeueMessage(messageId: message.messageId);
+      } catch (e) {
+        // Fica `Sending` até a Core reabrir ou travar; só dá para registrar.
+        if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao devolver ${message.messageId} à fila: $e');
+      }
     }
   }
 

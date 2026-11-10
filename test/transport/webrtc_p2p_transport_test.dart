@@ -104,6 +104,9 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<void> requeueMessage({required PlatformInt64 messageId}) => throw UnimplementedError();
+
+  @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) => throw UnimplementedError();
 
   @override

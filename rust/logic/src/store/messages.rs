@@ -40,6 +40,10 @@ pub enum DeliveryState {
     /// O transporte relatou falha permanente de envio — nenhum código ainda
     /// produz este estado; reservado para a Fase 3, F6.
     Failed = 3,
+    /// Cifrada e entregue ao Dart para envio, mas ainda sem `Sent`. Tira a
+    /// linha de `list_pending`, de modo que duas drenagens seguidas não
+    /// cifrem o mesmo corpo duas vezes.
+    Sending = 4,
 }
 
 impl DeliveryState {
@@ -49,6 +53,7 @@ impl DeliveryState {
             1 => Ok(Self::Sent),
             2 => Ok(Self::Delivered),
             3 => Ok(Self::Failed),
+            4 => Ok(Self::Sending),
             _ => Err(Error::Store),
         }
     }
@@ -543,16 +548,60 @@ pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Marca uma mensagem de saída como falha. Só sai de `Pending`: uma mensagem
-/// que já foi `Sent` ou `Delivered` chegou ao par, e rebaixá-la a falha faria
-/// a UI oferecer um reenvio de algo que ele já recebeu.
-pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+/// Move uma mensagem entre dois estados, só se ela ainda estiver em `from`:
+/// uma linha que já avançou (`Sent`, `Delivered`) nunca é rebaixada.
+fn transition(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+    from: DeliveryState,
+    to: DeliveryState,
+) -> Result<()> {
     conn.execute(
         "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state = ?3",
+        rusqlite::params![to as i64, message_id, from as i64],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Tira a mensagem da fila de pendentes quando seus bytes cifrados saem para
+/// o transporte.
+pub fn mark_sending(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    transition(conn, message_id, DeliveryState::Pending, DeliveryState::Sending)
+}
+
+/// Devolve à fila uma mensagem que não chegou a sair.
+pub fn requeue(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    transition(conn, message_id, DeliveryState::Sending, DeliveryState::Pending)
+}
+
+/// Devolve à fila toda mensagem deixada em `Sending`. Usada na abertura: o
+/// envio em voo não sobrevive ao processo, e sem isso a linha ficaria presa.
+pub fn requeue_all_sending(conn: &rusqlite::Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1 WHERE direction = ?2 AND delivery_state = ?3",
+        rusqlite::params![
+            DeliveryState::Pending as i64,
+            Direction::Outgoing as i64,
+            DeliveryState::Sending as i64
+        ],
+    )
+    .map_err(|_| Error::Store)
+}
+
+/// Marca uma mensagem de saída como falha. Só sai de `Pending` ou `Sending`:
+/// uma mensagem que já foi `Sent` ou `Delivered` chegou ao par, e rebaixá-la a
+/// falha faria a UI oferecer um reenvio de algo que ele já recebeu. `Sending`
+/// entra porque é um `Pending` com bytes já cifrados; sem ele a falha de uma
+/// linha em voo seria ignorada em silêncio.
+pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4)",
         rusqlite::params![
             DeliveryState::Failed as i64,
             message_id,
-            DeliveryState::Pending as i64
+            DeliveryState::Pending as i64,
+            DeliveryState::Sending as i64
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -796,7 +845,11 @@ pub fn list_for_contact(
     list_for_contact_paginated(conn, contact_device_id, None, None)
 }
 
-/// Mensagens de saída ainda não entregues, mais antigas primeiro.
+/// Mensagens de texto de saída ainda não entregues, mais antigas primeiro.
+///
+/// Só `MsgText`: a linha de um arquivo ou nota de voz fica `Pending` durante
+/// toda a transferência, e cifrá-la aqui mandaria o nome do arquivo ao par
+/// como se fosse texto.
 pub fn list_pending(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
@@ -810,6 +863,7 @@ pub fn list_pending(
              FROM messages m
              LEFT JOIN ephemeral_message_keys ek ON ek.message_id = m.id
              WHERE m.contact_device_id = ?1 AND m.direction = ?2 AND m.delivery_state = ?3
+               AND m.packet_type = ?4
              ORDER BY m.created_at_unix_secs ASC, m.id ASC",
         )
         .map_err(|_| Error::Store)?;
@@ -820,6 +874,7 @@ pub fn list_pending(
                 contact_device_id.as_slice(),
                 Direction::Outgoing as i64,
                 DeliveryState::Pending as i64,
+                PacketType::MsgText.to_u8() as i64,
             ],
             |row| {
                 let id: i64 = row.get(0)?;
@@ -1065,6 +1120,89 @@ mod tests {
         assert_eq!(listed[0].direction, Direction::Outgoing);
         assert_eq!(listed[0].body, "oi");
         assert_eq!(listed[0].delivery_state, DeliveryState::Pending);
+    }
+
+    #[test]
+    fn sending_leaves_the_pending_list_and_requeue_brings_it_back() {
+        let contact = [10u8; 16];
+        let conn = conn_with_contact(contact);
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 1000).unwrap();
+
+        mark_sending(&conn, id).unwrap();
+        assert!(list_pending(&conn, &contact).unwrap().is_empty());
+
+        requeue(&conn, id).unwrap();
+        assert_eq!(list_pending(&conn, &contact).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn requeue_all_sending_leaves_sent_and_incoming_rows_alone() {
+        let contact = [11u8; 16];
+        let conn = conn_with_contact(contact);
+        let sending = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
+        let sent = insert_pending(&conn, &contact, PacketType::MsgText, "b", 2).unwrap();
+        let incoming = insert_incoming(&conn, &contact, PacketType::MsgText, "c", 3).unwrap();
+        mark_sending(&conn, sending).unwrap();
+        mark_sent(&conn, sent).unwrap();
+
+        let reverted = requeue_all_sending(&conn).unwrap();
+
+        assert_eq!(reverted, 1);
+        let states: Vec<_> = list_for_contact(&conn, &contact)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.delivery_state))
+            .collect();
+        assert!(states.contains(&(sending, DeliveryState::Pending)));
+        assert!(states.contains(&(sent, DeliveryState::Sent)));
+        assert!(states.contains(&(incoming, DeliveryState::Delivered)));
+    }
+
+    #[test]
+    fn mark_failed_reaches_a_sending_row_but_not_a_sent_one() {
+        let contact = [13u8; 16];
+        let conn = conn_with_contact(contact);
+        let in_flight = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
+        let delivered = insert_pending(&conn, &contact, PacketType::MsgText, "b", 2).unwrap();
+        mark_sending(&conn, in_flight).unwrap();
+        mark_sent(&conn, delivered).unwrap();
+
+        mark_failed(&conn, in_flight).unwrap();
+        mark_failed(&conn, delivered).unwrap();
+
+        let states: Vec<_> = list_for_contact(&conn, &contact)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.delivery_state))
+            .collect();
+        assert!(states.contains(&(in_flight, DeliveryState::Failed)));
+        assert!(states.contains(&(delivered, DeliveryState::Sent)));
+    }
+
+    #[test]
+    fn list_pending_ignores_file_and_voice_note_rows() {
+        let contact = [14u8; 16];
+        let conn = conn_with_contact(contact);
+        let text = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 1).unwrap();
+        insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 2).unwrap();
+        insert_pending(&conn, &contact, PacketType::AudioChunk, "ab", 3).unwrap();
+
+        let pending = list_pending(&conn, &contact).unwrap();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, text);
+    }
+
+    #[test]
+    fn mark_sending_does_not_touch_a_sent_row() {
+        let contact = [12u8; 16];
+        let conn = conn_with_contact(contact);
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, "x", 1).unwrap();
+        mark_sent(&conn, id).unwrap();
+
+        mark_sending(&conn, id).unwrap();
+
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Sent);
     }
 
     #[test]
