@@ -183,6 +183,17 @@ efetivamente **implementado**, com remissão ao relatório de endurecimento
 | **Bloqueio por biometria e auto-lock** | 🟡 | Tela e controlador Dart (`lock_controller.dart`) com suporte a biometria (`local_auth`) e temporizador de inatividade. O despejo total de chaves de sessões ativas da memória RAM do Rust ao bloquear o app ainda é parcial. |
 | **Build reproduzível** | ❌ | Não implementado. Planejado na etapa F6 da Fase 7 (`FASE-7-ENDURECIMENTO.md`). |
 
+### 4.1 Restauração de backup clona a identidade
+
+Restaurar um backup (`.viskasafe`) grava no aparelho novo a mesma chave mestra e o mesmo banco do
+original, inclusive a identidade de longo prazo. Enquanto o aparelho de origem não for apagado, existem
+**duas instalações com a mesma identidade**, e o protocolo não tem revogação de aparelho que as
+distinga. A defesa é operacional: a tela de restauração avisa que o aparelho de origem deve ser
+apagado (ou o Viska desinstalado nele) logo após a restauração. Um aparelho de origem perdido ou
+roubado, que a pessoa não consegue apagar, mantém a identidade em poder de quem o tiver; o recurso
+nesse caso é o apagamento de emergência, se ainda houver acesso, ou o re-pareamento com novos
+contatos de uma identidade nova.
+
 ---
 
 ## 5. Como usar este documento

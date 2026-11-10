@@ -423,42 +423,6 @@ impl Store {
         self.with_conn(|conn| messages::get_reactions_for_message(conn, message_id))
     }
 
-    /// Configura o PIN de coação e o modo de ação do cofre falso (Fase 9).
-    pub fn configure_duress_pin(&self, duress_pin: &str, action_mode: u8) -> Result<()> {
-        self.with_conn(|conn| {
-            let is_enabled = if duress_pin.is_empty() { 0 } else { 1 };
-            conn.execute(
-                "INSERT INTO decoy_vault_config (id, is_enabled, duress_pin, action_mode)
-                 VALUES (0, ?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET
-                    is_enabled = excluded.is_enabled,
-                    duress_pin = excluded.duress_pin,
-                    action_mode = excluded.action_mode",
-                rusqlite::params![is_enabled, duress_pin, action_mode as i64],
-            )
-            .map_err(|_| Error::Store)?;
-            Ok(())
-        })
-    }
-
-    /// Consulta a configuração do cofre falso (Fase 9).
-    pub fn get_decoy_vault_config(&self) -> Result<Option<(bool, Option<String>, u8)>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT is_enabled, duress_pin, action_mode FROM decoy_vault_config WHERE id = 0",
-                [],
-                |row| {
-                    let enabled: i64 = row.get(0)?;
-                    let pin: Option<String> = row.get(1)?;
-                    let mode: i64 = row.get(2)?;
-                    Ok((enabled != 0, pin, mode as u8))
-                },
-            )
-            .optional()
-            .map_err(|_| Error::Store)
-        })
-    }
-
     /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência nova.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_file_transfer(

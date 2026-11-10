@@ -303,13 +303,6 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
-  }) =>
-      throw UnimplementedError();
-
-  @override
   Future<String> exportEncryptedBackup({required String destPath}) =>
       throw UnimplementedError();
 

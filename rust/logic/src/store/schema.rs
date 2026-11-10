@@ -89,6 +89,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     "\
     ALTER TABLE messages ADD COLUMN file_id BLOB;
     CREATE INDEX IF NOT EXISTS idx_messages_file_id ON messages (file_id);",
+    // O PIN de coação vive no Dart (hash); esta tabela guardava o PIN em claro
+    // e nenhum código a lê mais. O DROP também apaga o dado de quem já gravou.
+    "DROP TABLE IF EXISTS decoy_vault_config;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -133,7 +136,6 @@ mod tests {
             "ephemeral_message_keys",
             "app_config",
             "message_reactions",
-            "decoy_vault_config",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -268,14 +270,36 @@ mod tests {
             rusqlite::params![msg_id, [9u8; 16].as_slice()],
         )
         .unwrap();
+    }
 
-        // Valida decoy_vault_config
+    #[test]
+    fn drops_plaintext_duress_pin_table_from_existing_databases() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let pin_migration = MIGRATIONS
+            .iter()
+            .position(|m| m.contains("DROP TABLE IF EXISTS decoy_vault_config"))
+            .unwrap();
+        for migration in &MIGRATIONS[..pin_migration] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", pin_migration as i64).unwrap();
         conn.execute(
             "INSERT INTO decoy_vault_config (id, is_enabled, duress_pin, action_mode)
              VALUES (0, 1, '1234', 1)",
             [],
         )
         .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE name = 'decoy_vault_config'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!exists);
     }
 
     #[test]

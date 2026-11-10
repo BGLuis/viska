@@ -174,6 +174,73 @@ void main() {
       );
     });
 
+    testWidgets('warns in the banner that the source device keeps the identity', (
+      WidgetTester tester,
+    ) async {
+      tester.view.physicalSize = const Size(800, 1800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(home: RestoreScreen(core: _FakeCore())),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('O aparelho de origem continuará com a mesma identidade'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('success message tells to erase the source device', (
+      WidgetTester tester,
+    ) async {
+      tester.view.physicalSize = const Size(800, 1800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final backupFile = File('${tempDir.path}/warn_backup.viskasafe');
+      backupFile.writeAsStringSync('dummy-backup-content');
+
+      // Rota-base por baixo: o pop da tela de restauração não pode levar o
+      // Scaffold (e o SnackBar) embora junto com a única rota.
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<bool>(
+                    builder: (_) => RestoreScreen(core: _FakeCore()),
+                  ),
+                ),
+                child: const Text('abrir'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('abrir'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, _FakeCore.sample24Words);
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Caminho do arquivo'),
+        backupFile.path,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('restore_backup_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Restaurar Agora'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.textContaining('Apague agora o aparelho de origem'), findsOneWidget);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('successful restore triggers core and onRestored callback', (
       WidgetTester tester,
     ) async {
@@ -219,6 +286,13 @@ void main() {
 
       // Diálogo de confirmação deve aparecer
       expect(find.text('Confirmar Restauração'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.textContaining('mesma identidade'),
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.text('Restaurar Agora'));
       await tester.pumpAndSettle();
 

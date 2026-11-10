@@ -52,12 +52,6 @@ abstract class Core implements RustOpaqueInterface {
   /// entre aparelhos próximos em pareamento.
   Future<String> computeSasCode({required List<int> peerPayload});
 
-  /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
-  });
-
   /// Decodifica o formato interno devolvido por
   /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
   /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
