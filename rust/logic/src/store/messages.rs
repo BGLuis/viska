@@ -543,6 +543,41 @@ pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Marca uma mensagem de saída como falha. Só sai de `Pending`: uma mensagem
+/// que já foi `Sent` ou `Delivered` chegou ao par, e rebaixá-la a falha faria
+/// a UI oferecer um reenvio de algo que ele já recebeu.
+pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state = ?3",
+        rusqlite::params![
+            DeliveryState::Failed as i64,
+            message_id,
+            DeliveryState::Pending as i64
+        ],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Marca como falha os envios de arquivo e de nota de voz que ficaram
+/// `Pending`. A transferência vive só em memória (U-03): sem o handle ativo
+/// ela não retoma, então a linha não pode continuar como "Enviando…". Também
+/// a tira de `list_pending`, que reenviaria o nome do arquivo como texto.
+pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1
+         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)",
+        rusqlite::params![
+            DeliveryState::Failed as i64,
+            Direction::Outgoing as i64,
+            DeliveryState::Pending as i64,
+            PacketType::FileMetadata.to_u8() as i64,
+            PacketType::AudioChunk.to_u8() as i64,
+        ],
+    )
+    .map_err(|_| Error::Store)
+}
+
 /// Marca uma mensagem de saída como confirmada/entregue ao destinatário (via MSG_RECEIPT).
 pub fn mark_delivered(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     conn.execute(
@@ -1058,6 +1093,53 @@ mod tests {
             Err(Error::InvalidState(_))
         ));
         assert!(list_for_contact(&conn, &contact).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mark_failed_only_moves_pending_messages() {
+        let contact = [40u8; 16];
+        let conn = conn_with_contact(contact);
+        let pendente = insert_pending(&conn, &contact, PacketType::MsgText, "a", 0).unwrap();
+        let enviada = insert_pending(&conn, &contact, PacketType::MsgText, "b", 1).unwrap();
+        mark_sent(&conn, enviada).unwrap();
+
+        mark_failed(&conn, pendente).unwrap();
+        mark_failed(&conn, enviada).unwrap();
+
+        let listed = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryState::Failed);
+        assert_eq!(listed[1].delivery_state, DeliveryState::Sent);
+        assert!(list_pending(&conn, &contact).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fail_pending_transfers_spares_text_and_finished_sends() {
+        let contact = [41u8; 16];
+        let conn = conn_with_contact(contact);
+        let texto = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 0).unwrap();
+        let arquivo = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        let audio = insert_pending(&conn, &contact, PacketType::AudioChunk, "ab", 2).unwrap();
+        let concluido = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 3).unwrap();
+        mark_sent(&conn, concluido).unwrap();
+        insert_incoming(&conn, &contact, PacketType::FileMetadata, "c.bin", 4).unwrap();
+
+        assert_eq!(fail_pending_transfers(&conn).unwrap(), 2);
+
+        let by_id = |id: i64| {
+            list_for_contact(&conn, &contact)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .delivery_state
+        };
+        assert_eq!(by_id(texto), DeliveryState::Pending);
+        assert_eq!(by_id(arquivo), DeliveryState::Failed);
+        assert_eq!(by_id(audio), DeliveryState::Failed);
+        assert_eq!(by_id(concluido), DeliveryState::Sent);
+        let pendentes = list_pending(&conn, &contact).unwrap();
+        assert_eq!(pendentes.len(), 1);
+        assert_eq!(pendentes[0].id, texto);
     }
 
     #[test]

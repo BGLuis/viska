@@ -18,10 +18,14 @@ class _FakeP2PTransport implements P2PTransport {
 
   Object? connectError;
 
+  /// Segura `connect()` para simular um transporte que ainda não voltou.
+  Completer<void>? connectGate;
+
   @override
   Future<void> connect() async {
     connectCalls++;
     if (connectError != null) throw connectError!;
+    await connectGate?.future;
   }
 
   @override
@@ -194,6 +198,50 @@ void main() {
 
       expect(created[alice]!.closeCalls, 1);
       expect(created[bob]!.closeCalls, 1);
+    });
+
+    group('awaitConnected', () {
+      final contact = ContactId([7]);
+
+      test('returns once the transport connects', () async {
+        final gate = Completer<void>();
+        var gated = false;
+        router = P2PTransportRouter(
+          core: _UnusedCore(),
+          transportFactory: (_, id) {
+            final transport = _FakeP2PTransport()..connectGate = gate;
+            created[id] = transport;
+            gated = true;
+            return transport;
+          },
+        );
+
+        final waiting = router.awaitConnected(contact, timeout: const Duration(seconds: 5));
+        gate.complete();
+        await waiting;
+
+        expect(gated, isTrue);
+      });
+
+      test('retries with a fresh transport after a failure', () async {
+        nextConnectError = StateError('sem rota');
+
+        await router.awaitConnected(contact, timeout: const Duration(seconds: 10));
+
+        expect(created[contact]!.connectError, isNull, reason: 'o segundo transporte é o que conectou');
+      });
+
+      test('times out when the transport never connects', () async {
+        router = P2PTransportRouter(
+          core: _UnusedCore(),
+          transportFactory: (_, _) => _FakeP2PTransport()..connectGate = Completer<void>(),
+        );
+
+        await expectLater(
+          router.awaitConnected(contact, timeout: const Duration(milliseconds: 50)),
+          throwsA(isA<TimeoutException>()),
+        );
+      });
     });
   });
 }

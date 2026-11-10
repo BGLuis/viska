@@ -14,6 +14,8 @@ import '../../common_widgets/identity/transport_pill.dart';
 import '../../transport/message_reception_service.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
+import '../../transport/transfer_foreground_service.dart';
+import '../lock/lock_controller.dart';
 import '../pairing/widgets/safety_number_qr_dialog.dart';
 import '../pairing/widgets/safety_number_view.dart';
 import 'chat_controller.dart';
@@ -417,7 +419,18 @@ class _ChatScreenState extends State<ChatScreen> {
   /// selecionado pelo canal `file` do transporte P2P, sem passar pela UI de
   /// texto. Sem filtro de tipo — o protocolo aceita qualquer arquivo.
   Future<void> _handlePickAndSendFile() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: false);
+    // O seletor é outra atividade: o app vai para segundo plano e, sem o
+    // serviço em primeiro plano, o Android congela o processo e derruba os
+    // sockets. O guard evita ainda que essa ida ao segundo plano bloqueie o app.
+    final lease = await TransferForegroundService.shared.acquire();
+    final FilePickerResult? result;
+    try {
+      result = await LockController.guardTransient(
+        () => FilePicker.platform.pickFiles(allowMultiple: false),
+      );
+    } finally {
+      await lease.release();
+    }
     if (result == null || result.files.single.path == null) return;
     final file = result.files.single;
 

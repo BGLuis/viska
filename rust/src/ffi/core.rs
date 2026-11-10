@@ -74,6 +74,9 @@ impl Core {
         for id in &active_ids {
             let _ = store.delete_file_transfer(id);
         }
+        // Sem handle em memória o envio não retoma; a linha na timeline não pode
+        // continuar "Enviando…" depois de reiniciar.
+        let _ = store.fail_pending_transfers();
         let surviving = std::collections::HashSet::new();
         viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
 
@@ -102,6 +105,8 @@ impl Core {
             }
             transfers.clear();
         }
+        // As transferências acima foram abortadas: o mesmo vale para as linhas.
+        let _ = self.store.fail_pending_transfers();
         if let Ok(active_ids) = self.store.list_active_file_transfer_ids() {
             for id in &active_ids {
                 let _ = self.store.delete_file_transfer(id);

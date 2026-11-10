@@ -16,6 +16,7 @@ import '../../transport/multipeer/multipeer_transport.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
 import '../../transport/selecting_p2p_transport.dart';
+import '../../transport/transfer_foreground_service.dart';
 import '../../transport/webrtc_p2p_transport.dart';
 import '../../transport/webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 import '../../transport/wifi_aware/wifi_aware_transport.dart';
@@ -84,7 +85,11 @@ class ChatController extends ChangeNotifier {
     MessageReceptionService? receptionService,
     VoiceRecorder? recorder,
     VoicePlayer? player,
+    TransferForegroundService? foregroundService,
+    Duration connectTimeout = const Duration(seconds: 30),
   })  : _core = core,
+        _foregroundService = foregroundService ?? TransferForegroundService.shared,
+        _connectTimeout = connectTimeout,
         _router = router,
         _contactId = contactId,
         _ownsReceptionService = receptionService == null,
@@ -94,6 +99,12 @@ class ChatController extends ChangeNotifier {
 
   final Core _core;
   final P2PTransportRouter _router;
+  final TransferForegroundService _foregroundService;
+
+  /// Quanto `sendFile` espera o transporte do contato antes de desistir. Mais
+  /// que isso e a pessoa já deixou de olhar a tela; menos e uma reconexão
+  /// lenta depois do seletor falharia à toa.
+  final Duration _connectTimeout;
   final bool _ownsReceptionService;
   final ContactId _contactId;
   final MessageReceptionService _receptionService;
@@ -446,12 +457,27 @@ class ChatController extends ChangeNotifier {
     _sendingFile = true;
     _fileError = null;
     notifyListeners();
+    // Mantém o app fora do congelamento enquanto espera a conexão e envia: sem
+    // isso o sistema derruba os sockets assim que o app vai para segundo plano.
+    final lease = await _foregroundService.acquire();
+    int? startedMessageId;
     try {
+      // A conexão vem antes de `startSendFile`: ele grava a mensagem como
+      // pendente, e sem par alcançável ela ficaria "Enviando…" sem nunca sair.
+      // Bloco próprio para o timeout não se confundir com falha depois de a
+      // mensagem existir, que precisa ser marcada como falha.
+      try {
+        await _router.awaitConnected(_contactId, timeout: _connectTimeout);
+      } on TimeoutException {
+        _fileError = 'Sem conexão com o contato. Tente enviar o arquivo de novo.';
+        return;
+      }
       final started = await _core.startSendFile(
         peerDeviceId: _contactId.deviceId,
         filePath: filePath,
         useLan: activeTransport == ActiveTransportType.lanDirect,
       );
+      startedMessageId = started.messageId;
       _receivedFilePaths[_hex(started.fileId)] = filePath;
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
       await _refreshMessages();
@@ -461,9 +487,23 @@ class ChatController extends ChangeNotifier {
       await _refreshMessages();
     } catch (_) {
       _fileError = 'Não foi possível enviar o arquivo.';
+      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
     } finally {
       _sendingFile = false;
       notifyListeners();
+      await lease.release();
+    }
+  }
+
+  /// Persiste a falha de um envio interrompido, para que a linha não volte a
+  /// "Enviando…" depois de reiniciar o app. Nunca lança: o erro que importa à
+  /// pessoa já está em [fileError].
+  Future<void> _markOutgoingFailed(int messageId) async {
+    try {
+      await _core.markMessageFailed(messageId: messageId);
+      await _refreshMessages();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] falha ao marcar envio como falho: $e');
     }
   }
 
@@ -570,6 +610,9 @@ class ChatController extends ChangeNotifier {
     _sendingVoice = true;
     notifyListeners();
     final sanitizedPath = '$rawPath.viska-audio';
+    // Sem `awaitConnected` nem serviço em primeiro plano, de propósito: a nota
+    // é curta, gravada com o app aberto; sem conexão ela falha e é marcada.
+    int? startedMessageId;
     try {
       // Desmonta o Ogg que o gravador produziu — sanitização por subtração,
       // não filtro (Fase 5, F1, D16): o formato interno resultante não tem
@@ -583,6 +626,7 @@ class ChatController extends ChangeNotifier {
         audioPath: sanitizedPath,
         useLan: activeTransport == ActiveTransportType.lanDirect,
       );
+      startedMessageId = started.messageId;
 
       // Cacheia o áudio interno antes de apagar o arquivo sanitizado — permite
       // tocar a própria nota enviada, sem round-trip pela rede.
@@ -598,6 +642,7 @@ class ChatController extends ChangeNotifier {
       await _refreshMessages();
     } catch (_) {
       _voiceError = 'Não foi possível enviar a nota de voz.';
+      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
     } finally {
       _sendingVoice = false;
       notifyListeners();
@@ -605,7 +650,17 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _pumpOutgoingChunks(Uint8List fileId) async {
+    // O roteador esquece o transporte que falhou, então trocar de instância (ou
+    // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
+    // `FILE_FEEDBACK` que não vem mais por um socket morto.
+    final transport = _router.transportFor(_contactId);
+    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
+    // na checagem abaixo para sempre.
+    if (transport == null) throw const TransportUnavailableException();
     while (true) {
+      if (!identical(_router.transportFor(_contactId), transport)) {
+        throw const TransportUnavailableException();
+      }
       final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
       if (chunk == null) {
         final progress = await _core.transferProgress(fileId: fileId);

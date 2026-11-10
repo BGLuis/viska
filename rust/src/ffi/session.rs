@@ -306,6 +306,14 @@ impl Core {
         Ok(())
     }
 
+    /// Marca uma mensagem de saída como falha — chamar quando o envio de um
+    /// arquivo é interrompido por queda do transporte. Só afeta mensagens
+    /// ainda `pending`.
+    pub fn mark_message_failed(&self, message_id: i64) -> Result<(), FfiError> {
+        self.store.mark_message_failed(message_id)?;
+        Ok(())
+    }
+
     /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
     pub fn mark_message_delivered(&self, message_id: i64) -> Result<(), FfiError> {
         self.store.mark_message_delivered(message_id)?;
@@ -717,6 +725,50 @@ mod tests {
         assert_eq!(flushed.len(), 1);
         assert_eq!(flushed[0].message_id, sealed.message_id);
         assert!(flushed[0].bytes.is_some());
+    }
+
+    #[test]
+    fn reopening_core_fails_pending_file_sends() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+        let core_b = Core::open(dir_b.path().to_str().unwrap().to_string()).unwrap();
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        let device_id: [u8; 16] = contact.device_id.clone().try_into().unwrap();
+        let arquivo = core_a
+            .store
+            .insert_pending_message(&device_id, viska_proto::wire::packet_type::PacketType::FileMetadata, "a.bin", 1)
+            .unwrap();
+        let texto = core_a
+            .store
+            .insert_pending_message(&device_id, viska_proto::wire::packet_type::PacketType::MsgText, "oi", 2)
+            .unwrap();
+        drop(core_a);
+
+        let reopened = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+
+        let states: Vec<_> = reopened
+            .list_messages(contact.device_id)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.delivery_state))
+            .collect();
+        assert!(states.contains(&(arquivo, DeliveryStateDto::Failed)));
+        assert!(states.contains(&(texto, DeliveryStateDto::Pending)));
+    }
+
+    #[test]
+    fn mark_message_failed_shows_up_in_listing() {
+        let p = paired_pair();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "x".to_string())
+            .unwrap();
+
+        p.core_a.mark_message_failed(sealed.message_id).unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Failed);
     }
 
     #[test]

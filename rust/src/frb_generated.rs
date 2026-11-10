@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1394035733;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2077744059;
 
 // Section: executor
 
@@ -1682,6 +1682,59 @@ fn wire__crate__ffi__core__Core_mark_message_delivered_impl(
                     }
                     let api_that_guard = api_that_guard.unwrap();
                     let output_ok = crate::ffi::core::Core::mark_message_delivered(
+                        &*api_that_guard,
+                        api_message_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__ffi__core__Core_mark_message_failed_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_mark_message_failed",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_message_id = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::mark_message_failed(
                         &*api_that_guard,
                         api_message_id,
                     )?;
@@ -4256,126 +4309,129 @@ fn pde_ffi_dispatcher_primary_impl(
             data_len,
         ),
         32 => {
-            wire__crate__ffi__core__Core_mark_message_read_impl(port, ptr, rust_vec_len, data_len)
+            wire__crate__ffi__core__Core_mark_message_failed_impl(port, ptr, rust_vec_len, data_len)
         }
         33 => {
+            wire__crate__ffi__core__Core_mark_message_read_impl(port, ptr, rust_vec_len, data_len)
+        }
+        34 => {
             wire__crate__ffi__core__Core_mark_message_sent_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__crate__ffi__core__Core_match_discovered_beacon_impl(
+        35 => wire__crate__ffi__core__Core_match_discovered_beacon_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__ffi__core__Core_my_device_id_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__ffi__core__Core_my_nickname_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__ffi__core__Core_my_qr_payload_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__ffi__core__Core_next_outgoing_wire_chunk_impl(
+        36 => wire__crate__ffi__core__Core_my_device_id_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__ffi__core__Core_my_nickname_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__ffi__core__Core_my_qr_payload_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__ffi__core__Core_next_outgoing_wire_chunk_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__ffi__core__Core_open_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__ffi__core__Core_open_signaling_payload_impl(
+        40 => wire__crate__ffi__core__Core_open_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__ffi__core__Core_open_signaling_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__ffi__core__Core_pair_from_qr_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__ffi__core__Core_pending_audio_offers_impl(
+        42 => wire__crate__ffi__core__Core_pair_from_qr_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__ffi__core__Core_pending_audio_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => {
+        44 => {
             wire__crate__ffi__core__Core_pending_file_offers_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => {
+        45 => {
             wire__crate__ffi__core__Core_reject_file_offer_impl(port, ptr, rust_vec_len, data_len)
         }
-        45 => wire__crate__ffi__core__Core_repair_from_qr_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__ffi__core__Core_restore_encrypted_backup_impl(
+        46 => wire__crate__ffi__core__Core_repair_from_qr_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__ffi__core__Core_restore_encrypted_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        47 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
+        48 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        49 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
+        50 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        50 => {
+        51 => {
             wire__crate__ffi__core__Core_seal_outgoing_text_impl(port, ptr, rust_vec_len, data_len)
         }
-        51 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
+        52 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
+        53 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        54 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
-        55 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
+        55 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
+        56 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        56 => {
+        57 => {
             wire__crate__ffi__core__Core_set_ephemeral_ttl_impl(port, ptr, rust_vec_len, data_len)
         }
-        57 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
-        59 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
-        60 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
+        58 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
+        59 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
+        61 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
+        62 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        62 => {
+        63 => {
             wire__crate__ffi__core__Core_transfer_progress_impl(port, ptr, rust_vec_len, data_len)
         }
-        63 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
+        64 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        64 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
-        65 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
-        66 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
+        65 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
+        67 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => wire__crate__ffi__framing__frame_for_local_socket_impl(
+        68 => wire__crate__ffi__framing__frame_for_local_socket_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => {
+        69 => {
             wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),

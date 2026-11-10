@@ -223,6 +223,11 @@ abstract class Core implements RustOpaqueInterface {
   /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
   Future<void> markMessageDelivered({required PlatformInt64 messageId});
 
+  /// Marca uma mensagem de saída como falha — chamar quando o envio de um
+  /// arquivo é interrompido por queda do transporte. Só afeta mensagens
+  /// ainda `pending`.
+  Future<void> markMessageFailed({required PlatformInt64 messageId});
+
   /// Marca uma mensagem como lida, disparando o temporizador de expiração.
   Future<void> markMessageRead({required PlatformInt64 messageId});
 

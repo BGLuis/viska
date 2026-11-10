@@ -272,6 +272,16 @@ impl Store {
         self.with_conn(|conn| messages::mark_sent(conn, message_id))
     }
 
+    /// Marca uma mensagem de saída `Pending` como falha.
+    pub fn mark_message_failed(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_failed(conn, message_id))
+    }
+
+    /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
+    pub fn fail_pending_transfers(&self) -> Result<usize> {
+        self.with_conn(messages::fail_pending_transfers)
+    }
+
     /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
     pub fn mark_message_delivered(&self, message_id: i64) -> Result<()> {
         self.with_conn(|conn| messages::mark_delivered(conn, message_id))

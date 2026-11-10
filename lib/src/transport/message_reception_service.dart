@@ -8,6 +8,7 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
+import 'package:viska/src/transport/transfer_foreground_service.dart';
 import 'package:viska/src/transport/webrtc_transport.dart'
     show TransportConnectionEvent, TransportConnectionState;
 
@@ -71,8 +72,10 @@ class MessageReceptionService {
     String? appDirPath,
     Future<String> Function()? tempDirProvider,
     Future<String> Function()? receivedDirProvider,
+    TransferForegroundService? foregroundService,
   })  : _core = core,
         _router = router,
+        _foregroundService = foregroundService ?? TransferForegroundService.shared,
         _appDirPath = appDirPath,
         _tempDirProvider = tempDirProvider,
         _receivedDirProvider = receivedDirProvider {
@@ -86,6 +89,7 @@ class MessageReceptionService {
   final String? _appDirPath;
   final Future<String> Function()? _tempDirProvider;
   final Future<String> Function()? _receivedDirProvider;
+  final TransferForegroundService _foregroundService;
 
   /// Transporte ao qual a recepção de cada contato está ligada. O roteador
   /// troca o transporte de um contato quando o anterior falha, e a recepção
@@ -94,6 +98,11 @@ class MessageReceptionService {
   final Map<ContactId, P2PTransport> _boundTransports = {};
   final Map<ContactId, StreamSubscription<TransportConnectionEvent>> _connectionSubs = {};
   final Map<ContactId, Timer> _retryTimers = {};
+
+  /// Contatos cujo transporte vinculado já reportou queda e ainda não foi
+  /// substituído. Só eles são recriados ao voltar para o primeiro plano: um
+  /// transporte vivo não pode ser derrubado só porque o app mudou de tela.
+  final Set<ContactId> _lostTransports = {};
 
   /// Espera antes de recriar o transporte de um contato que falhou: evita um
   /// laço apertado de reconexão quando o par está simplesmente offline.
@@ -157,6 +166,7 @@ class MessageReceptionService {
     if (transport == null || identical(_boundTransports[contactId], transport)) return;
     _boundTransports[contactId] = transport;
     _retryTimers.remove(contactId)?.cancel();
+    _lostTransports.remove(contactId);
     unawaited(_incomingSubs.remove(contactId)?.cancel());
     unawaited(_incomingFileSubs.remove(contactId)?.cancel());
     unawaited(_connectionSubs.remove(contactId)?.cancel());
@@ -164,6 +174,7 @@ class MessageReceptionService {
     _connectionSubs[contactId] = transport.connectionEvents.listen((event) {
       if (event.state == TransportConnectionState.failed ||
           event.state == TransportConnectionState.closed) {
+        _lostTransports.add(contactId);
         _scheduleRetry(contactId, transport);
       }
     });
@@ -200,6 +211,18 @@ class MessageReceptionService {
       if (!identical(_boundTransports[contactId], failed)) return;
       ensureListening(contactId);
     });
+  }
+
+  /// Chamado quando o app volta ao primeiro plano. O sistema congela o app
+  /// enquanto o seletor de arquivos (ou outra tela do sistema) está aberto e
+  /// derruba os sockets; refazer a conexão aqui evita esperar o atraso de
+  /// [_scheduleRetry]. Só recria o que já caiu: com a sessão intacta nada muda.
+  void handleAppResumed() {
+    if (_disposed || _isPaused) return;
+    for (final contactId in _lostTransports.toList()) {
+      _retryTimers.remove(contactId)?.cancel();
+      ensureListening(contactId);
+    }
   }
 
   Future<void> _handleIncomingRaw(ContactId contactId, Uint8List bytes) async {
@@ -262,6 +285,7 @@ class MessageReceptionService {
     try {
       final ingested = await _core.ingestIncomingWireBytes(wireBytes: wireBytes);
       if (ingested == null) return;
+      _holdForegroundForReceive();
 
       final hexId = _hex(ingested.fileId);
 
@@ -347,6 +371,31 @@ class MessageReceptionService {
   void _stopFeedback(String hexId) {
     _feedbackTimers.remove(hexId)?.cancel();
     _lastFeedbackBlocksDone.remove(hexId);
+    if (_feedbackTimers.isEmpty) _releaseForegroundForReceive();
+  }
+
+  /// Sem chunk novo por este tempo o recebimento é dado como parado: um emissor
+  /// que sumiu não pode deixar a notificação do serviço acesa para sempre.
+  static const _receiveIdleLimit = Duration(seconds: 60);
+  Future<TransferLease>? _receiveLease;
+  Timer? _receiveIdleTimer;
+
+  /// Mantém o processo vivo enquanto chegam chunks. Só adianta se o serviço
+  /// subir com o app visível (o Android recusa a partir do segundo plano), o
+  /// que vale para um recebimento que já estava em curso.
+  void _holdForegroundForReceive() {
+    if (_disposed) return;
+    _receiveLease ??= _foregroundService.acquire();
+    _receiveIdleTimer?.cancel();
+    _receiveIdleTimer = Timer(_receiveIdleLimit, _releaseForegroundForReceive);
+  }
+
+  void _releaseForegroundForReceive() {
+    _receiveIdleTimer?.cancel();
+    _receiveIdleTimer = null;
+    final lease = _receiveLease;
+    _receiveLease = null;
+    if (lease != null) unawaited(lease.then((l) => l.release()));
   }
 
   Future<String> _getReceivedDirectory() async {
@@ -514,11 +563,13 @@ class MessageReceptionService {
     }
     _feedbackTimers.clear();
     _lastFeedbackBlocksDone.clear();
+    _releaseForegroundForReceive();
     for (final sub in _connectionSubs.values) {
       await sub.cancel();
     }
     _connectionSubs.clear();
     _boundTransports.clear();
+    _lostTransports.clear();
     _establishedContacts.clear();
 
     await _eventsController.close();

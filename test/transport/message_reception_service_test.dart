@@ -3,12 +3,14 @@ import 'dart:io';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/transport/message_reception_service.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
+import 'package:viska/src/transport/transfer_foreground_service.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
 
 class _FakeP2PTransport implements P2PTransport {
@@ -43,6 +45,7 @@ class _FakeP2PTransport implements P2PTransport {
 
   void emitIncoming(Uint8List bytes) => _incoming.add(bytes);
   void emitIncomingFile(Uint8List bytes) => _incomingFile.add(bytes);
+  void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
 class _FakeReceptionCore implements Core {
@@ -200,6 +203,8 @@ class _FakeReceptionCore implements Core {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('MessageReceptionService', () {
     late ContactId contact;
     late _FakeReceptionCore core;
@@ -504,6 +509,139 @@ void main() {
 
           stopCadence(async);
         });
+      });
+    });
+
+    group('foreground service while receiving a file', () {
+      const channel = MethodChannel('viska/transfer_service');
+      late List<String> serviceCalls;
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+
+      TransferProgressDto progress({required bool complete}) => TransferProgressDto(
+            blocksDone: complete ? 1 : 0,
+            totalBlocks: 1,
+            bytesDone: BigInt.from(10),
+            isComplete: complete,
+          );
+
+      setUp(() {
+        serviceCalls = [];
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+          serviceCalls.add(call.method);
+          return null;
+        });
+        service = MessageReceptionService(
+          core: core,
+          router: router,
+          tempDirProvider: () async => tempDir.path,
+          foregroundService: TransferForegroundService(channel: channel, enabled: true),
+        );
+        core.sessionState = SessionStateKind.established;
+        core.pendingOffers = [];
+      });
+
+      tearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+
+      test('holds the service from the first chunk until the file completes', () async {
+        var complete = false;
+        core.ingestWireChunkHandler =
+            (_) => IngestedChunkDto(fileId: fileId, progress: progress(complete: complete));
+        core.receiveProgress = progress(complete: false);
+        await service.start();
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        await pumpEventQueue();
+        transport.emitIncomingFile(Uint8List.fromList([2]));
+        await pumpEventQueue();
+        expect(serviceCalls, ['start'], reason: 'um recebimento só sobe o serviço uma vez');
+
+        complete = true;
+        transport.emitIncomingFile(Uint8List.fromList([3]));
+        await pumpEventQueue();
+        expect(serviceCalls, ['start', 'stop']);
+      });
+
+      test('gives the service back when the sender goes silent', () {
+        fakeAsync((async) {
+          core.ingestWireChunkHandler =
+              (_) => IngestedChunkDto(fileId: fileId, progress: progress(complete: false));
+          core.receiveProgress = progress(complete: false);
+          unawaited(service.start());
+          async.flushMicrotasks();
+
+          transport.emitIncomingFile(Uint8List.fromList([1]));
+          async.flushMicrotasks();
+          expect(serviceCalls, ['start']);
+
+          async.elapse(const Duration(seconds: 61));
+          async.flushMicrotasks();
+          expect(serviceCalls, ['start', 'stop']);
+        });
+      });
+    });
+
+    group('app lifecycle', () {
+      late List<_FakeP2PTransport> created;
+
+      setUp(() {
+        created = [];
+        router = P2PTransportRouter(
+          core: core,
+          transportFactory: (_, _) {
+            final next = _FakeP2PTransport();
+            created.add(next);
+            return next;
+          },
+        );
+        service = MessageReceptionService(
+          core: core,
+          router: router,
+          tempDirProvider: () async => tempDir.path,
+        );
+      });
+
+      test('reconnects on resume', () async {
+        await service.start();
+        expect(created, hasLength(1));
+
+        created.first.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.failed, reason: 'socket caiu'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(created, hasLength(1), reason: 'a nova tentativa automática só vem depois do atraso');
+
+        service.handleAppResumed();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(created, hasLength(2), reason: 'voltar do seletor não espera o atraso da nova tentativa');
+      });
+
+      test('resume keeps live transport', () async {
+        await service.start();
+
+        service.handleAppResumed();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(created, hasLength(1));
+        expect(created.single.closeCalls, 0);
+      });
+
+      test('resume does not reconnect while the app is locked', () async {
+        await service.start();
+        created.first.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.failed, reason: 'socket caiu'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        service.pause();
+
+        service.handleAppResumed();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(created, hasLength(1), reason: 'o desbloqueio ressincroniza os contatos');
       });
     });
 
