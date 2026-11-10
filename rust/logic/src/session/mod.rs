@@ -45,7 +45,7 @@ use crate::{Error, Result};
 /// caso que a spec original nunca cobriu: um "monólogo" unidirecional em que
 /// o par nunca responde, e portanto a cadeia de envio nunca passa por um
 /// passo DH que zeraria `Ns` de novo. Cruzá-lo marca a sessão para renovação
-/// sem quebrar a mensagem que já está saindo — `docs/protocol.md` §11.3.
+/// sem quebrar a mensagem que já está saindo — `docs/protocol.md` §11.2.
 #[cfg(not(test))]
 const COUNTER_REHANDSHAKE_THRESHOLD: u32 = 1 << 24;
 /// Em teste, um limiar bem menor — testar o valor de produção exigiria
