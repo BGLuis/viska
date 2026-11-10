@@ -349,6 +349,18 @@ class ChatController extends ChangeNotifier {
   }
 
 
+  /// Reenvia um texto em `unknown`. A confirmação com o aviso de duplicata é
+  /// da tela; aqui só se pede o reenvio e se relê a lista.
+  Future<void> resendUnknown(int messageId) async {
+    try {
+      await _receptionService.resendUnknown(_contactId, messageId);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reenviar mensagem incerta: $e');
+    }
+    await _refreshMessages();
+    notifyListeners();
+  }
+
   Map<String, int> reactionsFor(int messageId) => _reactions[messageId] ?? const {};
 
   Set<String> userReactionsFor(int messageId) => _userReactions[messageId] ?? const {};

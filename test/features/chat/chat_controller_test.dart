@@ -204,6 +204,13 @@ class _FakeCore with FakeSessionEvents implements Core {
     requeueCalls.add(messageId);
   }
 
+  final resendUnknownCalls = <PlatformInt64>[];
+
+  @override
+  Future<void> resendUnknownMessage({required PlatformInt64 messageId}) async {
+    resendUnknownCalls.add(messageId);
+  }
+
   @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) async {
     markSentCalls.add(messageId);
@@ -2027,6 +2034,36 @@ void main() {
       await controller.initialize();
 
       expect(controller.messages.single.deliveryState, DeliveryStateDto.expired);
+    });
+
+    test('an unknown outgoing text is listed with the unknown state', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: 'oi',
+          deliveryState: DeliveryStateDto.unknown,
+          createdAtUnixSecs: PlatformInt64Util.from(1),
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+      controller = makeController();
+
+      await controller.initialize();
+
+      expect(controller.messages.single.deliveryState, DeliveryStateDto.unknown);
+    });
+
+    test('resendUnknown asks the core to requeue the row', () async {
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.resendUnknown(7);
+
+      expect(core.resendUnknownCalls, [7]);
     });
   });
 }

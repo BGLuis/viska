@@ -489,6 +489,14 @@ impl Core {
         Ok(())
     }
 
+    /// Devolve à fila um texto `Unknown` (não se sabe se chegou ao par), por
+    /// pedido explícito da pessoa. Mantém a linha e o `global_id`; o chamador
+    /// drena a fila em seguida. Só afeta mensagens `unknown`.
+    pub fn resend_unknown_message(&self, message_id: i64) -> Result<(), FfiError> {
+        self.store.resend_unknown_message(message_id)?;
+        Ok(())
+    }
+
     /// Marca uma mensagem de saída como falha — chamar quando o envio de um
     /// arquivo é interrompido por queda do transporte. Só afeta mensagens
     /// ainda `pending`.
@@ -614,6 +622,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         viska_proto::store::messages::DeliveryState::Sending => DeliveryStateDto::Sending,
         viska_proto::store::messages::DeliveryState::Rejected => DeliveryStateDto::Rejected,
         viska_proto::store::messages::DeliveryState::Expired => DeliveryStateDto::Expired,
+        viska_proto::store::messages::DeliveryState::Unknown => DeliveryStateDto::Unknown,
     };
 
     let (kind, body, audio_file_id) =
@@ -1100,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn reopening_core_requeues_sending_messages() {
+    fn reopening_core_marks_sending_messages_unknown() {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
@@ -1117,11 +1126,11 @@ mod tests {
         let reopened = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
 
         let listed = reopened.list_messages(contact.device_id).unwrap();
-        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Unknown);
     }
 
     #[test]
-    fn locking_core_requeues_sending_messages() {
+    fn locking_core_marks_sending_messages_unknown() {
         let p = paired_pair();
         let sealed = p
             .core_a
@@ -1140,7 +1149,7 @@ mod tests {
 
         let listed = p.core_a.list_messages(p.device_id_b).unwrap();
         assert_eq!(listed[0].id, sealed.message_id);
-        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Unknown);
     }
 
     #[test]
@@ -1171,6 +1180,67 @@ mod tests {
             .collect();
         assert!(states.contains(&(arquivo, DeliveryStateDto::Failed)));
         assert!(states.contains(&(texto, DeliveryStateDto::Pending)));
+    }
+
+    /// Texto selado antes da sessão e já drenado: a linha fica `Sending`.
+    fn sending_text(p: &PairedCores) -> i64 {
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "oi".to_string())
+            .unwrap();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        sealed.message_id
+    }
+
+    #[test]
+    fn unknown_text_is_not_redrained_by_flush_pending() {
+        let p = paired_pair();
+        sending_text(&p);
+
+        p.core_a.store.mark_sending_messages_unknown().unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b.clone()).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Unknown);
+        assert!(p.core_a.flush_pending(p.device_id_b).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resend_unknown_message_requeues_the_same_row_for_the_next_drain() {
+        let p = paired_pair();
+        let id = sending_text(&p);
+        p.core_a.store.mark_sending_messages_unknown().unwrap();
+
+        p.core_a.resend_unknown_message(id).unwrap();
+        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0].message_id, id);
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
+    }
+
+    #[test]
+    fn resend_unknown_message_ignores_a_row_that_is_not_unknown() {
+        let p = paired_pair();
+        let id = sending_text(&p);
+
+        p.core_a.resend_unknown_message(id).unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
+    }
+
+    #[test]
+    fn late_mark_message_sent_promotes_unknown_to_sent() {
+        let p = paired_pair();
+        let id = sending_text(&p);
+        p.core_a.store.mark_sending_messages_unknown().unwrap();
+
+        p.core_a.mark_message_sent(id).unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sent);
     }
 
     #[test]

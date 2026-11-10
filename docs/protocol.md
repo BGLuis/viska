@@ -696,9 +696,13 @@ quem decide abri-la é a pessoa, pelo aviso do chat — nunca uma tentativa auto
 de handshake depois de 8 falhas de AEAD. `Core::reset_session` descarta a sessão e abre outra com o
 mesmo par (não repete o pareamento, só o AKE de §4). Só age em `Failed` ou depois do limiar de §11.2;
 com a sessão `Established` sã ou em handshake não faz nada. Mensagens de texto que estavam em
-`Sending` voltam à fila (`pending`) e são cifradas de novo na sessão nova; os envios de arquivo e de
-nota de voz em andamento com o par são cancelados e as linhas marcadas como falha, porque o
-`FILE_METADATA` foi selado na sessão que deixou de existir. O estado de cada sessão é empurrado ao
+`Sending` voltam à fila (`pending`) e são cifradas de novo na sessão nova; a sessão que as selou foi
+descartada e a falha é local, mas fica o risco residual de duplicata se o par chegou a recebê-las
+antes. Isso difere do texto que estava em `Sending` quando a Core abriu ou foi trancada: ali não se
+sabe se os bytes saíram, e recifrá-los entregaria a mesma mensagem duas vezes, então ele vira
+`unknown` e só a pessoa o reenvia (a linha e o `global_id` são os mesmos, e o par deduplica). Os
+envios de arquivo e de nota de voz em andamento com o par são cancelados e as linhas marcadas como
+falha, porque o `FILE_METADATA` foi selado na sessão que deixou de existir. O estado de cada sessão é empurrado ao
 Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
 segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
 

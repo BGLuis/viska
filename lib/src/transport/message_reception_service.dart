@@ -535,6 +535,15 @@ class MessageReceptionService {
     }
   }
 
+  /// Reenvia um texto cuja entrega ficou incerta (`unknown`), por pedido da
+  /// pessoa. A linha volta à fila com o mesmo `global_id`, então o par ignora a
+  /// cópia se a primeira tinha chegado. A drenagem é a mesma de qualquer
+  /// pendente; sem sessão estabelecida ela espera na fila.
+  Future<void> resendUnknown(ContactId contactId, int messageId) async {
+    await _core.resendUnknownMessage(messageId: messageId);
+    await _flushPending(contactId);
+  }
+
   Future<void> _flushPending(ContactId contactId) async {
     try {
       final sealed = await _core.flushPending(peerDeviceId: contactId.deviceId);

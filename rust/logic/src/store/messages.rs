@@ -45,10 +45,14 @@ pub enum DeliveryState {
     /// cifrem o mesmo corpo duas vezes.
     Sending = 4,
     /// O destinatário viu a oferta de arquivo e a recusou (`FILE_REJECT`, §7.7).
-    /// O valor 5 é o próximo livre: `delivery_state` é INTEGER sem CHECK, então o novo estado não pede migration.
+    /// `delivery_state` é INTEGER sem CHECK, então um estado novo não pede migration (em uso: 0 a 7; o próximo livre é o 8).
     Rejected = 5,
+    /// Os bytes cifrados saíram do Rust, mas o processo morreu (ou a Core foi
+    /// trancada) antes de saber se o transporte os entregou. Fica fora de
+    /// `list_pending`: recifrar e reenviar sozinho entregaria a mesma mensagem
+    /// duas vezes ao par. Só a pessoa decide reenviar (`resend_unknown`).
+    Unknown = 6,
     /// O destinatário nunca respondeu à oferta dentro do prazo do emissor (§7.7).
-    /// O 6 está reservado a outro estado, por isso o salto.
     Expired = 7,
 }
 
@@ -61,6 +65,7 @@ impl DeliveryState {
             3 => Ok(Self::Failed),
             4 => Ok(Self::Sending),
             5 => Ok(Self::Rejected),
+            6 => Ok(Self::Unknown),
             7 => Ok(Self::Expired),
             _ => Err(Error::Store),
         }
@@ -569,16 +574,20 @@ pub fn sweep_expired_ephemeral_messages(
 
 /// Marca uma mensagem de saída como entregue ao transporte.
 ///
-/// Só avança de `Pending`/`Sending`: o envio de um arquivo termina depois do
-/// bombeamento, e uma recusa que chegou no meio dele não pode ser sobrescrita.
+/// Só avança de `Pending`/`Sending`/`Unknown`: o envio de um arquivo termina
+/// depois do bombeamento, e uma recusa que chegou no meio dele não pode ser
+/// sobrescrita. `Unknown` entra porque `lock()` pode marcá-lo enquanto um envio
+/// em voo ainda vai terminar: o `send` que retornou sem erro é a confirmação
+/// que faltava, e deixar a linha incerta ofereceria um reenvio duplicado.
 pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     conn.execute(
-        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4)",
+        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4, ?5)",
         rusqlite::params![
             DeliveryState::Sent as i64,
             message_id,
             DeliveryState::Pending as i64,
-            DeliveryState::Sending as i64
+            DeliveryState::Sending as i64,
+            DeliveryState::Unknown as i64
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -612,21 +621,32 @@ pub fn requeue(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     transition(conn, message_id, DeliveryState::Sending, DeliveryState::Pending)
 }
 
-/// Devolve à fila toda mensagem deixada em `Sending`. Usada na abertura: o
-/// envio em voo não sobrevive ao processo, e sem isso a linha ficaria presa.
-pub fn requeue_all_sending(conn: &rusqlite::Connection) -> Result<usize> {
+/// Marca como `Unknown` todo texto deixado em `Sending`. Usada na abertura e em
+/// `lock()`: ali o Rust perdeu a pista de se os bytes saíram, e devolvê-los à
+/// fila recifraria uma mensagem que o par talvez já tenha. Só texto, porque
+/// `list_pending` (que `Unknown` evita) só drena `MSG_TEXT`.
+pub fn mark_all_sending_unknown(conn: &rusqlite::Connection) -> Result<usize> {
     conn.execute(
-        "UPDATE messages SET delivery_state = ?1 WHERE direction = ?2 AND delivery_state = ?3",
+        "UPDATE messages SET delivery_state = ?1
+         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type = ?4",
         rusqlite::params![
-            DeliveryState::Pending as i64,
+            DeliveryState::Unknown as i64,
             Direction::Outgoing as i64,
-            DeliveryState::Sending as i64
+            DeliveryState::Sending as i64,
+            PacketType::MsgText.to_u8() as i64
         ],
     )
     .map_err(|_| Error::Store)
 }
 
-/// Como [`requeue_all_sending`], restrita a um contato: o reset de uma sessão
+/// Devolve à fila um texto `Unknown`, por pedido explícito da pessoa. A linha
+/// (e o `global_id` dentro do corpo) é a mesma, então o par deduplica se a
+/// primeira cópia tinha chegado.
+pub fn resend_unknown(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+    transition(conn, message_id, DeliveryState::Unknown, DeliveryState::Pending)
+}
+
+/// Devolve à fila os `Sending` de um contato: o reset de uma sessão
 /// falha não pode mexer nos envios em voo das sessões saudáveis dos outros.
 pub fn requeue_sending_for_contact(
     conn: &rusqlite::Connection,
@@ -1323,26 +1343,90 @@ mod tests {
     }
 
     #[test]
-    fn requeue_all_sending_leaves_sent_and_incoming_rows_alone() {
+    fn mark_all_sending_unknown_leaves_sent_incoming_and_file_rows_alone() {
         let contact = [11u8; 16];
         let conn = conn_with_contact(contact);
         let sending = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
         let sent = insert_pending(&conn, &contact, PacketType::MsgText, "b", 2).unwrap();
         let incoming = insert_incoming(&conn, &contact, PacketType::MsgText, "c", 3).unwrap();
+        let file = insert_pending(&conn, &contact, PacketType::FileMetadata, "f.bin", 4).unwrap();
         mark_sending(&conn, sending).unwrap();
         mark_sent(&conn, sent).unwrap();
+        mark_sending(&conn, file).unwrap();
 
-        let reverted = requeue_all_sending(&conn).unwrap();
+        let marked = mark_all_sending_unknown(&conn).unwrap();
 
-        assert_eq!(reverted, 1);
+        assert_eq!(marked, 1);
         let states: Vec<_> = list_for_contact(&conn, &contact)
             .unwrap()
             .into_iter()
             .map(|m| (m.id, m.delivery_state))
             .collect();
-        assert!(states.contains(&(sending, DeliveryState::Pending)));
+        assert!(states.contains(&(sending, DeliveryState::Unknown)));
         assert!(states.contains(&(sent, DeliveryState::Sent)));
         assert!(states.contains(&(incoming, DeliveryState::Delivered)));
+        assert!(states.contains(&(file, DeliveryState::Sending)));
+    }
+
+    #[test]
+    fn unknown_row_is_not_listed_as_pending_until_resent() {
+        let contact = [15u8; 16];
+        let conn = conn_with_contact(contact);
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 1).unwrap();
+        mark_sending(&conn, id).unwrap();
+        mark_all_sending_unknown(&conn).unwrap();
+
+        assert!(list_pending(&conn, &contact).unwrap().is_empty());
+
+        resend_unknown(&conn, id).unwrap();
+        let pending = list_pending(&conn, &contact).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, id);
+    }
+
+    #[test]
+    fn resend_unknown_keeps_the_global_id() {
+        let contact = [16u8; 16];
+        let conn = conn_with_contact(contact);
+        let body = r#"{"id":"gid-1","text":"oi"}"#;
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, body, 1).unwrap();
+        let before = get_message_global_id(&conn, id).unwrap();
+        mark_sending(&conn, id).unwrap();
+        mark_all_sending_unknown(&conn).unwrap();
+
+        resend_unknown(&conn, id).unwrap();
+
+        assert_eq!(get_message_global_id(&conn, id).unwrap(), before);
+    }
+
+    #[test]
+    fn resend_unknown_does_not_touch_other_states() {
+        let contact = [17u8; 16];
+        let conn = conn_with_contact(contact);
+        let sent = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
+        let failed = insert_pending(&conn, &contact, PacketType::MsgText, "b", 2).unwrap();
+        mark_sent(&conn, sent).unwrap();
+        mark_failed(&conn, failed).unwrap();
+
+        resend_unknown(&conn, sent).unwrap();
+        resend_unknown(&conn, failed).unwrap();
+
+        let listed = list_for_contact(&conn, &contact).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryState::Sent);
+        assert_eq!(listed[1].delivery_state, DeliveryState::Failed);
+    }
+
+    #[test]
+    fn late_send_confirmation_promotes_unknown_to_sent() {
+        let contact = [18u8; 16];
+        let conn = conn_with_contact(contact);
+        let id = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 1).unwrap();
+        mark_sending(&conn, id).unwrap();
+        mark_all_sending_unknown(&conn).unwrap();
+
+        mark_sent(&conn, id).unwrap();
+
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Sent);
     }
 
     #[test]

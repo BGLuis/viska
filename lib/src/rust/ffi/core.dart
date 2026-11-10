@@ -316,6 +316,11 @@ abstract class Core implements RustOpaqueInterface {
   /// Só afeta mensagens `sending`.
   Future<void> requeueMessage({required PlatformInt64 messageId});
 
+  /// Devolve à fila um texto `Unknown` (não se sabe se chegou ao par), por
+  /// pedido explícito da pessoa. Mantém a linha e o `global_id`; o chamador
+  /// drena a fila em seguida. Só afeta mensagens `unknown`.
+  Future<void> resendUnknownMessage({required PlatformInt64 messageId});
+
   /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
   /// uma nova com o mesmo contato — o que `ensure_session` nunca faz.
   ///
