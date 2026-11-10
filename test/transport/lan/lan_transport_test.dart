@@ -735,6 +735,16 @@ void main() {
     return (passive: passive, active: active);
   }
 
+  /// Espera uma condição com limite de tempo, para uma regressão falhar o teste
+  /// em vez de travá-lo.
+  Future<void> untilTrue(bool Function() condition) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (!condition()) {
+      if (DateTime.now().isAfter(deadline)) throw TimeoutException('condição nunca ocorreu');
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
   Future<TransportConnectionEvent> firstFailed(LanTransport t) => t.connectionEvents
       .firstWhere((e) => e.state == TransportConnectionState.failed)
       .timeout(const Duration(seconds: 5));
@@ -747,7 +757,9 @@ void main() {
         .listen(failures.add);
 
     await pair.active.close();
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await untilTrue(() => failures.isNotEmpty);
+    // Dá turnos ao segundo socket, que também recebe o FIN do par.
+    await pumpEventQueue();
 
     // Os dois sockets do par caem, mas o transporte falha uma vez só.
     expect(failures, hasLength(1));
@@ -774,7 +786,7 @@ void main() {
     control.destroy();
     await failed;
 
-    await expectLater(passive.sendFile(Uint8List.fromList([1])), throwsStateError);
+    await expectLater(passive.sendFile(Uint8List.fromList([1])), throwsA(isA<TransportUnavailableException>()));
   });
 
   test('send after peer close fails without an unhandled Broken pipe', () async {
@@ -785,9 +797,9 @@ void main() {
       await pair.active.close();
       await failed;
 
-      await expectLater(pair.passive.send(Uint8List.fromList([1, 2])), throwsStateError);
-      await expectLater(pair.passive.sendFile(Uint8List.fromList([1, 2])), throwsStateError);
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await expectLater(pair.passive.send(Uint8List.fromList([1, 2])), throwsA(isA<TransportUnavailableException>()));
+      await expectLater(pair.passive.sendFile(Uint8List.fromList([1, 2])), throwsA(isA<TransportUnavailableException>()));
+      await pumpEventQueue();
     }, (e, _) => uncaught.add(e));
 
     expect(uncaught, isEmpty);
@@ -799,7 +811,7 @@ void main() {
     pair.passive.connectionEvents.listen((e) => events.add(e.state));
 
     await pair.passive.close();
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    await pumpEventQueue();
 
     expect(events, isNot(contains(TransportConnectionState.failed)));
   });

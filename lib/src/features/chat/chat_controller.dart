@@ -359,7 +359,7 @@ class ChatController extends ChangeNotifier {
       case TypingIndicatorEvent():
         break;
       case SessionEstablishedEvent():
-        _refreshEstablishedStateAndFlushIfNeeded();
+        _refreshEstablishedState();
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();
@@ -371,7 +371,7 @@ class ChatController extends ChangeNotifier {
 
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
   /// sessão já estiver pronta. Se não estiver, a mensagem fica `pending` até
-  /// o handshake terminar e o outbox drenar (`_flushPending`).
+  /// o handshake terminar e o `MessageReceptionService` drenar o outbox.
   Future<void> sendText(
     String body, {
     QuotedReply? replyTo,
@@ -653,34 +653,22 @@ class ChatController extends ChangeNotifier {
   }
 
 
-  Future<void> _refreshEstablishedStateAndFlushIfNeeded() async {
+  Future<void> _refreshEstablishedState() async {
     final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
     final established = status?.state == SessionStateKind.established;
     if (established && !_established) {
       _established = true;
       notifyListeners();
-      await _flushPending();
     } else if (established != _established) {
       _established = established;
       notifyListeners();
     }
   }
 
-  Future<void> _flushPending() async {
-    final sealed = await _core.flushPending(peerDeviceId: _contactId.deviceId);
-    for (final message in sealed) {
-      final bytes = message.bytes;
-      if (bytes != null) {
-        // Uma falha derruba o resto: a conexão caiu, as demais seguem pending.
-        if (!await _trySendSealed(message.messageId, bytes)) return;
-      }
-    }
-  }
-
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
   /// continua `pending` porque `markMessageSent` não chegou a rodar, e o
   /// `flush_pending` a reenvia depois da reconexão.
-  Future<bool> _trySendSealed(int messageId, Uint8List bytes) async {
+  Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);
     } catch (e) {
@@ -691,7 +679,7 @@ class ChatController extends ChangeNotifier {
         _connectionError ??= 'Não foi possível enviar a mensagem.';
         notifyListeners();
       }
-      return false;
+      return;
     }
     // Envio que passou prova que a conexão serve; um erro antigo deixaria a
     // conversa offline até o próximo `connected`.
@@ -705,7 +693,6 @@ class ChatController extends ChangeNotifier {
       // Os bytes já saíram: falha local ao marcar não é queda de conexão.
       if (kDebugMode) debugPrint('[ChatController] falha ao marcar como enviada: $e');
     }
-    return true;
   }
 
   Future<void> _markSentAndRefresh(int messageId) async {

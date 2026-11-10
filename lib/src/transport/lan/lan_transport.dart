@@ -145,17 +145,17 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// antes do I/O, então só o `flush` revela a escrita que falhou.
   Future<void> _write(LanConnection? connection, Uint8List bytes) async {
     if (_dead || _closed || connection == null) {
-      throw StateError(_unavailable);
+      throw TransportUnavailableException(_unavailable);
     }
     final framed = await _frame(envelope: bytes);
     // A queda pode ter ocorrido durante o enquadramento (FFI assíncrona).
-    if (_dead || _closed) throw StateError(_unavailable);
+    if (_dead || _closed) throw TransportUnavailableException(_unavailable);
     try {
       connection.add(framed);
       await connection.flush();
     } catch (_) {
       _fail('falha ao escrever no socket local');
-      throw StateError(_unavailable);
+      throw TransportUnavailableException(_unavailable);
     }
   }
 
