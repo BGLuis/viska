@@ -3,7 +3,7 @@
 use crate::crypto::identity::LocalIdentity;
 use crate::{Error, Result};
 use rusqlite::OptionalExtension;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Carrega a identidade persistida, ou gera e persiste uma nova.
 ///
@@ -16,8 +16,8 @@ pub fn load_or_create(conn: &rusqlite::Connection) -> Result<LocalIdentity> {
             [],
             |row| {
                 let device_id: Vec<u8> = row.get(0)?;
-                let signing_seed: Vec<u8> = row.get(1)?;
-                let dh_secret: Vec<u8> = row.get(2)?;
+                let signing_seed = Zeroizing::new(row.get::<_, Vec<u8>>(1)?);
+                let dh_secret = Zeroizing::new(row.get::<_, Vec<u8>>(2)?);
                 Ok((device_id, signing_seed, dh_secret))
             },
         )
@@ -27,8 +27,8 @@ pub fn load_or_create(conn: &rusqlite::Connection) -> Result<LocalIdentity> {
     if let Some((device_id, signing_seed, dh_secret)) = existing {
         return Ok(LocalIdentity::from_parts(
             device_id.try_into().map_err(|_| Error::Store)?,
-            signing_seed.try_into().map_err(|_| Error::Store)?,
-            dh_secret.try_into().map_err(|_| Error::Store)?,
+            signing_seed.as_slice().try_into().map_err(|_| Error::Store)?,
+            dh_secret.as_slice().try_into().map_err(|_| Error::Store)?,
         ));
     }
 

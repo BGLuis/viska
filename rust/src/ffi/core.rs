@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::ffi::error::FfiError;
 use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
@@ -471,25 +471,26 @@ impl Core {
         let db_bytes = std::fs::read(&db_path).map_err(|_| FfiError::Internal)?;
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
 
-        let mut bundle = Vec::with_capacity(32 + db_bytes.len());
+        let mut bundle = Zeroizing::new(Vec::with_capacity(32 + db_bytes.len()));
         bundle.extend_from_slice(master_secret.as_bytes());
         bundle.extend_from_slice(&db_bytes);
 
         let mnemonic = viska_proto::backup::export_backup_to_file(&bundle, Path::new(&dest_path))
             .map_err(|_| FfiError::Internal)?;
-        bundle.zeroize();
         Ok(mnemonic)
     }
 
     /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
     pub fn restore_encrypted_backup(&self, src_path: String, mnemonic: String) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
-        let mut bundle = viska_proto::backup::restore_backup_from_file(Path::new(&src_path), &mnemonic)
-            .map_err(|_| FfiError::FileCorrupted)?;
+        let bundle = Zeroizing::new(
+            viska_proto::backup::restore_backup_from_file(Path::new(&src_path), &mnemonic)
+                .map_err(|_| FfiError::FileCorrupted)?,
+        );
         if bundle.len() < 32 {
             return Err(FfiError::FileCorrupted);
         }
-        let mut restored_master_secret = [0u8; 32];
+        let mut restored_master_secret = Zeroizing::new([0u8; 32]);
         restored_master_secret.copy_from_slice(&bundle[..32]);
         let db_bytes = &bundle[32..];
 
@@ -508,19 +509,21 @@ impl Core {
                 .mode(0o600)
                 .open(&master_key_path)
                 .map_err(|_| FfiError::Internal)?;
-            file.write_all(&restored_master_secret).map_err(|_| FfiError::Internal)?;
+            file.write_all(restored_master_secret.as_slice()).map_err(|_| FfiError::Internal)?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&master_key_path, &restored_master_secret).map_err(|_| FfiError::Internal)?;
+            std::fs::write(&master_key_path, restored_master_secret.as_slice()).map_err(|_| FfiError::Internal)?;
         }
-        restored_master_secret.zeroize();
+        // Zera já, antes das operações de arquivo seguintes, em vez de esperar o fim do escopo.
+        drop(restored_master_secret);
 
         let db_path = self.app_dir.join(DB_FILE_NAME);
         let write_res = std::fs::write(&db_path, db_bytes);
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-wal"));
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
-        bundle.zeroize();
+        // Precisa vir antes do `?` abaixo e do `unlock()`: o bundle tem seed e chave mestra.
+        drop(bundle);
         write_res.map_err(|_| FfiError::Internal)?;
 
         self.unlock()?;

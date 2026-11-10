@@ -16,7 +16,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::kdf::{Key, KEY_LEN};
 use crate::{Error, Result};
@@ -71,8 +71,11 @@ pub fn load_or_create_master_secret(app_dir: &Path) -> Result<Key> {
     let path = app_dir.join(FILE_NAME);
 
     if let Ok(bytes) = fs::read(&path) {
-        let array: [u8; KEY_LEN] = bytes.try_into().map_err(|_| Error::Store)?;
-        return Ok(Key::from_bytes(array));
+        let bytes = Zeroizing::new(bytes);
+        let mut array: [u8; KEY_LEN] = bytes.as_slice().try_into().map_err(|_| Error::Store)?;
+        let key = Key::from_bytes(array);
+        array.zeroize();
+        return Ok(key);
     }
 
     fs::create_dir_all(app_dir).map_err(|_| Error::Store)?;

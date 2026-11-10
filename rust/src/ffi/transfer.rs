@@ -899,7 +899,7 @@ impl Core {
     pub(super) fn handle_incoming_file_feedback(
         &self,
         contact_device_id: [u8; DEVICE_ID_LEN],
-        body: Vec<u8>,
+        body: &[u8],
     ) -> Result<(), FfiError> {
         // `source_blocks` vem do próprio manifesto que este lado já
         // persistiu ao iniciar o envio — não do corpo do feedback (§7.4:
@@ -922,7 +922,7 @@ impl Core {
         }
         let manifest = Manifest::decode(&stored.manifest_cbor)?;
 
-        let feedback = FileFeedback::decode(&body, manifest.source_blocks)?;
+        let feedback = FileFeedback::decode(body, manifest.source_blocks)?;
         // O primeiro feedback prova que a oferta foi aceita: o prazo acaba aqui.
         self.lock_unanswered_offers()?.remove(&file_id);
         if let Some(TransferHandle::Send(send)) = self.lock_transfers()?.get_mut(&file_id) {
@@ -935,8 +935,8 @@ impl Core {
     /// `FILE_COMPLETE` chega — o receptor confirmou a raiz Merkle e o
     /// commit atômico; o emissor não precisa mais guardar nada desta
     /// transferência.
-    pub(super) fn handle_incoming_file_complete(&self, body: Vec<u8>) -> Result<(), FfiError> {
-        let complete = transfer::FileComplete::decode(&body)?;
+    pub(super) fn handle_incoming_file_complete(&self, body: &[u8]) -> Result<(), FfiError> {
+        let complete = transfer::FileComplete::decode(body)?;
         self.lock_transfers()?.remove(&complete.file_id);
         self.lock_unanswered_offers()?.remove(&complete.file_id);
         self.store.delete_file_transfer(&complete.file_id)?;
@@ -950,10 +950,10 @@ impl Core {
     pub(super) fn handle_incoming_file_reject(
         &self,
         contact_device_id: [u8; DEVICE_ID_LEN],
-        body: Vec<u8>,
+        body: &[u8],
     ) -> Result<(), FfiError> {
         // O corpo é exatamente o `file_id`; qualquer outro tamanho é lixo.
-        let file_id: [u8; FILE_ID_LEN] = body.as_slice().try_into().map_err(|_| FfiError::Internal)?;
+        let file_id: [u8; FILE_ID_LEN] = body.try_into().map_err(|_| FfiError::Internal)?;
         let Some(stored) = self.store.find_file_transfer(&file_id)? else {
             return Ok(());
         };
@@ -1625,7 +1625,7 @@ mod tests {
             .unwrap();
         pair.core_a.mark_message_sent(done.message_id).unwrap();
         let complete = transfer::FileComplete { file_id: fid(&done.file_id) };
-        pair.core_a.handle_incoming_file_complete(complete.encode()).unwrap();
+        pair.core_a.handle_incoming_file_complete(&complete.encode()).unwrap();
         assert!(pair.core_a.store.find_file_transfer(&fid(&done.file_id)).unwrap().is_none());
 
         force_session_failed(&pair);
@@ -2096,16 +2096,16 @@ mod tests {
 
         // Outro contato citando um file_id que existe:
         pair.core_a
-            .handle_incoming_file_reject(other_contact, started.file_id.clone())
+            .handle_incoming_file_reject(other_contact, &started.file_id)
             .unwrap();
         // file_id desconhecido, vindo do contato certo:
         pair.core_a
-            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), vec![0x77; FILE_ID_LEN])
+            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), &[0x77; FILE_ID_LEN])
             .unwrap();
         // Corpo com tamanho errado:
         assert!(pair
             .core_a
-            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), vec![0; 3])
+            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), &[0; 3])
             .is_err());
 
         assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
@@ -2121,7 +2121,7 @@ mod tests {
         pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
 
         pair.core_b
-            .handle_incoming_file_reject(to_device_id(pair.device_id_a.clone()).unwrap(), started.file_id.clone())
+            .handle_incoming_file_reject(to_device_id(pair.device_id_a.clone()).unwrap(), &started.file_id)
             .unwrap();
 
         assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
