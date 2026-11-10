@@ -690,6 +690,23 @@ pequeno (8 falhas, contadas só em memória, nunca persistidas) levam a sessão 
 disso, assume-se dessincronia irrecuperável (por exemplo, o par perdeu o estado do ratchet e
 reiniciou) em vez de continuar tentando indefinidamente.
 
+**Recuperação de uma sessão `Failed` (reset local):** `Failed` só sai de cena com uma sessão nova, e
+quem decide abri-la é a pessoa, pelo aviso do chat — nunca uma tentativa automática, que viraria laço
+de handshake depois de 8 falhas de AEAD. `Core::reset_session` descarta a sessão e abre outra com o
+mesmo par (não repete o pareamento, só o AKE de §4). Só age em `Failed` ou depois do limiar de §11.2;
+com a sessão `Established` sã ou em handshake não faz nada. Mensagens de texto que estavam em
+`Sending` voltam à fila (`pending`) e são cifradas de novo na sessão nova; os envios de arquivo e de
+nota de voz em andamento com o par são cancelados e as linhas marcadas como falha, porque o
+`FILE_METADATA` foi selado na sessão que deixou de existir. O estado de cada sessão é empurrado ao
+Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
+segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
+
+**Lacuna conhecida:** o reset é unilateral. Sem marcador de tipo no fio (D4), o par não é avisado:
+se ele seguir `Established`, a INIT nova é lida lá como envelope inválido e descartada em silêncio, e
+só passa a valer depois que a sessão dele também falhar (8 falhas) e for reaberta. Quem reabre como
+respondedor (`AwaitingPeerInit`) não envia nada. Um sinal para o par depende de decisão de projeto
+compatível com D4 e com a deniabilidade (issue #78).
+
 ### 11.2 Política de rotação do contador
 
 A spec não previa o que fazer quando o contador de envio (`Ns`, u32) se aproxima do limite do tipo.
