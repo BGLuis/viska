@@ -1167,6 +1167,42 @@ mod tests {
     }
 
     #[test]
+    fn resent_message_with_same_global_id_is_stored_once() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        let payload = r#"{"v":1,"type":"text","id":"resend-uuid-1","text":"oi"}"#.to_string();
+
+        // O mesmo conteúdo sai duas vezes, cada uma recifrada com novo passo do ratchet.
+        let first = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), payload.clone())
+            .unwrap();
+        let second = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), payload)
+            .unwrap();
+        let in1 = p
+            .core_b
+            .decrypt_incoming(p.device_id_a.clone(), first.bytes.unwrap())
+            .unwrap()
+            .unwrap();
+        let in2 = p
+            .core_b
+            .decrypt_incoming(p.device_id_a.clone(), second.bytes.unwrap())
+            .unwrap()
+            .expect("duplicata ainda devolve o DTO para reenviar o recibo");
+
+        assert_eq!(in1.message_id, in2.message_id);
+        let history = p.core_b.list_messages(p.device_id_a.clone()).unwrap();
+        assert_eq!(history.len(), 1);
+    }
+
+    #[test]
     fn message_sent_receipt_decrypted_and_sender_list_messages_shows_delivered() {
         let p = paired_pair();
         establish(

@@ -264,7 +264,8 @@ pub fn insert_pending_opts(
     )
 }
 
-/// Persiste uma mensagem recebida e já decifrada pela sessão.
+/// Persiste uma mensagem recebida e já decifrada pela sessão. Idempotente por `global_id`:
+/// uma repetição devolve o id da linha existente.
 pub fn insert_incoming(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
@@ -386,6 +387,26 @@ fn insert_with_options_internal(
     global_id: Option<String>,
 ) -> Result<i64> {
     reject_non_storable(packet_type)?;
+
+    // Reenvio de `flush_pending` sai recifrado com novo passo do ratchet, então só o
+    // `global_id` do corpo identifica a repetição. O acesso ao banco é serializado por
+    // `with_conn`, logo consultar e inserir não corre contra outra inserção.
+    if direction == Direction::Incoming {
+        if let Some(gid) = global_id.as_deref().filter(|g| !g.is_empty()) {
+            let existing: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM messages
+                     WHERE global_id = ?1 AND contact_device_id = ?2 AND direction = ?3",
+                    rusqlite::params![gid, contact_device_id.as_slice(), Direction::Incoming as i64],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| Error::Store)?;
+            if let Some(id) = existing {
+                return Ok(id);
+            }
+        }
+    }
 
     let final_global_id = match global_id {
         Some(gid) if !gid.is_empty() => gid,
@@ -694,7 +715,7 @@ pub fn update_ratchet_counter(
     counter: i64,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE messages SET ratchet_counter = ?1 WHERE id = ?2",
+        "UPDATE messages SET ratchet_counter = ?1 WHERE id = ?2 AND ratchet_counter IS NULL",
         rusqlite::params![counter, message_id],
     )
     .map_err(|_| Error::Store)?;
@@ -1538,6 +1559,105 @@ mod tests {
         let listed_after = list_for_contact(&conn, &contact).unwrap();
         assert_eq!(listed_after[0].body, EXPIRED_BODY_PLACEHOLDER);
         assert!(listed_after[0].view_once);
+    }
+
+    fn json_with_id(id: &str, text: &str) -> String {
+        format!(r#"{{"v":1,"type":"text","id":"{id}","text":"{text}"}}"#)
+    }
+
+    fn count_rows(conn: &rusqlite::Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn ignores_duplicate_incoming_global_id() {
+        let contact = [30u8; 16];
+        let conn = conn_with_contact(contact);
+        let body = json_with_id("dup-1", "oi");
+
+        let first = insert_incoming(&conn, &contact, PacketType::MsgText, &body, 1000).unwrap();
+        let second = insert_incoming(&conn, &contact, PacketType::MsgText, &body, 1005).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(count_rows(&conn), 1);
+    }
+
+    #[test]
+    fn duplicate_ephemeral_incoming_keeps_single_key() {
+        let contact = [31u8; 16];
+        let conn = conn_with_contact(contact);
+        let body = r#"{"v":1,"type":"text","id":"dup-eph","text":"x","viewOnce":true}"#;
+
+        let first = insert_incoming(&conn, &contact, PacketType::MsgText, body, 1000).unwrap();
+        let second = insert_incoming(&conn, &contact, PacketType::MsgText, body, 1005).unwrap();
+
+        assert_eq!(first, second);
+        let keys: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ephemeral_message_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(keys, 1);
+    }
+
+    #[test]
+    fn same_global_id_from_different_contacts_is_kept() {
+        let a = [32u8; 16];
+        let b = [33u8; 16];
+        let conn = conn_with_contact(a);
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, NULL)",
+            rusqlite::params![b.as_slice(), [3u8; 32], [4u8; 32]],
+        )
+        .unwrap();
+        let body = json_with_id("shared", "oi");
+
+        let ia = insert_incoming(&conn, &a, PacketType::MsgText, &body, 1).unwrap();
+        let ib = insert_incoming(&conn, &b, PacketType::MsgText, &body, 2).unwrap();
+
+        assert_ne!(ia, ib);
+        assert_eq!(count_rows(&conn), 2);
+    }
+
+    #[test]
+    fn outgoing_global_id_does_not_block_incoming() {
+        let contact = [34u8; 16];
+        let conn = conn_with_contact(contact);
+        let body = json_with_id("same-id", "oi");
+
+        let out = insert_pending(&conn, &contact, PacketType::MsgText, &body, 1).unwrap();
+        let inc = insert_incoming(&conn, &contact, PacketType::MsgText, &body, 2).unwrap();
+
+        assert_ne!(out, inc);
+        assert_eq!(count_rows(&conn), 2);
+    }
+
+    #[test]
+    fn missing_global_id_never_dedups() {
+        let contact = [35u8; 16];
+        let conn = conn_with_contact(contact);
+
+        let a = insert_incoming(&conn, &contact, PacketType::MsgText, "igual", 1).unwrap();
+        let b = insert_incoming(&conn, &contact, PacketType::MsgText, "igual", 2).unwrap();
+
+        assert_ne!(a, b);
+        assert_eq!(count_rows(&conn), 2);
+    }
+
+    #[test]
+    fn duplicate_keeps_original_ratchet_counter() {
+        let contact = [36u8; 16];
+        let conn = conn_with_contact(contact);
+        let body = json_with_id("dup-ctr", "oi");
+
+        let id = insert_incoming(&conn, &contact, PacketType::MsgText, &body, 1).unwrap();
+        update_ratchet_counter(&conn, id, 7).unwrap();
+        let again = insert_incoming(&conn, &contact, PacketType::MsgText, &body, 2).unwrap();
+        update_ratchet_counter(&conn, again, 9).unwrap();
+
+        let counter: i64 = conn
+            .query_row("SELECT ratchet_counter FROM messages WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(counter, 7);
     }
 
     #[test]
