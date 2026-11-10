@@ -666,8 +666,10 @@ class ChatController extends ChangeNotifier {
   }
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
-  /// continua `pending` porque `markMessageSent` não chegou a rodar, e o
-  /// `flush_pending` a reenvia depois da reconexão.
+  /// continua `pending` porque `markMessageSent` não chegou a rodar. Hoje o
+  /// outbox só é drenado quando a sessão se estabelece
+  /// (`MessageReceptionService`); reenviar depois de uma reconexão com a
+  /// sessão já estabelecida depende da reconexão do #54.
   Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);

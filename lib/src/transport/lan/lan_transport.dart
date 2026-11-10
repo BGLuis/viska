@@ -112,8 +112,6 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// ao protocolo, e o roteador o esquece ao ver `failed`.
   bool _dead = false;
 
-  static const _unavailable = 'conexão LAN indisponível';
-
   /// Preâmbulo sob o qual `connect` registrou a espera no [LanListener] — é
   /// diferente do `device_id` do contato, e `close` precisa cancelar pela
   /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
@@ -145,17 +143,17 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// antes do I/O, então só o `flush` revela a escrita que falhou.
   Future<void> _write(LanConnection? connection, Uint8List bytes) async {
     if (_dead || _closed || connection == null) {
-      throw TransportUnavailableException(_unavailable);
+      throw TransportUnavailableException();
     }
     final framed = await _frame(envelope: bytes);
     // A queda pode ter ocorrido durante o enquadramento (FFI assíncrona).
-    if (_dead || _closed) throw TransportUnavailableException(_unavailable);
+    if (_dead || _closed) throw TransportUnavailableException();
     try {
       connection.add(framed);
       await connection.flush();
     } catch (_) {
       _fail('falha ao escrever no socket local');
-      throw TransportUnavailableException(_unavailable);
+      throw TransportUnavailableException();
     }
   }
 
