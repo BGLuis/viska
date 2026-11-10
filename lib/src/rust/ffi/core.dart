@@ -5,8 +5,10 @@
 
 import '../frb_generated.dart';
 import 'error.dart';
+
 import 'package:collection/collection.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`
@@ -303,6 +305,11 @@ abstract class Core implements RustOpaqueInterface {
   /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
   Future<ContactDto> repairFromQr({required List<int> payload});
 
+  /// Devolve à fila uma mensagem que foi cifrada mas não chegou a sair
+  /// (`sendToContact` falhou), para a próxima drenagem tentá-la de novo.
+  /// Só afeta mensagens `sending`.
+  Future<void> requeueMessage({required PlatformInt64 messageId});
+
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
@@ -334,8 +341,11 @@ abstract class Core implements RustOpaqueInterface {
   /// mesmo que o transporte esteja indisponível no momento da chamada.
   ///
   /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-  /// `Established`: a mensagem já está persistida, e `flush_pending` a
-  /// entrega assim que a sessão ficar pronta.
+  /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
+  /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
+  /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+  /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
+  /// enviá-los deve chamar `requeue_message`.
   Future<SealedMessageDto> sealOutgoingText({
     required List<int> peerDeviceId,
     required String body,

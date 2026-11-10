@@ -272,6 +272,21 @@ impl Store {
         self.with_conn(|conn| messages::mark_sent(conn, message_id))
     }
 
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
+    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_sending(conn, message_id))
+    }
+
+    /// Devolve à fila uma mensagem `Sending` cujo envio não aconteceu.
+    pub fn requeue_message(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::requeue(conn, message_id))
+    }
+
+    /// Devolve à fila todo envio que ficou em `Sending` (abertura e trava).
+    pub fn requeue_sending_messages(&self) -> Result<usize> {
+        self.with_conn(messages::requeue_all_sending)
+    }
+
     /// Marca uma mensagem de saída `Pending` como falha.
     pub fn mark_message_failed(&self, message_id: i64) -> Result<()> {
         self.with_conn(|conn| messages::mark_failed(conn, message_id))

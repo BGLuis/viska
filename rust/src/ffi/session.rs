@@ -117,8 +117,11 @@ impl Core {
     /// mesmo que o transporte esteja indisponível no momento da chamada.
     ///
     /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-    /// `Established`: a mensagem já está persistida, e `flush_pending` a
-    /// entrega assim que a sessão ficar pronta.
+    /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
+    /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
+    /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+    /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
+    /// enviá-los deve chamar `requeue_message`.
     pub fn seal_outgoing_text(
         &self,
         peer_device_id: Vec<u8>,
@@ -144,7 +147,11 @@ impl Core {
             Some(session) if session.is_established() => {
                 let ciphertext = session
                     .encrypt_outgoing(PacketType::MsgText, body.into_bytes(), Transport::DataChannel)
-                    .ok();
+                    .ok()
+                    // Sem conseguir marcar `Sending`, os bytes não podem sair:
+                    // a linha segue `Pending` e `flush_pending` a cifra de novo
+                    // (o contador gasto aqui é só um salto no ratchet).
+                    .filter(|_| self.store.mark_message_sending(message_id).is_ok());
                 if let Some(ref ct) = ciphertext {
                     if let Ok(cnt) = viska_proto::wire::envelope::counter(ct) {
                         let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
@@ -306,6 +313,14 @@ impl Core {
         Ok(())
     }
 
+    /// Devolve à fila uma mensagem que foi cifrada mas não chegou a sair
+    /// (`sendToContact` falhou), para a próxima drenagem tentá-la de novo.
+    /// Só afeta mensagens `sending`.
+    pub fn requeue_message(&self, message_id: i64) -> Result<(), FfiError> {
+        self.store.requeue_message(message_id)?;
+        Ok(())
+    }
+
     /// Marca uma mensagem de saída como falha — chamar quando o envio de um
     /// arquivo é interrompido por queda do transporte. Só afeta mensagens
     /// ainda `pending`.
@@ -331,12 +346,14 @@ impl Core {
         peer_device_id: Vec<u8>,
     ) -> Result<Vec<SealedMessageDto>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
+        // Listar sob o lock de sessões: duas drenagens concorrentes não podem
+        // ver a mesma linha `Pending` antes de a primeira marcá-la `Sending`.
+        let mut sessions = self.lock_sessions()?;
         let pending = self.store.list_pending_messages(&device_id)?;
         if pending.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut sessions = self.lock_sessions()?;
         let session = sessions
             .get_mut(&device_id)
             .ok_or(FfiError::NoActiveSession)?;
@@ -351,10 +368,18 @@ impl Core {
                 message.body.into_bytes(),
                 Transport::DataChannel,
             ) {
-                Ok(bytes) => sealed.push(SealedMessageDto {
-                    message_id: message.id,
-                    bytes: Some(bytes),
-                }),
+                Ok(bytes) => {
+                    // Falhar ao marcar não pode descartar o que já foi
+                    // selado: as linhas anteriores estão `Sending` e perderiam
+                    // seus bytes. Esta segue `Pending` para a próxima drenagem.
+                    if self.store.mark_message_sending(message.id).is_err() {
+                        break;
+                    }
+                    sealed.push(SealedMessageDto {
+                        message_id: message.id,
+                        bytes: Some(bytes),
+                    });
+                }
                 Err(_) => break,
             }
         }
@@ -413,6 +438,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         viska_proto::store::messages::DeliveryState::Sent => DeliveryStateDto::Sent,
         viska_proto::store::messages::DeliveryState::Delivered => DeliveryStateDto::Delivered,
         viska_proto::store::messages::DeliveryState::Failed => DeliveryStateDto::Failed,
+        viska_proto::store::messages::DeliveryState::Sending => DeliveryStateDto::Sending,
     };
 
     let (kind, body, audio_file_id) =
@@ -725,6 +751,205 @@ mod tests {
         assert_eq!(flushed.len(), 1);
         assert_eq!(flushed[0].message_id, sealed.message_id);
         assert!(flushed[0].bytes.is_some());
+    }
+
+    #[test]
+    fn flush_pending_without_sending_chain_returns_empty_and_keeps_row_pending() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        // `core_b` é o respondedor: sem cadeia de envio até ler a primeira
+        // mensagem do iniciador.
+        let sealed = p
+            .core_b
+            .seal_outgoing_text(p.device_id_a.clone(), "adiantada".to_string())
+            .unwrap();
+        assert!(sealed.bytes.is_none());
+
+        let flushed = p.core_b.flush_pending(p.device_id_a.clone()).unwrap();
+
+        assert!(flushed.is_empty());
+        let listed = p.core_b.list_messages(p.device_id_a).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
+    }
+
+    #[test]
+    fn responder_pending_flushes_after_first_message_from_initiator() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        let sealed = p
+            .core_b
+            .seal_outgoing_text(p.device_id_a.clone(), "adiantada".to_string())
+            .unwrap();
+        let first = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "primeira".to_string())
+            .unwrap();
+        p.core_b
+            .decrypt_incoming(p.device_id_a.clone(), first.bytes.unwrap())
+            .unwrap();
+
+        let flushed = p.core_b.flush_pending(p.device_id_a.clone()).unwrap();
+
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(flushed[0].message_id, sealed.message_id);
+        assert!(flushed[0].bytes.is_some());
+    }
+
+    #[test]
+    fn flush_pending_does_not_send_a_file_row_as_text() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        let id: [u8; 16] = p.device_id_b.clone().try_into().unwrap();
+        p.core_a
+            .store
+            .insert_pending_message(&id, viska_proto::wire::packet_type::PacketType::FileMetadata, "segredo.pdf", 1)
+            .unwrap();
+
+        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+
+        assert!(flushed.is_empty());
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
+    }
+
+    #[test]
+    fn flush_pending_marks_rows_sending_so_a_second_flush_is_empty() {
+        let p = paired_pair();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "uma só vez".to_string())
+            .unwrap();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+
+        let first = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        let second = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].message_id, sealed.message_id);
+        assert!(second.is_empty());
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
+    }
+
+    #[test]
+    fn seal_outgoing_text_with_ready_chain_marks_row_sending() {
+        let p = paired_pair();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "direto".to_string())
+            .unwrap();
+
+        assert!(sealed.bytes.is_some());
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
+    }
+
+    #[test]
+    fn requeue_message_returns_sending_row_to_the_queue() {
+        let p = paired_pair();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "volta".to_string())
+            .unwrap();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+
+        p.core_a.requeue_message(sealed.message_id).unwrap();
+
+        let again = p.core_a.flush_pending(p.device_id_b).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].message_id, sealed.message_id);
+    }
+
+    #[test]
+    fn requeue_message_does_not_demote_a_sent_row() {
+        let p = paired_pair();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "já saiu".to_string())
+            .unwrap();
+        p.core_a.mark_message_sent(sealed.message_id).unwrap();
+
+        p.core_a.requeue_message(sealed.message_id).unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sent);
+    }
+
+    #[test]
+    fn reopening_core_requeues_sending_messages() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+        let core_b = Core::open(dir_b.path().to_str().unwrap().to_string()).unwrap();
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        let device_id: [u8; 16] = contact.device_id.clone().try_into().unwrap();
+        let id = core_a
+            .store
+            .insert_pending_message(&device_id, viska_proto::wire::packet_type::PacketType::MsgText, "oi", 1)
+            .unwrap();
+        core_a.store.mark_message_sending(id).unwrap();
+        drop(core_a);
+
+        let reopened = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+
+        let listed = reopened.list_messages(contact.device_id).unwrap();
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
+    }
+
+    #[test]
+    fn locking_core_requeues_sending_messages() {
+        let p = paired_pair();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "em voo".to_string())
+            .unwrap();
+        establish(
+            &p.core_a,
+            p.device_id_a.clone(),
+            &p.core_b,
+            p.device_id_b.clone(),
+        );
+        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+
+        p.core_a.lock().unwrap();
+        p.core_a.unlock().unwrap();
+
+        let listed = p.core_a.list_messages(p.device_id_b).unwrap();
+        assert_eq!(listed[0].id, sealed.message_id);
+        assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
     }
 
     #[test]

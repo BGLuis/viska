@@ -1390,6 +1390,8 @@ class _MessageBubble extends StatelessWidget {
   String _deliveryLabel(DeliveryStateDto state) {
     switch (state) {
       case DeliveryStateDto.pending:
+        return 'Na fila';
+      case DeliveryStateDto.sending:
         return 'Enviando…';
       case DeliveryStateDto.sent:
         return 'Enviada';

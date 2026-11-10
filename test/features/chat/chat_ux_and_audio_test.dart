@@ -102,6 +102,9 @@ class _FakeCore implements Core {
   }
 
   @override
+  Future<void> requeueMessage({required int messageId}) async {}
+
+  @override
   Future<void> markMessageSent({required int messageId}) async {
     markSentCalls.add(messageId);
   }

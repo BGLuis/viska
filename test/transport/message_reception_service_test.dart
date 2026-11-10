@@ -18,6 +18,7 @@ class _FakeP2PTransport implements P2PTransport {
   var closeCalls = 0;
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
+  bool Function(Uint8List)? sendError;
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
@@ -26,7 +27,10 @@ class _FakeP2PTransport implements P2PTransport {
   Future<void> connect() async => connectCalls++;
 
   @override
-  Future<void> send(Uint8List envelope) async => sendCalls.add(envelope);
+  Future<void> send(Uint8List envelope) async {
+    if (sendError != null && sendError!(envelope)) throw StateError('envio falhou');
+    sendCalls.add(envelope);
+  }
 
   @override
   Future<void> sendFile(Uint8List bytes) async => sendFileCalls.add(bytes);
@@ -56,6 +60,8 @@ class _FakeReceptionCore implements Core {
   final feedHandshakeCalls = <Uint8List>[];
   final decryptIncomingCalls = <Uint8List>[];
   final markSentCalls = <int>[];
+  final requeueCalls = <int>[];
+  var failMarkSent = false;
   final finishReceiveFileCalls = <Uint8List>[];
   final finishReceiveAudioCalls = <Uint8List>[];
 
@@ -140,6 +146,12 @@ class _FakeReceptionCore implements Core {
   @override
   Future<void> markMessageSent({required int messageId}) async {
     markSentCalls.add(messageId);
+    if (failMarkSent) throw StateError('banco indisponível');
+  }
+
+  @override
+  Future<void> requeueMessage({required int messageId}) async {
+    requeueCalls.add(messageId);
   }
 
   @override
@@ -332,6 +344,107 @@ void main() {
 
       expect(transport.sendCalls.any((b) => listEquals(b, [99, 99])), isTrue);
       expect(core.markSentCalls, [101]);
+    });
+
+    test('responder pending flushed after first message', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      // O respondedor selou a mensagem antes de existir cadeia de envio: a
+      // fila só rende bytes depois que o pacote do iniciador chega.
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 7, bytes: Uint8List.fromList([77, 77])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([1, 2, 3]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [77, 77])), hasLength(1));
+      expect(core.markSentCalls, [7]);
+    });
+
+    test('responder pending flushed after a typing packet creates the chain', () async {
+      core.sessionState = SessionStateKind.established;
+      core.decryptIncomingHandler = (_) => IncomingMessageDto(
+            messageId: null,
+            body: '',
+            isTyping: true,
+            receivedAtUnixSecs: 1000,
+          );
+      await service.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 8, bytes: Uint8List.fromList([88])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([4]));
+      await pumpEventQueue();
+
+      expect(core.markSentCalls, [8]);
+    });
+
+    test('restored session flushes pending', () async {
+      core.sessionState = SessionStateKind.established;
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 9, bytes: Uint8List.fromList([9, 9])),
+      ];
+
+      await service.start();
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.any((b) => listEquals(b, [9, 9])), isTrue);
+      expect(core.markSentCalls, [9]);
+    });
+
+    test('flush does not duplicate', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 5, bytes: Uint8List.fromList([55, 55])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([1]));
+      transport.emitIncoming(Uint8List.fromList([2]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [55, 55])), hasLength(1));
+      expect(core.markSentCalls, [5]);
+    });
+
+    test('failed flush send requeues the failed message and the unsent rest', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      transport.sendError = (b) => listEquals(b, [2]);
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([1])),
+        SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([2])),
+        SealedMessageDto(messageId: 3, bytes: Uint8List.fromList([3])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([9]));
+      await pumpEventQueue();
+
+      expect(core.markSentCalls, [1]);
+      expect(core.requeueCalls, [2, 3]);
+    });
+
+    test('failed markMessageSent requeues the rest of the batch but not the delivered message', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.failMarkSent = true;
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([1])),
+        SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([2])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([9]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [1])), hasLength(1));
+      expect(core.requeueCalls, [2], reason: 'a 1 já saiu; reenfileirá-la a enviaria duas vezes');
     });
 
     test('completing generic file transfer sends FILE_COMPLETE and caches path', () async {

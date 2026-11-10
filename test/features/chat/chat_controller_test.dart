@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
@@ -97,6 +98,7 @@ class _FakeCore implements Core {
   List<MessageDto> messagesToReturn = [];
   final sealOutgoingTextCalls = <String>[];
   final markSentCalls = <int>[];
+  final requeueCalls = <int>[];
   final feedHandshakeCalls = <Uint8List>[];
   final decryptIncomingCalls = <Uint8List>[];
 
@@ -169,6 +171,11 @@ class _FakeCore implements Core {
     final result = pendingToFlush;
     pendingToFlush = [];
     return result;
+  }
+
+  @override
+  Future<void> requeueMessage({required PlatformInt64 messageId}) async {
+    requeueCalls.add(messageId);
   }
 
   @override
@@ -707,7 +714,7 @@ void main() {
     expect(controller.isEstablished, isFalse);
   });
 
-  test('initialize does not drain the outbox', () async {
+  test('initialize drains the outbox once, through the reception service', () async {
     core.sessionState = SessionStateKind.established;
     core.pendingToFlush = [
       SealedMessageDto(messageId: 42, bytes: Uint8List.fromList([5, 5, 5])),
@@ -715,10 +722,10 @@ void main() {
     controller = makeController();
 
     await controller.initialize();
-    await Future<void>.delayed(Duration.zero);
+    await pumpEventQueue();
 
-    expect(transport.sendCalls, isEmpty, reason: 'quem drena é o MessageReceptionService');
-    expect(core.markSentCalls, isEmpty);
+    expect(transport.sendCalls.where((b) => listEquals(b, [5, 5, 5])), hasLength(1));
+    expect(core.markSentCalls, [42]);
   });
 
   test('useLan with established session', () async {
@@ -799,6 +806,7 @@ void main() {
     await controller.sendText('oi, bob');
 
     expect(core.markSentCalls, isEmpty);
+    expect(core.requeueCalls, hasLength(1), reason: 'a linha `sending` precisa voltar à fila');
     expect(controller.connectionError, isNotNull);
   });
 
@@ -811,6 +819,7 @@ void main() {
     await controller.sendReaction(targetMessageId: 1, emoji: '👍');
 
     expect(core.markSentCalls, isEmpty);
+    expect(core.requeueCalls, hasLength(1), reason: 'a linha `sending` precisa voltar à fila');
     expect(controller.connectionError, isNotNull);
   });
 
