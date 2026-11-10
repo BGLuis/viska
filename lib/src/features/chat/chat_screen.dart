@@ -703,6 +703,19 @@ class _ChatScreenState extends State<ChatScreen> {
                 onActionPressed: _showSafetyNumberDialog,
               ),
             ),
+          if (controller.isSessionBroken)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
+                key: const Key('session_failed_banner'),
+                tone: ViskaBannerTone.danger,
+                title: controller.sessionBannerTitle,
+                message: controller.sessionBannerMessage,
+                actionLabel: controller.isReconnecting ? 'RECONECTANDO…' : 'RECONECTAR',
+                onActionPressed:
+                    controller.isReconnecting ? null : () => controller.reconnectSession(),
+              ),
+            ),
           if (controller.connectionError != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -993,6 +1006,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String _statusLabel(ChatController controller) {
+    if (controller.isSessionBroken) return 'Sessão interrompida';
     if (controller.connectionError != null) return 'Falha na conexão';
     return controller.isEstablished ? 'Conectado (P2P Pós-Quântico)' : 'Conectando…';
   }

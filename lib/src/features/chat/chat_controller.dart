@@ -21,6 +21,7 @@ import '../../transport/webrtc_p2p_transport.dart';
 import '../../transport/webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 import '../../transport/wifi_aware/wifi_aware_transport.dart';
 import '../voice/voice_io.dart';
+import 'session_health.dart';
 import 'widgets/reply_preview.dart';
 
 /// Tipos de transporte P2P ativos para indicador visual na conversa.
@@ -123,8 +124,34 @@ class ChatController extends ChangeNotifier {
   /// listagem deu certo. A lista anterior é mantida enquanto houver erro.
   String? get offersError => _offersError;
 
-  bool _established = false;
-  bool get isEstablished => _established;
+  final _session = SessionHealth();
+
+  bool get isEstablished => _session.isEstablished;
+  bool get isSessionBroken => _session.isBroken;
+  bool get isSessionFailed => _session.isFailed;
+  String get sessionBannerTitle => _session.bannerTitle;
+  String get sessionBannerMessage => _sessionError ?? _session.bannerMessage;
+
+  var _reconnecting = false;
+  bool get isReconnecting => _reconnecting;
+
+  String? _sessionError;
+
+  /// Falha do último "reconectar"; `null` quando não houve ou deu certo.
+  String? get sessionError => _sessionError;
+
+  static const sessionBrokenMessage = SessionHealth.brokenSendMessage;
+
+  void _applySessionState(SessionStateKind? state, bool needsRehandshake, {required bool fromStream}) {
+    if (!_session.apply(state, needsRehandshake, fromStream: fromStream)) return;
+    // Sessão recuperada: um erro de envio antigo sobre ela deixou de valer.
+    if (!_session.isBroken) {
+      if (_fileError == sessionBrokenMessage) _fileError = null;
+      if (_voiceError == sessionBrokenMessage) _voiceError = null;
+      _sessionError = null;
+    }
+    if (!_disposed) notifyListeners();
+  }
 
   String? _connectionError;
   String? get connectionError => _connectionError;
@@ -144,7 +171,7 @@ class ChatController extends ChangeNotifier {
 
   ActiveTransportType get activeTransport {
     if (_transportOverride != null) return _transportOverride!;
-    if (!_established || _connectionError != null) {
+    if (!isEstablished || _connectionError != null) {
       return ActiveTransportType.offline;
     }
 
@@ -341,18 +368,16 @@ class ChatController extends ChangeNotifier {
       _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
       _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
+      // Eventos que passaram antes de esta conversa abrir já estão no serviço.
+      final known = _receptionService.sessionStateFor(_contactId);
+      if (known != null) {
+        _applySessionState(known.state, known.needsRehandshake, fromStream: true);
+      }
       final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-      // O MessageReceptionService estabelece a sessão em segundo plano ao abrir
-      // o app; se a conversa abre depois, o SessionEstablishedEvent já passou.
-      // Só lê o estado, sem drenar o outbox: quem drena é o serviço (inclusive
-      // ao ligar o ouvinte de uma sessão restaurada), e drenar aqui também
-      // duplicaria o trabalho dele.
-      // Só promove a verdadeiro: um SessionEstablishedEvent que chegue durante
-      // o await já pode ter setado o estado, e este valor lido antes não deve
-      // sobrescrevê-lo.
-      if (session.state == SessionStateKind.established && !_established) {
-        _established = true;
-        notifyListeners();
+      // Só vale se nenhum evento chegou: um evento que passe durante o await é
+      // mais recente que esta leitura e não deve ser sobrescrito por ela.
+      if (!_session.streamed) {
+        _applySessionState(session.state, session.needsRehandshake, fromStream: false);
       }
       await refreshTrustState();
       await loadUnconfirmedOffers();
@@ -376,8 +401,8 @@ class ChatController extends ChangeNotifier {
         }
       case TypingIndicatorEvent():
         break;
-      case SessionEstablishedEvent():
-        _refreshEstablishedState();
+      case SessionStateChangedEvent(:final state, :final needsRehandshake):
+        _applySessionState(state, needsRehandshake, fromStream: true);
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();
@@ -460,6 +485,13 @@ class ChatController extends ChangeNotifier {
   /// [isSendingFile] for `true`).
   Future<void> sendFile(String filePath) async {
     if (_sendingFile) return;
+    // Recusa antes de criar a linha: com a sessão fora do ar `startSendFile`
+    // falharia de qualquer jeito, só que depois de tocar no disco.
+    if (isSessionBroken) {
+      _fileError = sessionBrokenMessage;
+      notifyListeners();
+      return;
+    }
 
     _sendingFile = true;
     _fileError = null;
@@ -492,8 +524,9 @@ class ChatController extends ChangeNotifier {
       await _pumpOutgoingChunks(started.fileId);
       await _core.markMessageSent(messageId: started.messageId);
       await _refreshMessages();
-    } catch (_) {
-      _fileError = 'Não foi possível enviar o arquivo.';
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Falha ao enviar arquivo: $e\n$stack');
+      _fileError = await _sendFailureMessage('Não foi possível enviar o arquivo.');
       if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
     } finally {
       _sendingFile = false;
@@ -600,6 +633,11 @@ class ChatController extends ChangeNotifier {
   /// (armadilha do relatório da Fase 5).
   Future<void> startRecording() async {
     if (_recording || _sendingVoice) return;
+    if (isSessionBroken) {
+      _voiceError = sessionBrokenMessage;
+      notifyListeners();
+      return;
+    }
 
     final granted = await Permission.microphone.request();
     if (!granted.isGranted) {
@@ -632,6 +670,14 @@ class ChatController extends ChangeNotifier {
 
     final rawPath = await _recorder.stop();
     if (rawPath == null) return;
+
+    // A sessão pode ter caído durante a gravação.
+    if (isSessionBroken) {
+      _voiceError = sessionBrokenMessage;
+      unawaited(File(rawPath).delete().catchError((_) => File(rawPath)));
+      notifyListeners();
+      return;
+    }
 
     _sendingVoice = true;
     notifyListeners();
@@ -666,8 +712,9 @@ class ChatController extends ChangeNotifier {
       await _pumpOutgoingChunks(started.fileId);
       await _core.markMessageSent(messageId: started.messageId);
       await _refreshMessages();
-    } catch (_) {
-      _voiceError = 'Não foi possível enviar a nota de voz.';
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Falha ao enviar nota de voz: $e\n$stack');
+      _voiceError = await _sendFailureMessage('Não foi possível enviar a nota de voz.');
       if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
     } finally {
       _sendingVoice = false;
@@ -734,16 +781,49 @@ class ChatController extends ChangeNotifier {
   }
 
 
-  Future<void> _refreshEstablishedState() async {
-    final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
-    final established = status?.state == SessionStateKind.established;
-    if (established && !_established) {
-      _established = true;
-      notifyListeners();
-    } else if (established != _established) {
-      _established = established;
-      notifyListeners();
+  /// Abre uma sessão nova com o contato (`Core.resetSession`) e publica a
+  /// INIT se formos o iniciador. O reset é só local: o contato pode precisar
+  /// reconectar também, e o aviso do chat diz isso.
+  Future<void> reconnectSession() async {
+    if (_reconnecting) return;
+    _reconnecting = true;
+    _sessionError = null;
+    notifyListeners();
+    try {
+      final status = await _core.resetSession(peerDeviceId: _contactId.deviceId);
+      final handshake = status.outgoingHandshake;
+      if (handshake != null) {
+        try {
+          await _router.sendToContact(_contactId, handshake);
+        } catch (e) {
+          // A sessão já foi reaberta; sem transporte, o serviço de recepção
+          // publica a INIT quando ele voltar.
+          if (kDebugMode) debugPrint('[ChatController] INIT da sessão nova não enviada: $e');
+        }
+      }
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reconectar a sessão: $e\n$stack');
+      _sessionError = 'Não foi possível reconectar. Tente de novo.';
+    } finally {
+      _reconnecting = false;
+      if (!_disposed) notifyListeners();
     }
+  }
+
+  /// A mensagem do erro de envio: se a causa é a sessão, o aviso específico
+  /// em vez do genérico, que só deixaria a pessoa tentando de novo.
+  Future<String> _sendFailureMessage(String generic) async {
+    if (isSessionBroken) return sessionBrokenMessage;
+    try {
+      final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
+      if (status != null &&
+          (status.state == SessionStateKind.failed || status.needsRehandshake)) {
+        return sessionBrokenMessage;
+      }
+    } catch (_) {
+      // Sem como confirmar, vale a mensagem genérica.
+    }
+    return generic;
   }
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem

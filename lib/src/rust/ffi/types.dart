@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -380,6 +380,37 @@ class SendFileStartedDto {
           messageId == other.messageId;
 }
 
+/// Mudança de estado de uma sessão, empurrada pelo stream de
+/// `Core::subscribe_session_events`. Só dado público: o mesmo que
+/// `Core::session_status` já devolve.
+class SessionStateEventDto {
+  final Uint8List peerDeviceId;
+
+  /// `None` quando a sessão deixou de existir (bloqueio do cofre,
+  /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
+  final SessionStateKind? state;
+  final bool needsRehandshake;
+
+  const SessionStateEventDto({
+    required this.peerDeviceId,
+    this.state,
+    required this.needsRehandshake,
+  });
+
+  @override
+  int get hashCode =>
+      peerDeviceId.hashCode ^ state.hashCode ^ needsRehandshake.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SessionStateEventDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          state == other.state &&
+          needsRehandshake == other.needsRehandshake;
+}
+
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de
 /// `viska_proto::session::Session` — só o que a UI precisa para decidir o que
 /// mostrar (indicador de conexão, botão de retry).
@@ -390,7 +421,8 @@ enum SessionStateKind {
   /// Pronta para cifrar/decifrar mensagens.
   established,
 
-  /// Precisa de uma sessão nova (`Core::ensure_session` de novo).
+  /// Precisa de uma sessão nova: `Core::reset_session` (`ensure_session`
+  /// devolve a sessão falha como está, nunca a reabre).
   failed,
 }
 
