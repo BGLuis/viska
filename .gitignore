@@ -55,3 +55,6 @@ app.*.map.json
 *.staging
 /rust/viska_core/src/frb_generated.rs.bak
 .worktrees/
+
+# Nix/direnv (ambiente opcional)
+.direnv/
