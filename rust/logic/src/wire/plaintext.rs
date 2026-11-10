@@ -46,12 +46,13 @@ const FLAG_KEM_CT: u8 = 0b0000_0010;
 /// formato ser interpretada de forma incompatível por implementações antigas.
 const FLAG_RESERVED_MASK: u8 = !(FLAG_KEM_EK | FLAG_KEM_CT);
 
-/// O maior cabeçalho fixo possível: os dois flags de KEM setados ao mesmo tempo.
+/// O maior cabeçalho fixo que o decodificador aceita: os dois flags de KEM
+/// setados ao mesmo tempo.
 ///
-/// Uma mensagem de re-KEM em andamento pode legitimamente carregar `KEM_ek` e
-/// `KEM_ct` juntos (§5.4): o par que dispara o rekem manda `KEM_ek` novo, e a
-/// contraparte, se já estiver no meio de outro re-KEM, pode responder com
-/// `KEM_ct` na mesma mensagem que carrega seu próprio `KEM_ek`.
+/// O emissor nunca produz essa combinação (§5.4): a interação entre as duas
+/// posições de dobra em `RK` é frágil demais para o ganho. O decodificador a
+/// aceita mesmo assim, então o teto de padding precisa cobrir o pior caso
+/// decodificável, e não só o que este emissor gera.
 pub const MAX_HEADER_LEN: usize = KEM_MATERIAL_AT + PUBLIC_KEY_LEN + CIPHERTEXT_LEN;
 
 /// Plaintext interno do envelope, antes de cifrar e depois de decifrar.

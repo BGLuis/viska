@@ -95,26 +95,12 @@ type SkippedAdditions = Vec<(SkippedId, kdf::Key)>;
 
 /// Deriva a chave de mensagem e a próxima chave de cadeia (§5.3).
 ///
-/// O texto de §5.3 lista dois contextos, `viska-send-chain-v1` para quem
-/// envia e `viska-recv-chain-v1` para quem recebe, como se cada lado
-/// escolhesse o contexto pelo seu papel local na troca. Isso não pode estar
-/// certo: `CKs` de quem envia e `CKr` de quem recebe são o mesmo segredo,
-/// numericamente, avançando em paralelo nas duas pontas — se cada lado
-/// aplicasse um contexto de domínio diferente ao avançar essa mesma cadeia,
-/// as duas pontas divergiriam depois da primeira mensagem, e nenhuma
-/// mensagem seguinte seria decifrável (confirmado por teste: é exatamente o
-/// que acontece se `CKr` avança com `RECV_CHAIN` enquanto `CKs` avança com
-/// `SEND_CHAIN` para a mesma cadeia).
-///
-/// A leitura que preserva correção é: quem **cria** uma cadeia (o lado que
-/// gerou o `DHs` dela) sempre a rotula como sua cadeia de envio e sempre usa
-/// `SEND_CHAIN` para avançá-la — e isso vale tanto para o iniciador quanto
-/// para o respondedor, simetricamente. A outra ponta, ao herdar essa mesma
-/// cadeia como sua `CKr`, precisa reproduzir exatamente o cálculo de quem a
-/// criou para os valores continuarem batendo, então usa o mesmo contexto
-/// `SEND_CHAIN`, não `RECV_CHAIN`. Na prática, isso significa que
-/// `viska-recv-chain-v1` nunca é usado por este módulo — ver o relatório
-/// final sobre esta divergência da especificação.
+/// Há um único contexto, `viska-send-chain-v1`, para as duas pontas (§5.3):
+/// `CKs` de quem envia e `CKr` de quem recebe são o mesmo segredo, avançando
+/// em paralelo nos dois aparelhos. Contextos de domínio diferentes por papel
+/// fariam as pontas divergirem logo depois da primeira mensagem, e nenhuma
+/// seguinte seria decifrável. Por isso `viska-recv-chain-v1` não existe mais
+/// em `crypto/kdf.rs`.
 fn chain_step(chain_key: &kdf::Key) -> (kdf::Key, kdf::Key) {
     let mut material = [0u8; kdf::KEY_LEN + 1];
     material[..kdf::KEY_LEN].copy_from_slice(chain_key.as_bytes());
