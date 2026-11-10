@@ -111,6 +111,45 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
   suportar transferências concorrentes com o mesmo contato. `file_id` é aleatório, sem relação com
   conteúdo, nome ou tamanho; mesma categoria de vazamento necessário que `Counter`/`dh_pub` no canal
   `control` (D4/D14).
+- **Detectabilidade do cofre falso (issue #30, achado S-17 da auditoria de 2026-09).** O modo
+  "Cofre Falso" do PIN de coação **não é indetectável** para quem examina o armazenamento do
+  aparelho (§1.4), e o aplicativo não promete negação plausível da existência de um segundo cofre.
+  O que é observável hoje, sem decifrar nada:
+  - `<app_dir>/security_config.json` é JSON em texto claro. A presença de `duress_pin_hash` e
+    `duress_pin_length` indica que há PIN de coação configurado (`lock_controller.dart:188-193`).
+    `duress_action_mode` é gravada sempre, mesmo sem PIN de coação (`lock_controller.dart:193`),
+    então por si só não distingue aparelhos; qualquer valor diferente de 0 (na prática 1) escolhe o
+    cofre falso (`lock_controller.dart:442-446`), e só tem efeito se houver PIN de coação.
+  - `<app_dir>/decoy/` guarda um `Core` próprio, com banco independente do real
+    (`decoy/viska.sqlite3`, `rust/src/ffi/core.rs:24`; sem chave injetada pelo KeyStore, também um
+    `decoy/master.key`, `rust/logic/src/store/keyring.rs:24,71`), aberto por `Core.open(appDir: decoyDir)`
+    (`lock_controller.dart:462,469`). O diretório é criado de forma preguiçosa, em
+    `activateDecoyVault`, chamada quando o PIN de coação é aceito com o modo cofre falso
+    (`lock_controller.dart:460-466`).
+  - **O que isso prova:** `decoy/` presente indica que o cofre falso foi ativado alguma vez neste
+    aparelho. Ele persiste mesmo depois de o PIN de coação ser removido (`clearPins`,
+    `lock_controller.dart:271-279`, não o apaga), então não prova que há PIN de coação *hoje*. Pode
+    existir vazio se `Core.open` falhar (o erro é engolido, `lock_controller.dart:468-474`).
+    `duress_pin_hash` presente prova que existe um PIN de coação configurado.
+  - **O que isso não prova:** `decoy/` ausente **não** prova que não há cofre falso configurado
+    (basta o PIN de coação nunca ter sido digitado); `duress_*` ausente também não prova que nunca
+    houve PIN de coação, porque `clearPins` os remove. Os arquivos não dizem, por si, o conteúdo de
+    nenhum dos dois cofres.
+  - **Agravante já existente:** os PINs ficam em `security_config.json` como SHA-256 com prefixo
+    constante `viska-pin-v1:` (separação de domínio, não sal) e sem custo de derivação
+    (`_hashPin`, `lock_controller.dart:152-154`). Com PIN de 4 a 8 dígitos
+    (`lock_controller.dart:104-105`), quem lê o arquivo recupera os PINs por força bruta offline,
+    inclusive qual deles é o de coação, e pode editar `failed_pin_attempts` e
+    `pin_retry_not_before_ms`. O PIN é um portão de interface (a chave mestra fica fora desse
+    arquivo), então isso não abre o conteúdo cifrado, mas agrava a detectabilidade. Problema
+    próprio, **não corrigido aqui**.
+  - **Não mitigado:** renomear as chaves `duress_*` ou o diretório `decoy/` só atrapalharia um
+    examinador que não conhece o app; enquanto os dois cofres forem distinguíveis pela estrutura
+    de arquivos, o ganho é nulo contra um que conheça. O apagamento de emergência remove
+    `security_config.json` e `decoy/` em melhor esforço (falhas são engolidas,
+    `lock_controller.dart:510-536`), só depois de acionado (modo 0 do PIN de coação ou apagamento manual em Ajustes,
+    `settings_screen.dart:258`), e não ajuda
+    a esconder o cofre falso.
 - **Comprometimento do aparelho antes do primeiro uso.** Se o aparelho já estiver comprometido (malware,
   keylogger, câmera do QR interceptada) antes do pareamento, nenhuma primitiva aqui ajuda — a raiz de
   confiança é o pareamento presencial em si.
