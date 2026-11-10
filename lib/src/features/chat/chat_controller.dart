@@ -359,7 +359,7 @@ class ChatController extends ChangeNotifier {
       case TypingIndicatorEvent():
         break;
       case SessionEstablishedEvent():
-        _refreshEstablishedStateAndFlushIfNeeded();
+        _refreshEstablishedState();
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();
@@ -371,7 +371,7 @@ class ChatController extends ChangeNotifier {
 
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
   /// sessão já estiver pronta. Se não estiver, a mensagem fica `pending` até
-  /// o handshake terminar e o outbox drenar (`_flushPending`).
+  /// o handshake terminar e o `MessageReceptionService` drenar o outbox.
   Future<void> sendText(
     String body, {
     QuotedReply? replyTo,
@@ -399,7 +399,7 @@ class ChatController extends ChangeNotifier {
       );
       await _refreshMessages();
       if (sealed.bytes != null) {
-        await _sendSealed(sealed.messageId, sealed.bytes!);
+        await _trySendSealed(sealed.messageId, sealed.bytes!);
       }
     } finally {
       _sending = false;
@@ -431,7 +431,7 @@ class ChatController extends ChangeNotifier {
     );
     await _refreshMessages();
     if (sealed.bytes != null) {
-      await _sendSealed(sealed.messageId, sealed.bytes!);
+      await _trySendSealed(sealed.messageId, sealed.bytes!);
     }
   }
 
@@ -653,31 +653,51 @@ class ChatController extends ChangeNotifier {
   }
 
 
-  Future<void> _refreshEstablishedStateAndFlushIfNeeded() async {
+  Future<void> _refreshEstablishedState() async {
     final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
     final established = status?.state == SessionStateKind.established;
     if (established && !_established) {
       _established = true;
       notifyListeners();
-      await _flushPending();
     } else if (established != _established) {
       _established = established;
       notifyListeners();
     }
   }
 
-  Future<void> _flushPending() async {
-    final sealed = await _core.flushPending(peerDeviceId: _contactId.deviceId);
-    for (final message in sealed) {
-      final bytes = message.bytes;
-      if (bytes != null) {
-        await _sendSealed(message.messageId, bytes);
+  /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
+  /// continua `pending` porque `markMessageSent` não chegou a rodar. Hoje o
+  /// outbox só é drenado quando a sessão se estabelece
+  /// (`MessageReceptionService`); reenviar depois de uma reconexão com a
+  /// sessão já estabelecida depende da reconexão do #54.
+  Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
+    try {
+      await _router.sendToContact(_contactId, bytes);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem segue pendente: $e');
+      // O motivo do transporte (evento `failed`) é mais informativo: só
+      // preenche se ele ainda não chegou.
+      if (!_disposed) {
+        _connectionError ??= 'Não foi possível enviar a mensagem.';
+        notifyListeners();
       }
+      return;
+    }
+    // Envio que passou prova que a conexão serve; um erro antigo deixaria a
+    // conversa offline até o próximo `connected`.
+    if (_connectionError != null && !_disposed) {
+      _connectionError = null;
+      notifyListeners();
+    }
+    try {
+      await _markSentAndRefresh(messageId);
+    } catch (e) {
+      // Os bytes já saíram: falha local ao marcar não é queda de conexão.
+      if (kDebugMode) debugPrint('[ChatController] falha ao marcar como enviada: $e');
     }
   }
 
-  Future<void> _sendSealed(int messageId, Uint8List bytes) async {
-    await _router.sendToContact(_contactId, bytes);
+  Future<void> _markSentAndRefresh(int messageId) async {
     await _core.markMessageSent(messageId: messageId);
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx != -1) {

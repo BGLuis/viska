@@ -174,7 +174,10 @@ class _FakeCore implements Core {
   @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) async {
     markSentCalls.add(messageId);
+    if (failMarkSent) throw StateError('banco indisponível');
   }
+
+  bool failMarkSent = false;
 
   final List<PlatformInt64> markDeliveredCalls = [];
 
@@ -544,6 +547,11 @@ class _FakeCore implements Core {
 class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
+  Object? sendError;
+
+  /// Falha só os envelopes que o predicado aceita — o handshake também passa
+  /// por `send` e não deve ser derrubado nos testes de mensagem.
+  bool Function(Uint8List)? sendErrorWhen;
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
@@ -552,7 +560,11 @@ class _FakeP2PTransport implements P2PTransport {
   Future<void> connect() async {}
 
   @override
-  Future<void> send(Uint8List envelope) async => sendCalls.add(envelope);
+  Future<void> send(Uint8List envelope) async {
+    final error = sendError;
+    if (error != null && (sendErrorWhen?.call(envelope) ?? true)) throw error;
+    sendCalls.add(envelope);
+  }
 
   @override
   Future<void> sendFile(Uint8List bytes) async => sendFileCalls.add(bytes);
@@ -742,6 +754,77 @@ void main() {
     expect(core.sealOutgoingTextCalls, ['oi, bob']);
     expect(transport.sendCalls, hasLength(1));
     expect(core.markSentCalls, hasLength(1));
+  });
+
+  test('failed send stays pending: sendText does not mark as sent nor throw', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    transport.sendError = StateError('conexão LAN indisponível');
+
+    await controller.sendText('oi, bob');
+
+    expect(core.markSentCalls, isEmpty);
+    expect(controller.connectionError, isNotNull);
+  });
+
+  test('failed send stays pending: sendReaction does not mark as sent nor throw', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    transport.sendError = StateError('conexão LAN indisponível');
+
+    await controller.sendReaction(targetMessageId: 1, emoji: '👍');
+
+    expect(core.markSentCalls, isEmpty);
+    expect(controller.connectionError, isNotNull);
+  });
+
+  test('failed markMessageSent after a delivered send is not reported as a connection error', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    core.failMarkSent = true;
+
+    await controller.sendText('oi, bob');
+
+    expect(transport.sendCalls, hasLength(1));
+    expect(controller.connectionError, isNull);
+  });
+
+  test('successful send clears a stale send error', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    transport.sendError = StateError('x');
+    await controller.sendText('a');
+    expect(controller.connectionError, isNotNull);
+
+    transport.sendError = null;
+    await controller.sendText('b');
+
+    expect(controller.connectionError, isNull);
+  });
+
+  test('failed send stays pending: flushPending keeps every message pending when the connection is down', () async {
+    core.outgoingHandshake = null;
+    core.feedHandshakeResponse = null;
+    core.establishOnFeedHandshake = true;
+    core.pendingToFlush = [
+      SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([7])),
+      SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([8])),
+    ];
+    controller = makeController();
+    await controller.initialize();
+    transport.sendError = StateError('conexão LAN indisponível');
+    transport.sendErrorWhen = (b) => b.length == 1 && b[0] >= 7;
+
+    transport.emitIncoming(Uint8List.fromList([1]));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    // Quem drena o outbox de fato é o MessageReceptionService, que já captura.
+    expect(core.markSentCalls, isEmpty);
+    expect(transport.sendCalls.where((b) => b[0] >= 7), isEmpty);
   });
 
   test('sendText with session not yet established only persists (does not send)', () async {
