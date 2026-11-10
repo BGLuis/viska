@@ -805,6 +805,28 @@ void main() {
     expect(uncaught, isEmpty);
   });
 
+  test('concurrent sends keep the connection alive and arrive in order', () async {
+    final pair = await connectedPair();
+    final failures = <TransportConnectionEvent>[];
+    pair.active.connectionEvents
+        .where((e) => e.state == TransportConnectionState.failed)
+        .listen(failures.add);
+    final received = <Uint8List>[];
+    pair.passive.incoming.listen(received.add);
+
+    // Muitos quadros (o dublê de extração rejeita > 1024 bytes) para que um
+    // flush ainda esteja pendente quando o próximo envio começa.
+    final payloads = [
+      for (var i = 0; i < 2000; i++) Uint8List.fromList(List<int>.filled(1000, i % 256)),
+    ];
+    await Future.wait([for (final p in payloads) pair.active.send(p)])
+        .timeout(const Duration(seconds: 10));
+    await untilTrue(() => received.length == payloads.length);
+
+    expect(failures, isEmpty);
+    expect([for (final r in received) r.first], [for (var i = 0; i < 2000; i++) i % 256]);
+  });
+
   test('local close does not publish failed', () async {
     final pair = await connectedPair();
     final events = <TransportConnectionState>[];

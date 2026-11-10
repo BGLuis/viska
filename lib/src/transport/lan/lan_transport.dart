@@ -132,11 +132,26 @@ class LanTransport implements P2PTransport, TransportReadiness {
   @override
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEventsController.stream;
 
-  @override
-  Future<void> send(Uint8List envelope) => _write(_control, envelope);
+  /// Cauda de escritas por canal. `Socket.flush` lança `StateError` se já houver
+  /// outro `flush` pendente no mesmo socket, e há vários produtores
+  /// independentes no canal de controle (chat, acks, handshake): sem
+  /// serializar, uma conexão saudável seria derrubada como falsa queda.
+  Future<void> _controlTail = Future<void>.value();
+  Future<void> _fileTail = Future<void>.value();
 
   @override
-  Future<void> sendFile(Uint8List bytes) => _write(_file, bytes);
+  Future<void> send(Uint8List envelope) {
+    final result = _controlTail.then((_) => _write(_control, envelope));
+    _controlTail = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  @override
+  Future<void> sendFile(Uint8List bytes) {
+    final result = _fileTail.then((_) => _write(_file, bytes));
+    _fileTail = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
 
   /// Recusar com erro (em vez de aceitar e perder) é o que impede o chamador
   /// de marcar como enviada uma mensagem que nunca saiu: `add` sozinho retorna
@@ -151,7 +166,8 @@ class LanTransport implements P2PTransport, TransportReadiness {
     try {
       connection.add(framed);
       await connection.flush();
-    } catch (_) {
+    } catch (e) {
+      if (kDebugMode) debugPrint('[LanTransport] escrita falhou: ${e.runtimeType}');
       _fail('falha ao escrever no socket local');
       throw TransportUnavailableException();
     }
