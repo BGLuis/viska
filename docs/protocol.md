@@ -409,9 +409,19 @@ envelope externo diferencia os dois (§6.6, D16).
 
 ### 7.2 Merkle BLAKE3
 
-A raiz é o hash BLAKE3 do plaintext completo — a árvore interna do BLAKE3 (chunks de 1024 B) é o
-que permite verificação incremental. O receptor verifica cada source block contra a árvore assim
-que o decodifica, e a raiz completa no final, antes do commit atômico.
+A raiz é o hash BLAKE3 do plaintext completo. O receptor **não** verifica cada source block contra a
+árvore ao decodificá-lo: ele acumula o hash do plaintext à medida que os blocos são decodificados, mas
+só finaliza e compara com `merkle_root` do manifesto uma vez, depois que todos os blocos completaram, e
+só então decifra o staging para o destino (§7.5). Raiz que não bate faz `finish` devolver erro sem escrever
+nada no destino final (D26). Notas de voz seguem o mesmo caminho.
+
+O que há por bloco é integridade e autenticidade **por símbolo**, não por bloco contra a raiz: cada
+`FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `K_symbol` (`AUDIO_CHUNK`, sob `K_audio_chunk`; cifra e nonce em D11, origem da chave em D15, formato em §7.3.1), e um símbolo adulterado ou
+forjado por quem não detém o segredo da transferência falha na abertura e é descartado antes do
+decodificador. Isso **não** autentica o conteúdo contra a raiz: um par pareado que erre ou minta sobre
+o conteúdo só é pego no fim, e o `merkle_root` vem do próprio manifesto desse par. Verificar um bloco
+do meio contra uma raiz de 32 B exigiria dado extra no manifesto (um CV por bloco) e só funciona onde
+o bloco é subárvore BLAKE3 alinhada, o que não vale na LAN (`symbol_size` 65535, D23).
 
 ### 7.3 RaptorQ (D6)
 

@@ -98,13 +98,14 @@
 //!
 //! ## O que fica para depois — não implementado aqui
 //!
-//! - **Verificação só ao final, não por bloco.** O spike de `file::merkle`
-//!   (F0) mostrou que autenticar um bloco no meio do arquivo contra uma
-//!   única raiz de 32 B exige dado extra no manifesto — decisão pendente,
-//!   não tomada. Este módulo confia no que o RaptorQ decodifica e só
-//!   verifica a raiz completa em [`ReceiveTransfer::finish`], antes do
-//!   commit atômico (§7.5): mais fraco que "detecta no bloco", mas nunca
-//!   grava no destino final sem a raiz bater.
+//! - **Verificação só ao final, não por bloco (D26).** Autenticar um bloco
+//!   no meio do arquivo contra uma única raiz de 32 B exigiria dado extra
+//!   no manifesto; a decisão foi registrar o desvio, não implementar. Este
+//!   módulo confia no que o RaptorQ decodifica (símbolos adulterados já
+//!   caem no AEAD) e só verifica a raiz completa em
+//!   [`ReceiveTransfer::finish`], antes do commit atômico (§7.5): mais
+//!   fraco que "detecta no bloco", mas nunca grava no destino final sem a
+//!   raiz bater.
 //! - **Controle de taxa é só "parar quando o bloco completa"** — a política
 //!   mínima que §7.3 exige. Um token bucket de verdade (ritmo de envio, não
 //!   só parar/continuar) fica para quando houver número real de rede para

@@ -16,14 +16,14 @@
 //!    precisam de acesso à estrutura interna — exatamente o nosso caso).
 //!
 //! **O que a peça 2 não resolve sozinha**: autenticar um source block *assim
-//! que decodificado* (a promessa de §7.2 de detectar corrupção "no bloco",
+//! que decodificado* (o que a §7.2 original prometia, detectar corrupção "no bloco",
 //! não só ao final) exige comparar o CV computado contra um CV *esperado*
 //! para aquele bloco — e não existe forma de obter esse valor esperado só a
 //! partir da `merkle_root` final sem já ter processado o arquivo inteiro até
 //! ali. A única saída criptográfica é o manifesto (ou um pacote logo depois
 //! dele) carregar um CV de 32 B por bloco. Isso é uma mudança de formato de
-//! fio sobre `docs/protocol.md` §7.1 hoje, e não foi decidida aqui — ver
-//! `docs/reports/FASE-4-PIPELINE-DE-ARQUIVOS.md`. Por isso
+//! fio sobre `docs/protocol.md` §7.1, e foi deliberadamente não feita: ver
+//! D26 em `docs/deviations.md`. Por isso
 //! `block_chaining_value` recebe posição e bytes e devolve o CV computado,
 //! sem tentar adivinhar de onde viria um CV esperado para comparar.
 //!

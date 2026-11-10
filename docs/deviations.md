@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D22). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D26). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -417,6 +417,8 @@ de tamanho dentro do tráfego da LAN, que tem o mesmo conjunto de dois tamanhos,
 
 **Recuperação de bloco no modo offset:** O emissor envia inicialmente os `k` símbolos-fonte do bloco atual em sequência. Se o feedback do receptor indicar que o bloco não foi concluído (`!advanced`) e todos os símbolos já foram transmitidos (`next_repair_symbol_id >= repair_limit`), o emissor aciona automaticamente `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco a partir do cache `current_source_symbols`. Como o receptor envia feedback a cada 500 ms mesmo sem chegar símbolo (§7.4), aceites tardios de arquivos pesados ou perdas pontuais na LAN não congelam a transferência. Além disso, 65535 não é potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e `merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por posição. A raiz completa do manifesto não é afetada.
 
+A decisão de não verificar por bloco em nenhum transporte está em D26.
+
 ---
 
 ## D24 — Suítes criptográficas versionadas e ciclo de vida de migração
@@ -447,3 +449,15 @@ A recepção irrestrita e automática de arquivos pesados expõe dispositivos m�
 4. **Recusa avisa o emissor:** recusar explicitamente envia `FILE_REJECT` (`0x24`, §7.7), em melhor esforço e sem fila em disco. Perder a oferta num bloqueio continua sem pacote no fio, e não há timeout no emissor para quem nunca responde.
 
 **Custo de reverter:** remover a verificação de limite em `handle_incoming_file_metadata`, iniciando `start_receiving_transfer` para qualquer tamanho e expondo o aparelho móvel a downloads massivos não consentidos.
+
+---
+
+## D26 — Raiz Merkle verificada só ao final, não por source block
+**Spec:** §7.2, "o receptor verifica cada source block contra a árvore assim que o decodifica, e a raiz completa no final".
+**Aqui:** só a raiz completa é verificada, em `ReceiveTransfer::finish`, depois que todos os blocos completaram e antes do commit atômico (§7.5). Raiz divergente faz `finish` devolver `MerkleMismatch` sem escrever no destino final. Nenhum source block é autenticado contra a raiz isoladamente, em arquivos ou em notas de voz (`ReceiveTransfer` e `finish` são os mesmos).
+
+O manifesto carrega uma única `merkle_root` de 32 B, e autenticar um bloco do meio do arquivo contra ela exige dado extra: um *chaining value* de 32 B por bloco, mudando o formato do manifesto (§7.1). Isso só serve onde o bloco é uma subárvore BLAKE3 alinhada; na LAN, com `symbol_size` 65535 (D23), não é. Alinhar a LAN reabriria D23 (65536 não cabe em `u16`).
+
+O que continua garantido por símbolo: cada `FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `symbol_key` (`SendTransfer::next_sealed_symbol` sela, `ReceiveTransfer::ingest_sealed_symbol` abre; a chave vem de `keys::derive_symbol_key`, derivada do `transfer_secret`, D15; cifra e nonce em D11; em notas de voz o `AUDIO_CHUNK` usa `K_audio_chunk` no lugar de `K_symbol`), com `file_id` como AAD. Adulteração ou forja em trânsito por quem não detém o segredo da transferência falha na abertura. O que **não** é garantido: que o conteúdo bate com a raiz antes do fim. Um par pareado que mande conteúdo errado só é detectado depois de receber o arquivo inteiro, ao custo de banda e de espaço de staging. A autenticação é MAC simétrico, então a deniabilidade não muda.
+
+**Custo de reverter:** acrescentar um CV por bloco ao manifesto (ou a um pacote logo após ele), chamar `merkle::block_chaining_value` (hoje sem chamador) a cada bloco decodificado em `ReceiveTransfer`, e decidir a LAN: ficar sem verificação por bloco ou alinhar o `symbol_size` (reabrindo D23). Muda o wire e o limite de tamanho do manifesto.
