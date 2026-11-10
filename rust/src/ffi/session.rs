@@ -77,20 +77,28 @@ impl Core {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
-        let status = {
-            let mut sessions = self.lock_sessions()?;
-            if let Some(session) = sessions.get(&device_id) {
-                if !session.is_failed() && !session.needs_rehandshake() {
+        let had_session = {
+            let sessions = self.lock_sessions()?;
+            match sessions.get(&device_id) {
+                Some(session) if !session.is_failed() && !session.needs_rehandshake() => {
                     return Ok(status_dto(session));
                 }
-                sessions.remove(&device_id);
+                Some(_) => true,
+                None => false,
             }
-            self.open_session(&mut sessions, device_id)?
         };
 
-        self.abort_outgoing_transfers(&device_id)?;
-        self.store.requeue_sending_messages_for_contact(&device_id)?;
-        Ok(status)
+        // Antes de trocar a sessão: se alguma etapa do banco falhar, a sessão
+        // velha continua lá e a pessoa pode tentar de novo, em vez de ficar com
+        // uma sessão nova e textos presos em `Sending`.
+        if had_session {
+            self.abort_outgoing_transfers(&device_id)?;
+            self.store.requeue_sending_messages_for_contact(&device_id)?;
+        }
+
+        let mut sessions = self.lock_sessions()?;
+        sessions.remove(&device_id);
+        self.open_session(&mut sessions, device_id)
     }
 
     /// Cancela os envios de arquivo e voz deste contato e falha as linhas.
@@ -1540,5 +1548,17 @@ mod tests {
 
         assert_eq!(last_state(&seen), None);
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn reset_without_a_session_just_opens_one() {
+        let p = paired_pair();
+        let seen = record_events(&p.core_a);
+        assert!(seen.lock().unwrap().is_empty());
+
+        let status = p.core_a.reset_session(p.device_id_b.clone()).unwrap();
+
+        assert_eq!(status.state, SessionStateKind::Handshaking);
+        assert_eq!(last_state(&seen), Some(SessionStateKind::Handshaking));
     }
 }

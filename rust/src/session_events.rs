@@ -111,6 +111,8 @@ impl std::fmt::Debug for PublishOnExit<'_> {
 
 impl Drop for PublishOnExit<'_> {
     fn drop(&mut self) {
+        // Roda também em unwinding: o destinatário só enfileira (`StreamSink::add`
+        // não bloqueia nem entra em pânico), então não há como abortar aqui.
         self.core.publish_session(&self.device_id);
     }
 }

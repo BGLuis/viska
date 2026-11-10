@@ -12,9 +12,9 @@ use std::sync::{Mutex, RwLock};
 use zeroize::Zeroize;
 
 use crate::ffi::error::FfiError;
-use crate::session_events::SessionEvents;
 use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
 use crate::ffi::types::{ContactDto, SafetyNumberDto};
+use crate::session_events::SessionEvents;
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
 use viska_proto::crypto::safety_number::SafetyNumber;
@@ -518,6 +518,8 @@ impl Core {
             *id_guard = new_id;
         }
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        // A identidade mudou: o Dart não pode seguir achando que há sessão.
+        self.publish_all_sessions();
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         Ok(())
     }
@@ -718,6 +720,37 @@ mod tests {
         assert!(!db_path.exists());
         assert!(!test_file.exists());
         assert_eq!(core.list_contacts(), Err(FfiError::Locked));
+    }
+
+    #[test]
+    fn restoring_a_backup_announces_that_sessions_are_gone() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+        let core_c = open_core(&dir_c);
+        let backup_path = dir_a.path().join("backup.viskasafe");
+        let mnemonic = core_a
+            .export_encrypted_backup(backup_path.to_str().unwrap().to_string())
+            .unwrap();
+        let contact = core_c.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        core_c.ensure_session(contact.device_id.clone()).unwrap();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<crate::ffi::types::SessionStateEventDto>>> =
+            Default::default();
+        let sink_seen = std::sync::Arc::clone(&seen);
+        core_c
+            .set_session_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+
+        core_c
+            .restore_encrypted_backup(backup_path.to_str().unwrap().to_string(), mnemonic)
+            .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.last().unwrap().state, None);
     }
 
     #[test]

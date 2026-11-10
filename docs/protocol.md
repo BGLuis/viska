@@ -704,7 +704,9 @@ segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
 **Lacuna conhecida:** o reset é unilateral. Sem marcador de tipo no fio (D4), o par não é avisado:
 se ele seguir `Established`, a INIT nova é lida lá como envelope inválido e descartada em silêncio, e
 só passa a valer depois que a sessão dele também falhar (8 falhas) e for reaberta. Quem reabre como
-respondedor (`AwaitingPeerInit`) não envia nada. Um sinal para o par depende de decisão de projeto
+respondedor (`AwaitingPeerInit`) não envia nada, e uma INIT que o iniciador tenha enviado enquanto
+ele ainda estava `Failed` foi descartada: com os dois lados reabrindo em instantes diferentes, a INIT
+só é publicada de novo quando o transporte for recriado ou o iniciador reconectar de novo. Um sinal para o par depende de decisão de projeto
 compatível com D4 e com a deniabilidade (issue #78).
 
 ### 11.2 Política de rotação do contador
