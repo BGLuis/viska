@@ -695,7 +695,10 @@ class ChatController extends ChangeNotifier {
     }
     // Envio que passou prova que a conexão serve; um erro antigo deixaria a
     // conversa offline até o próximo `connected`.
-    _connectionError = null;
+    if (_connectionError != null && !_disposed) {
+      _connectionError = null;
+      notifyListeners();
+    }
     try {
       await _markSentAndRefresh(messageId);
     } catch (e) {
