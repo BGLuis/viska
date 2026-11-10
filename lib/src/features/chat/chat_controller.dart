@@ -654,6 +654,9 @@ class ChatController extends ChangeNotifier {
     // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
     // `FILE_FEEDBACK` que não vem mais por um socket morto.
     final transport = _router.transportFor(_contactId);
+    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
+    // na checagem abaixo para sempre.
+    if (transport == null) throw const TransportUnavailableException();
     while (true) {
       if (!identical(_router.transportFor(_contactId), transport)) {
         throw const TransportUnavailableException();

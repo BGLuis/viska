@@ -27,11 +27,18 @@ class TransferForegroundService : Service() {
         // logo depois do `start` (seletor aberto e cancelado na hora) destrói o
         // serviço sem nunca chamar `onStartCommand`, e o Android derrubaria o
         // processo por `startForegroundService` sem `startForeground`.
-        startForeground(
-            NOTIFICATION_ID,
-            buildNotification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
+        try {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } catch (e: Exception) {
+            // O sistema pode recusar a partir do segundo plano (Android 12+); o
+            // que não pode é a exceção derrubar o processo. Sem serviço, a
+            // transferência segue desprotegida, como antes dele.
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

@@ -728,6 +728,36 @@ mod tests {
     }
 
     #[test]
+    fn reopening_core_fails_pending_file_sends() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+        let core_b = Core::open(dir_b.path().to_str().unwrap().to_string()).unwrap();
+        let contact = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        let device_id: [u8; 16] = contact.device_id.clone().try_into().unwrap();
+        let arquivo = core_a
+            .store
+            .insert_pending_message(&device_id, viska_proto::wire::packet_type::PacketType::FileMetadata, "a.bin", 1)
+            .unwrap();
+        let texto = core_a
+            .store
+            .insert_pending_message(&device_id, viska_proto::wire::packet_type::PacketType::MsgText, "oi", 2)
+            .unwrap();
+        drop(core_a);
+
+        let reopened = Core::open(dir_a.path().to_str().unwrap().to_string()).unwrap();
+
+        let states: Vec<_> = reopened
+            .list_messages(contact.device_id)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.delivery_state))
+            .collect();
+        assert!(states.contains(&(arquivo, DeliveryStateDto::Failed)));
+        assert!(states.contains(&(texto, DeliveryStateDto::Pending)));
+    }
+
+    #[test]
     fn mark_message_failed_shows_up_in_listing() {
         let p = paired_pair();
         let sealed = p
