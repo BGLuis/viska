@@ -97,6 +97,14 @@ impl Core {
         }
 
         let mut sessions = self.lock_sessions()?;
+        // A trava foi solta entre a checagem e aqui: um reset concorrente pode
+        // já ter reaberto a sessão, e tirá-la de novo invalidaria a INIT que
+        // ele entregou ao Dart.
+        if let Some(session) = sessions.get(&device_id) {
+            if !session.is_failed() && !session.needs_rehandshake() {
+                return Ok(status_dto(session));
+            }
+        }
         sessions.remove(&device_id);
         self.open_session(&mut sessions, device_id)
     }
