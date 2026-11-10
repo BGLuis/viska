@@ -174,7 +174,10 @@ class _FakeCore implements Core {
   @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) async {
     markSentCalls.add(messageId);
+    if (failMarkSent) throw StateError('banco indisponível');
   }
+
+  bool failMarkSent = false;
 
   final List<PlatformInt64> markDeliveredCalls = [];
 
@@ -777,6 +780,32 @@ void main() {
     expect(controller.connectionError, isNotNull);
   });
 
+  test('failed markMessageSent after a delivered send is not reported as a connection error', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    core.failMarkSent = true;
+
+    await controller.sendText('oi, bob');
+
+    expect(transport.sendCalls, hasLength(1));
+    expect(controller.connectionError, isNull);
+  });
+
+  test('successful send clears a stale send error', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    transport.sendError = StateError('x');
+    await controller.sendText('a');
+    expect(controller.connectionError, isNotNull);
+
+    transport.sendError = null;
+    await controller.sendText('b');
+
+    expect(controller.connectionError, isNull);
+  });
+
   test('failed send stays pending: flushPending keeps every message pending when the connection is down', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
@@ -795,6 +824,7 @@ void main() {
 
     // Quem drena o outbox de fato é o MessageReceptionService, que já captura.
     expect(core.markSentCalls, isEmpty);
+    expect(transport.sendCalls.where((b) => b[0] >= 7), isEmpty);
   });
 
   test('sendText with session not yet established only persists (does not send)', () async {

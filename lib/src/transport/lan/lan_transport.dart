@@ -112,6 +112,8 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// ao protocolo, e o roteador o esquece ao ver `failed`.
   bool _dead = false;
 
+  static const _unavailable = 'conexão LAN indisponível';
+
   /// Preâmbulo sob o qual `connect` registrou a espera no [LanListener] — é
   /// diferente do `device_id` do contato, e `close` precisa cancelar pela
   /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
@@ -143,17 +145,25 @@ class LanTransport implements P2PTransport, TransportReadiness {
   /// antes do I/O, então só o `flush` revela a escrita que falhou.
   Future<void> _write(LanConnection? connection, Uint8List bytes) async {
     if (_dead || _closed || connection == null) {
-      throw StateError('conexão LAN indisponível');
+      throw StateError(_unavailable);
     }
     final framed = await _frame(envelope: bytes);
-    if (_dead || _closed) throw StateError('conexão LAN indisponível');
+    // A queda pode ter ocorrido durante o enquadramento (FFI assíncrona).
+    if (_dead || _closed) throw StateError(_unavailable);
     try {
       connection.add(framed);
       await connection.flush();
     } catch (_) {
       _fail('falha ao escrever no socket local');
-      throw StateError('conexão LAN indisponível');
+      throw StateError(_unavailable);
     }
+  }
+
+  void _destroySockets() {
+    try {
+      _control?.destroy();
+      _file?.destroy();
+    } catch (_) {}
   }
 
   /// Idempotente e silenciosa após `close`: a queda causada por nós mesmos não
@@ -161,10 +171,7 @@ class LanTransport implements P2PTransport, TransportReadiness {
   void _fail(String reason) {
     if (_dead || _closed) return;
     _dead = true;
-    try {
-      _control?.destroy();
-      _file?.destroy();
-    } catch (_) {}
+    _destroySockets();
     if (!_connectionEventsController.isClosed) {
       _connectionEventsController.add(
         TransportConnectionEvent(TransportConnectionState.failed, reason: reason),
@@ -409,10 +416,7 @@ class LanTransport implements P2PTransport, TransportReadiness {
     try {
       await _discovery.stopBrowsing();
     } catch (_) {}
-    try {
-      _control?.destroy();
-      _file?.destroy();
-    } catch (_) {}
+    _destroySockets();
     if (!_incomingController.isClosed) await _incomingController.close();
     if (!_incomingFileController.isClosed) await _incomingFileController.close();
     if (!_connectionEventsController.isClosed) await _connectionEventsController.close();

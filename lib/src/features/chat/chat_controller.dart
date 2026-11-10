@@ -682,20 +682,30 @@ class ChatController extends ChangeNotifier {
   /// `flush_pending` a reenvia depois da reconexão.
   Future<bool> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
-      await _sendSealed(messageId, bytes);
-      return true;
+      await _router.sendToContact(_contactId, bytes);
     } catch (e) {
       if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem segue pendente: $e');
+      // O motivo do transporte (evento `failed`) é mais informativo: só
+      // preenche se ele ainda não chegou.
       if (!_disposed) {
-        _connectionError = 'Não foi possível enviar a mensagem.';
+        _connectionError ??= 'Não foi possível enviar a mensagem.';
         notifyListeners();
       }
       return false;
     }
+    // Envio que passou prova que a conexão serve; um erro antigo deixaria a
+    // conversa offline até o próximo `connected`.
+    _connectionError = null;
+    try {
+      await _markSentAndRefresh(messageId);
+    } catch (e) {
+      // Os bytes já saíram: falha local ao marcar não é queda de conexão.
+      if (kDebugMode) debugPrint('[ChatController] falha ao marcar como enviada: $e');
+    }
+    return true;
   }
 
-  Future<void> _sendSealed(int messageId, Uint8List bytes) async {
-    await _router.sendToContact(_contactId, bytes);
+  Future<void> _markSentAndRefresh(int messageId) async {
     await _core.markMessageSent(messageId: messageId);
     final idx = _messages.indexWhere((m) => m.id == messageId);
     if (idx != -1) {
