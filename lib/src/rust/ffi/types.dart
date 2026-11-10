@@ -61,6 +61,11 @@ enum DeliveryStateDto {
   sending,
   rejected,
   expired,
+
+  /// Texto cujos bytes saíram do Rust sem que se saiba se chegaram (a Core
+  /// abriu ou foi trancada com ele em `Sending`). Nunca é reenviado sozinho;
+  /// ver `Core::resend_unknown_message`.
+  unknown,
 }
 
 /// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —

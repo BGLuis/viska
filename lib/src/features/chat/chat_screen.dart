@@ -23,6 +23,7 @@ import 'widgets/audio_waveform_player.dart';
 import 'widgets/reaction_picker.dart';
 import 'widgets/reply_preview.dart';
 import 'widgets/swipe_to_reply.dart';
+import 'widgets/unconfirmed_delivery_action.dart';
 
 /// Tela de chat segura 1:1 com criptografia híbrida pós-quântica,
 /// tema Dark-Tech Editorial, waveform interativo, swipe-to-reply,
@@ -1154,7 +1155,12 @@ class _MessageBubble extends StatelessWidget {
                     const Icon(Icons.timer_outlined, size: 12, color: DarkTechTheme.secondary),
                     const SizedBox(width: 4),
                   ],
-                  if (outgoing)
+                  if (outgoing && message.deliveryState == DeliveryStateDto.unknown)
+                    UnconfirmedDeliveryAction(
+                      label: _deliveryLabel(message.deliveryState),
+                      onResend: () => controller.resendUnknown(message.id),
+                    )
+                  else if (outgoing)
                     Text(
                       _deliveryLabel(message.deliveryState),
                       style: const TextStyle(
@@ -1413,6 +1419,8 @@ class _MessageBubble extends StatelessWidget {
         return 'Entregue';
       case DeliveryStateDto.failed:
         return 'Falhou';
+      case DeliveryStateDto.unknown:
+        return 'Não confirmada';
       case DeliveryStateDto.rejected:
         return 'Recusada';
       case DeliveryStateDto.expired:

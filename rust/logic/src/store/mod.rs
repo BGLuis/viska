@@ -282,9 +282,14 @@ impl Store {
         self.with_conn(|conn| messages::requeue(conn, message_id))
     }
 
-    /// Devolve à fila todo envio que ficou em `Sending` (abertura e trava).
-    pub fn requeue_sending_messages(&self) -> Result<usize> {
-        self.with_conn(messages::requeue_all_sending)
+    /// Marca como `Unknown` todo texto que ficou em `Sending` (abertura e trava).
+    pub fn mark_sending_messages_unknown(&self) -> Result<usize> {
+        self.with_conn(messages::mark_all_sending_unknown)
+    }
+
+    /// Devolve à fila um texto `Unknown`, a pedido da pessoa.
+    pub fn resend_unknown_message(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::resend_unknown(conn, message_id))
     }
 
     /// Devolve à fila os envios em `Sending` de um único contato.

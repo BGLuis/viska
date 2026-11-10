@@ -69,14 +69,16 @@ pub struct Core {
 /// Acerta as linhas de saída que dependiam de estado só em memória.
 ///
 /// Sem handle ativo o envio de arquivo não retoma, e a linha não pode
-/// continuar "Enviando…". Já o envio de texto em voo não sobrevive à Core, e
-/// sem a volta à fila a linha ficaria em `Sending` para sempre. Falhar as
-/// transferências primeiro é defesa em profundidade: `list_pending` já ignora
-/// linhas que não são texto, mas reverter `Sending` antes devolveria à fila
-/// qualquer linha de arquivo que ali tivesse parado.
+/// continuar "Enviando…". Já o texto em `Sending` perdeu a pista de se os bytes
+/// saíram: ele vira `Unknown`, e só a pessoa o reenvia. Devolvê-lo à fila
+/// recifraria uma mensagem que o par talvez já tenha, que é a duplicata da #67.
+/// (`reset_session` age diferente, de propósito: a sessão que selou o texto
+/// morreu, então o texto volta à fila e é recifrado na sessão nova.)
+/// Falhar as transferências primeiro é defesa em profundidade: a marcação só
+/// toca texto, mas assim nenhuma linha de arquivo parada em `Sending` escapa.
 fn reset_inflight_state(store: &Store) {
     let _ = store.fail_pending_transfers();
-    let _ = store.requeue_sending_messages();
+    let _ = store.mark_sending_messages_unknown();
 }
 
 impl Core {

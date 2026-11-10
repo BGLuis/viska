@@ -135,6 +135,10 @@ pub enum DeliveryStateDto {
     Sending,
     Rejected,
     Expired,
+    /// Texto cujos bytes saíram do Rust sem que se saiba se chegaram (a Core
+    /// abriu ou foi trancada com ele em `Sending`). Nunca é reenviado sozinho;
+    /// ver `Core::resend_unknown_message`.
+    Unknown,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
