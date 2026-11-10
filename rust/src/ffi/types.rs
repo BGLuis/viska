@@ -134,6 +134,7 @@ pub enum DeliveryStateDto {
     Failed,
     Sending,
     Rejected,
+    Expired,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
@@ -171,6 +172,14 @@ pub struct MessageDto {
     pub reply_to_id: Option<i64>,
     pub view_once: bool,
     pub reactions: Vec<String>,
+}
+
+/// Pacote já selado que o Dart precisa enviar a um contato depois que a Core
+/// foi trancada, quando a sessão que o selou já não existe mais.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedNoticeDto {
+    pub peer_device_id: Vec<u8>,
+    pub bytes: Vec<u8>,
 }
 
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.

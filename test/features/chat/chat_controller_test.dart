@@ -486,7 +486,7 @@ class _FakeCore with FakeSessionEvents implements Core {
   Future<bool> isLocked() async => false;
 
   @override
-  Future<void> lock() async {}
+  Future<List<SealedNoticeDto>> lock() async => const [];
 
   @override
   Future<void> unlock() async {}
@@ -2006,6 +2006,27 @@ void main() {
       await controller.initialize();
 
       expect(controller.messages.single.deliveryState, DeliveryStateDto.rejected);
+    });
+
+    test('an expired outgoing file is listed with the expired state', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: 'a.bin',
+          deliveryState: DeliveryStateDto.expired,
+          createdAtUnixSecs: PlatformInt64Util.from(1),
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+      controller = makeController();
+
+      await controller.initialize();
+
+      expect(controller.messages.single.deliveryState, DeliveryStateDto.expired);
     });
   });
 }

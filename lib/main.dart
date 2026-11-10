@@ -12,6 +12,7 @@ import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/frb_generated.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 import 'package:viska/src/transport/message_reception_service.dart';
+import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 
 export 'package:viska/src/features/home/home_screen.dart';
@@ -105,6 +106,9 @@ Future<void> main(List<String> args) async {
   final lockController = LockController(
     core: core,
     appDirPath: appDir.path,
+    sendLockNotices: (notices) => Future.wait([
+      for (final notice in notices) router.sendToContact(ContactId(notice.peerDeviceId), notice.bytes),
+    ]),
   );
 
   lockController.isLocked.addListener(() {

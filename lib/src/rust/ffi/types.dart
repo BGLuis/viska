@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -53,7 +53,15 @@ class ContactDto {
 /// `store::messages::DeliveryState`. `Delivered`/`Failed` ainda não são
 /// produzidos por nenhum código desta fase (reservados para quando
 /// `MSG_RECEIPT` e relato de falha de transporte existirem).
-enum DeliveryStateDto { pending, sent, delivered, failed, sending, rejected }
+enum DeliveryStateDto {
+  pending,
+  sent,
+  delivered,
+  failed,
+  sending,
+  rejected,
+  expired,
+}
 
 /// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
 /// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.
@@ -312,6 +320,26 @@ class SealedMessageDto {
       other is SealedMessageDto &&
           runtimeType == other.runtimeType &&
           messageId == other.messageId &&
+          bytes == other.bytes;
+}
+
+/// Pacote já selado que o Dart precisa enviar a um contato depois que a Core
+/// foi trancada, quando a sessão que o selou já não existe mais.
+class SealedNoticeDto {
+  final Uint8List peerDeviceId;
+  final Uint8List bytes;
+
+  const SealedNoticeDto({required this.peerDeviceId, required this.bytes});
+
+  @override
+  int get hashCode => peerDeviceId.hashCode ^ bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SealedNoticeDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
           bytes == other.bytes;
 }
 

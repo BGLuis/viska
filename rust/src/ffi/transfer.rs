@@ -56,11 +56,12 @@
 //!
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
-//! - **Recusa avisa o emissor só em melhor esforço**: `reject_file_offer` sela um
-//!   `FILE_REJECT` (§7.7), mas sem sessão o aviso se perde, e não há timeout no
-//!   emissor para quem nunca responde.
+//! - **Recusa e perda no lock avisam o emissor só em melhor esforço**:
+//!   `reject_file_offer` e `Core::lock` selam um `FILE_REJECT` (§7.7), mas sem
+//!   sessão ou transporte o aviso se perde. O emissor cobre o resto com o prazo
+//!   de [`OFFER_RESPONSE_TIMEOUT_SECS`], que vive só em RAM como o envio (U-03).
 //! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
-//!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe `FILE_REJECT` por oferta perdida no lock.
+//!   fechamento do app limpa as ofertas retidas com zeroize.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
 //!   `use_lan: bool`.** Nenhum ajuste fino exposto.
 //! - **Controle de taxa de envio é só o que `SendTransfer` já faz**
@@ -79,7 +80,8 @@ use std::path::Path;
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
-    FileOfferDto, IngestedChunkDto, SendAudioStartedDto, SendFileStartedDto, TransferProgressDto,
+    FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
+    TransferProgressDto,
 };
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
@@ -98,6 +100,24 @@ pub(super) enum TransferHandle {
     Send(SendTransfer<File>),
     Receive(ReceiveTransfer),
 }
+
+/// Sela o `FILE_REJECT` de `file_id`, ou `None` sem sessão estabelecida ou se
+/// selar falhar. Recusa e bloqueio passam por aqui para o emissor não poder
+/// distinguir um do outro (§7.7 item 1).
+fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; FILE_ID_LEN]) -> Option<Vec<u8>> {
+    if !session.is_established() {
+        return None;
+    }
+    session
+        .encrypt_outgoing(PacketType::FileReject, file_id.to_vec(), Transport::DataChannel)
+        .ok()
+}
+
+/// Quanto o emissor espera pelo primeiro `FILE_FEEDBACK` ou `FILE_REJECT`
+/// antes de desistir da oferta (§7.7). Longo de propósito: o `lock()` do
+/// receptor já avisa, então isto só cobre o aviso que não chegou, e não deve
+/// matar a oferta de quem ainda está decidindo.
+pub(super) const OFFER_RESPONSE_TIMEOUT_SECS: i64 = 24 * 60 * 60;
 
 /// Teto padrão em bytes para aceitação automática de arquivos (100 MiB).
 /// Ofertas que excederem este valor ficam retidas aguardando confirmação explícita
@@ -199,6 +219,7 @@ impl Core {
             created_at,
         )?;
         self.store.set_message_file_id(message_id, &started.file_id)?;
+        self.lock_unanswered_offers()?.insert(started.file_id, created_at);
 
         Ok(SendFileStartedDto {
             file_id: started.file_id.to_vec(),
@@ -579,6 +600,7 @@ impl Core {
         let file_id = to_file_id(file_id)?;
         self.lock_unconfirmed_offers()?.remove(&file_id);
         self.lock_transfers()?.remove(&file_id);
+        self.lock_unanswered_offers()?.remove(&file_id);
         self.store.delete_file_transfer(&file_id)?;
         let mut active = HashSet::new();
         for id in self.store.list_active_file_transfer_ids()? {
@@ -600,6 +622,76 @@ impl Core {
     ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], TransferHandle>>, FfiError>
     {
         self.transfers.lock().map_err(|_| FfiError::Internal)
+    }
+
+    fn lock_unanswered_offers(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], i64>>, FfiError> {
+        self.unanswered_offers.lock().map_err(|_| FfiError::Internal)
+    }
+
+    /// Sela um `FILE_REJECT` para cada oferta retida, para `Core::lock` entregar
+    /// ao Dart antes de zerar as sessões (§7.6.2). Sem sessão estabelecida, ou
+    /// se selar falhar, aquele aviso se perde: o prazo do emissor cobre.
+    pub(super) fn seal_lock_notices(&self) -> Vec<SealedNoticeDto> {
+        // Mutex envenenado: `lock()` zera tudo logo depois, então o aviso se perde
+        // sem rastro. Aceitável num melhor esforço; o prazo do emissor cobre.
+        let (Ok(offers), Ok(mut sessions)) = (self.lock_unconfirmed_offers(), self.lock_sessions()) else {
+            return Vec::new();
+        };
+        offers
+            .iter()
+            .filter_map(|(file_id, offer)| {
+                let session = sessions.get_mut(&offer.contact_device_id)?;
+                let bytes = seal_file_reject(session, file_id)?;
+                Some(SealedNoticeDto {
+                    peer_device_id: offer.contact_device_id.to_vec(),
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
+    /// Dá por expiradas as ofertas enviadas há mais de [`OFFER_RESPONSE_TIMEOUT_SECS`]
+    /// sem resposta: marca a mensagem, para o bombeamento e apaga a linha.
+    pub(super) fn expire_unanswered_offers(&self) -> Result<(), FfiError> {
+        self.expire_unanswered_offers_at(viska_proto::util::time::unix_seconds() as i64)
+    }
+
+    fn expire_unanswered_offers_at(&self, now: i64) -> Result<(), FfiError> {
+        // Tirar do mapa no mesmo lock em que se seleciona: um feedback que chegue
+        // agora já não encontra a entrada e não pode ser expirado por engano.
+        let due: Vec<([u8; FILE_ID_LEN], i64)> = {
+            let mut offers = self.lock_unanswered_offers()?;
+            let (due, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut *offers)
+                .into_iter()
+                .partition(|(_, sent_at)| now.saturating_sub(*sent_at) >= OFFER_RESPONSE_TIMEOUT_SECS);
+            offers.extend(keep);
+            due
+        };
+        // Uma falha não pode custar o prazo das demais: todas são tentadas, e as
+        // que falharem voltam ao mapa para a próxima leitura repetir.
+        let mut first_error = None;
+        for (file_id, sent_at) in due {
+            if let Err(e) = self.expire_offer(&file_id) {
+                if let Ok(mut offers) = self.lock_unanswered_offers() {
+                    offers.insert(file_id, sent_at);
+                }
+                first_error.get_or_insert(e);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn expire_offer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
+        if let Some(stored) = self.store.find_file_transfer(file_id)? {
+            // A mensagem vem antes, como em `handle_incoming_file_reject`.
+            self.store
+                .mark_message_expired_by_file_id(file_id, &stored.contact_device_id)?;
+            self.lock_transfers()?.remove(file_id);
+            self.store.delete_file_transfer(file_id)?;
+        }
+        Ok(())
     }
 
     fn lock_unconfirmed_offers(
@@ -698,13 +790,8 @@ impl Core {
         let Some(session) = sessions.get_mut(&offer.contact_device_id) else {
             return Ok(None);
         };
-        if !session.is_established() {
-            return Ok(None);
-        }
         // Falha ao selar não desfaz a recusa: o chamador só perde o aviso.
-        Ok(session
-            .encrypt_outgoing(PacketType::FileReject, fid.to_vec(), Transport::DataChannel)
-            .ok())
+        Ok(seal_file_reject(session, &fid))
     }
 
     fn start_receiving_transfer(
@@ -809,7 +896,11 @@ impl Core {
     /// Chamado de dentro de `Core::decrypt_incoming` quando um
     /// `FILE_FEEDBACK` chega — repassa para o `SendTransfer` do `file_id`
     /// indicado, se existir.
-    pub(super) fn handle_incoming_file_feedback(&self, body: Vec<u8>) -> Result<(), FfiError> {
+    pub(super) fn handle_incoming_file_feedback(
+        &self,
+        contact_device_id: [u8; DEVICE_ID_LEN],
+        body: Vec<u8>,
+    ) -> Result<(), FfiError> {
         // `source_blocks` vem do próprio manifesto que este lado já
         // persistiu ao iniciar o envio — não do corpo do feedback (§7.4:
         // o tamanho do bitmap não vai no fio).
@@ -818,13 +909,22 @@ impl Core {
             .ok_or(FfiError::Internal)?
             .try_into()
             .map_err(|_| FfiError::Internal)?;
+        // Expirar antes de aceitar: feedback depois do prazo não ressuscita a oferta.
+        // Falha da varredura não impede processar o feedback.
+        let _ = self.expire_unanswered_offers();
         let stored = self
             .store
             .find_file_transfer(&file_id)?
             .ok_or(FfiError::Internal)?;
+        // Só o destinatário da oferta a responde, e só ele encerra o prazo.
+        if stored.contact_device_id != contact_device_id {
+            return Ok(());
+        }
         let manifest = Manifest::decode(&stored.manifest_cbor)?;
 
         let feedback = FileFeedback::decode(&body, manifest.source_blocks)?;
+        // O primeiro feedback prova que a oferta foi aceita: o prazo acaba aqui.
+        self.lock_unanswered_offers()?.remove(&file_id);
         if let Some(TransferHandle::Send(send)) = self.lock_transfers()?.get_mut(&file_id) {
             send.ingest_feedback(&feedback)?;
         }
@@ -838,6 +938,7 @@ impl Core {
     pub(super) fn handle_incoming_file_complete(&self, body: Vec<u8>) -> Result<(), FfiError> {
         let complete = transfer::FileComplete::decode(&body)?;
         self.lock_transfers()?.remove(&complete.file_id);
+        self.lock_unanswered_offers()?.remove(&complete.file_id);
         self.store.delete_file_transfer(&complete.file_id)?;
         Ok(())
     }
@@ -864,6 +965,7 @@ impl Core {
         self.store
             .mark_message_rejected_by_file_id(&file_id, &contact_device_id)?;
         self.lock_transfers()?.remove(&file_id);
+        self.lock_unanswered_offers()?.remove(&file_id);
         self.store.delete_file_transfer(&file_id)?;
         Ok(())
     }
@@ -2561,5 +2663,143 @@ mod tests {
             )
             .unwrap();
         assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    #[test]
+    fn lock_seals_a_file_reject_for_each_retained_offer() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+
+        let notices = pair.core_b.lock().unwrap();
+
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].peer_device_id, pair.device_id_a);
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), notices[0].bytes.clone())
+            .unwrap();
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Rejected);
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+    }
+
+    #[test]
+    fn lock_without_an_established_session_returns_no_notice() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, _started) = pair_with_pending_offer(&dir_src);
+        pair.core_b.lock_sessions().unwrap().clear();
+
+        assert!(pair.core_b.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lock_without_retained_offers_returns_no_notice() {
+        let pair = established_pair();
+
+        assert!(pair.core_b.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unanswered_offer_expires_exactly_at_the_deadline() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        let sent_at = *pair.core_a.lock_unanswered_offers().unwrap().get(&fid(&started.file_id)).unwrap();
+
+        pair.core_a
+            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS - 1)
+            .unwrap();
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+
+        pair.core_a
+            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS)
+            .unwrap();
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+        assert_eq!(pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap(), None);
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Expired);
+
+        // O fim tardio do bombeamento no Dart não apaga o estado final.
+        pair.core_a.mark_message_sent(started.message_id).unwrap();
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Expired);
+    }
+
+    #[test]
+    fn first_feedback_ends_the_offer_deadline() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let src_path = write_temp_file(&dir_src, "aceito.bin", &vec![7u8; 4_000]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
+            .unwrap();
+        assert_eq!(pair.core_a.lock_unanswered_offers().unwrap().len(), 1);
+
+        let feedback = pair
+            .core_b
+            .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            .unwrap();
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), feedback)
+            .unwrap();
+
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+        pair.core_a.expire_unanswered_offers_at(i64::MAX / 2).unwrap();
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+    }
+
+    #[test]
+    fn rejected_or_cancelled_offer_leaves_no_deadline_behind() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        let sealed = pair.core_b.reject_file_offer(started.file_id.clone()).unwrap().unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), sealed).unwrap();
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+
+        let src_path = write_temp_file(&dir_src, "cancelado.bin", &vec![1u8; 4_000]);
+        let second = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_a.cancel_transfer(second.file_id).unwrap();
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn locking_the_sender_clears_pending_deadlines() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, _started) = pair_with_pending_offer(&dir_src);
+
+        pair.core_a.lock().unwrap();
+
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failing_expiry_does_not_drop_the_other_deadlines() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let pair = established_pair();
+        let mut ids = Vec::new();
+        for name in ["a.bin", "b.bin"] {
+            let path = write_temp_file(&dir_src, name, &vec![3u8; 2_000]);
+            let started = pair
+                .core_a
+                .start_send_file(pair.device_id_b.clone(), path, false)
+                .unwrap();
+            ids.push(fid(&started.file_id));
+        }
+        let sent_at = *pair.core_a.lock_unanswered_offers().unwrap().get(&ids[0]).unwrap();
+        pair.core_a.store.close().unwrap();
+
+        let result = pair
+            .core_a
+            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS);
+
+        assert!(result.is_err());
+        let offers = pair.core_a.lock_unanswered_offers().unwrap();
+        assert!(ids.iter().all(|id| offers.contains_key(id)));
     }
 }

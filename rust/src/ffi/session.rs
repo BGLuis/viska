@@ -120,6 +120,12 @@ impl Core {
                 transfers.remove(&transfer.file_id);
             }
         }
+        {
+            let mut unanswered = self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?;
+            for transfer in &outgoing {
+                unanswered.remove(&transfer.file_id);
+            }
+        }
         for transfer in &outgoing {
             self.store.delete_file_transfer(&transfer.file_id)?;
         }
@@ -423,7 +429,7 @@ impl Core {
                 Ok(None)
             }
             PacketType::FileFeedback => {
-                let _ = self.handle_incoming_file_feedback(inner.body);
+                let _ = self.handle_incoming_file_feedback(device_id, inner.body);
                 Ok(None)
             }
             PacketType::FileComplete => {
@@ -570,6 +576,9 @@ impl Core {
     ) -> Result<Vec<MessageDto>, FfiError> {
         self.ensure_not_locked()?;
         let device_id = to_device_id(peer_device_id)?;
+        // A expiração não tem timer: quem olha a timeline é quem a dispara.
+        // Falha da varredura não pode esconder a timeline.
+        let _ = self.expire_unanswered_offers();
         let stored = self.store.list_messages_paginated(&device_id, since_id, limit)?;
         Ok(stored.into_iter().map(message_dto).collect())
     }
@@ -604,6 +613,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         viska_proto::store::messages::DeliveryState::Failed => DeliveryStateDto::Failed,
         viska_proto::store::messages::DeliveryState::Sending => DeliveryStateDto::Sending,
         viska_proto::store::messages::DeliveryState::Rejected => DeliveryStateDto::Rejected,
+        viska_proto::store::messages::DeliveryState::Expired => DeliveryStateDto::Expired,
     };
 
     let (kind, body, audio_file_id) =

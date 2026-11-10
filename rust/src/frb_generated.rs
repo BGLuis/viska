@@ -3881,6 +3881,7 @@ impl SseDecode for crate::ffi::types::DeliveryStateDto {
             3 => crate::ffi::types::DeliveryStateDto::Failed,
             4 => crate::ffi::types::DeliveryStateDto::Sending,
             5 => crate::ffi::types::DeliveryStateDto::Rejected,
+            6 => crate::ffi::types::DeliveryStateDto::Expired,
             _ => unreachable!("Invalid variant for DeliveryStateDto: {}", inner),
         };
     }
@@ -4063,6 +4064,20 @@ impl SseDecode for Vec<crate::ffi::types::SealedMessageDto> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::ffi::types::SealedMessageDto>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::ffi::types::SealedNoticeDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::ffi::types::SealedNoticeDto>::sse_decode(
                 deserializer,
             ));
         }
@@ -4275,6 +4290,18 @@ impl SseDecode for crate::ffi::types::SealedMessageDto {
         let mut var_bytes = <Option<Vec<u8>>>::sse_decode(deserializer);
         return crate::ffi::types::SealedMessageDto {
             message_id: var_messageId,
+            bytes: var_bytes,
+        };
+    }
+}
+
+impl SseDecode for crate::ffi::types::SealedNoticeDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_peerDeviceId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_bytes = <Vec<u8>>::sse_decode(deserializer);
+        return crate::ffi::types::SealedNoticeDto {
+            peer_device_id: var_peerDeviceId,
             bytes: var_bytes,
         };
     }
@@ -4717,6 +4744,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::DeliveryStateDto {
             Self::Failed => 3.into_dart(),
             Self::Sending => 4.into_dart(),
             Self::Rejected => 5.into_dart(),
+            Self::Expired => 6.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4967,6 +4995,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::SealedMessageDto>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::SealedNoticeDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.peer_device_id.into_into_dart().into_dart(),
+            self.bytes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::SealedNoticeDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::SealedNoticeDto>
+    for crate::ffi::types::SealedNoticeDto
+{
+    fn into_into_dart(self) -> crate::ffi::types::SealedNoticeDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::ffi::types::SendAudioStartedDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5196,6 +5245,7 @@ impl SseEncode for crate::ffi::types::DeliveryStateDto {
                 crate::ffi::types::DeliveryStateDto::Failed => 3,
                 crate::ffi::types::DeliveryStateDto::Sending => 4,
                 crate::ffi::types::DeliveryStateDto::Rejected => 5,
+                crate::ffi::types::DeliveryStateDto::Expired => 6,
                 _ => {
                     unimplemented!("");
                 }
@@ -5352,6 +5402,16 @@ impl SseEncode for Vec<crate::ffi::types::SealedMessageDto> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::ffi::types::SealedMessageDto>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::ffi::types::SealedNoticeDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::ffi::types::SealedNoticeDto>::sse_encode(item, serializer);
         }
     }
 }
@@ -5528,6 +5588,14 @@ impl SseEncode for crate::ffi::types::SealedMessageDto {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i64>::sse_encode(self.message_id, serializer);
         <Option<Vec<u8>>>::sse_encode(self.bytes, serializer);
+    }
+}
+
+impl SseEncode for crate::ffi::types::SealedNoticeDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.peer_device_id, serializer);
+        <Vec<u8>>::sse_encode(self.bytes, serializer);
     }
 }
 

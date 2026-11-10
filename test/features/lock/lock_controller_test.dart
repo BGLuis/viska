@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:local_auth_platform_interface/types/auth_messages.dart';
 import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/types.dart';
 
 class _FakeCore implements Core {
   var lockCalls = 0;
@@ -15,12 +17,14 @@ class _FakeCore implements Core {
   var emergencyEraseCalls = 0;
   var sweepCalls = 0;
   var throwOnLock = false;
+  var noticesOnLock = <SealedNoticeDto>[];
   var throwOnUnlock = false;
 
   @override
-  Future<void> lock() async {
+  Future<List<SealedNoticeDto>> lock() async {
     lockCalls++;
     if (throwOnLock) throw StateError('erro ao travar o cofre');
+    return noticesOnLock;
   }
 
   @override
@@ -109,6 +113,81 @@ void main() {
 
       expect(core.lockCalls, 1);
       expect(controller.isLocked.value, isTrue);
+    });
+
+    test('lock hands the sealed notices to the sender after marking isLocked', () async {
+      final notice = SealedNoticeDto(peerDeviceId: Uint8List.fromList([1]), bytes: Uint8List.fromList([2]));
+      core.noticesOnLock = [notice];
+      List<SealedNoticeDto>? sent;
+      var lockedWhenSending = false;
+      late final LockController controller;
+      controller = LockController(
+        core: core,
+        appDirPath: '/tmp/viska_test',
+        localAuth: localAuth,
+        sendLockNotices: (notices) async {
+          lockedWhenSending = controller.isLocked.value;
+          sent = notices;
+        },
+      );
+      addTearDown(controller.dispose);
+
+      await controller.lock();
+
+      expect(sent, [notice]);
+      expect(lockedWhenSending, isTrue);
+    });
+
+    test('lock does not call the sender when there are no notices', () async {
+      var calls = 0;
+      final controller = LockController(
+        core: core,
+        appDirPath: '/tmp/viska_test',
+        localAuth: localAuth,
+        sendLockNotices: (_) async => calls++,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.lock();
+
+      expect(calls, 0);
+    });
+
+    test('lock stays locked when sending the notices fails', () async {
+      core.noticesOnLock = [SealedNoticeDto(peerDeviceId: Uint8List(1), bytes: Uint8List(1))];
+      final controller = LockController(
+        core: core,
+        appDirPath: '/tmp/viska_test',
+        localAuth: localAuth,
+        sendLockNotices: (_) async => throw StateError('sem transporte'),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.lock();
+
+      expect(controller.isLocked.value, isTrue);
+    });
+
+    test('lock gives up on notices that never get sent', () {
+      fakeAsync((async) {
+        core.noticesOnLock = [SealedNoticeDto(peerDeviceId: Uint8List(1), bytes: Uint8List(1))];
+        final controller = LockController(
+          core: core,
+          appDirPath: '/tmp/viska_test',
+          localAuth: localAuth,
+          sendLockNotices: (_) => Completer<void>().future,
+        );
+        var finished = false;
+        controller.lock().then((_) => finished = true);
+        async.flushMicrotasks();
+        expect(controller.isLocked.value, isTrue);
+        expect(finished, isFalse);
+
+        async.elapse(const Duration(seconds: 4));
+
+        expect(finished, isTrue);
+        controller.dispose();
+      });
     });
 
     test('calling lock when already locked is a no-op', () async {

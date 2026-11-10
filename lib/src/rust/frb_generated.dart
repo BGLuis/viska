@@ -227,7 +227,7 @@ abstract class RustLibApi extends BaseApi {
     BigInt? limit,
   });
 
-  Future<void> crateFfiCoreCoreLock({required Core that});
+  Future<List<SealedNoticeDto>> crateFfiCoreCoreLock({required Core that});
 
   Future<void> crateFfiCoreCoreMarkMessageDelivered({
     required Core that,
@@ -1550,7 +1550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateFfiCoreCoreLock({required Core that}) {
+  Future<List<SealedNoticeDto>> crateFfiCoreCoreLock({required Core that}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -1567,7 +1567,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_list_sealed_notice_dto,
           decodeErrorData: sse_decode_ffi_error,
         ),
         constMeta: kCrateFfiCoreCoreLockConstMeta,
@@ -3400,6 +3400,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_sealed_notice_dto).toList();
+  }
+
+  @protected
   MessageDirectionDto dco_decode_message_direction_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return MessageDirectionDto.values[raw as int];
@@ -3536,6 +3542,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return SealedMessageDto(
       messageId: dco_decode_i_64(arr[0]),
       bytes: dco_decode_opt_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
+  SealedNoticeDto dco_decode_sealed_notice_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return SealedNoticeDto(
+      peerDeviceId: dco_decode_list_prim_u_8_strict(arr[0]),
+      bytes: dco_decode_list_prim_u_8_strict(arr[1]),
     );
   }
 
@@ -3977,6 +3995,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SealedNoticeDto>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_sealed_notice_dto(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   MessageDirectionDto sse_decode_message_direction_dto(
     SseDeserializer deserializer,
   ) {
@@ -4170,6 +4202,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_messageId = sse_decode_i_64(deserializer);
     var var_bytes = sse_decode_opt_list_prim_u_8_strict(deserializer);
     return SealedMessageDto(messageId: var_messageId, bytes: var_bytes);
+  }
+
+  @protected
+  SealedNoticeDto sse_decode_sealed_notice_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_peerDeviceId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+    return SealedNoticeDto(peerDeviceId: var_peerDeviceId, bytes: var_bytes);
   }
 
   @protected
@@ -4623,6 +4663,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_sealed_notice_dto(
+    List<SealedNoticeDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_sealed_notice_dto(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_message_direction_dto(
     MessageDirectionDto self,
     SseSerializer serializer,
@@ -4812,6 +4864,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self.messageId, serializer);
     sse_encode_opt_list_prim_u_8_strict(self.bytes, serializer);
+  }
+
+  @protected
+  void sse_encode_sealed_notice_dto(
+    SealedNoticeDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.peerDeviceId, serializer);
+    sse_encode_list_prim_u_8_strict(self.bytes, serializer);
   }
 
   @protected
@@ -5244,7 +5306,11 @@ class CoreImpl extends RustOpaque implements Core {
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
   /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.
-  Future<void> lock() => RustLib.instance.api.crateFfiCoreCoreLock(that: this);
+  ///
+  /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+  /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+  Future<List<SealedNoticeDto>> lock() =>
+      RustLib.instance.api.crateFfiCoreCoreLock(that: this);
 
   /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
   Future<void> markMessageDelivered({required PlatformInt64 messageId}) =>
