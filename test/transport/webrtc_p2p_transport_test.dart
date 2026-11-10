@@ -335,7 +335,7 @@ class _FakeCore implements Core {
   Future<void> acceptFileOffer({required List<int> fileId}) => throw UnimplementedError();
 
   @override
-  Future<void> rejectFileOffer({required List<int> fileId}) => throw UnimplementedError();
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId}) => throw UnimplementedError();
 
   @override
   Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) =>

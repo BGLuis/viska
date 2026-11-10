@@ -323,6 +323,7 @@ offset  tam  campo
 0x21 FILE_SYMBOL         símbolo RaptorQ
 0x22 FILE_FEEDBACK       progresso esparso (D6)
 0x23 FILE_COMPLETE       confirmação atômica de integridade
+0x24 FILE_REJECT         o receptor recusou a oferta, ver §7.7
 0x30 AUDIO_CHUNK         quadro Opus
 0x40 CONTROL_PING        keepalive / cover traffic
 0x41 CONTROL_REKEM       carrega apenas material de re-KEM
@@ -474,7 +475,16 @@ Para proteger a largura de banda e o armazenamento de aparelhos móveis contra t
 2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), todas as ofertas não confirmadas em `unconfirmed_offers` são imediatamente destruídas da memória volátil.
 3. **Confirmação e recuperação:** O usuário pode aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`) explicitamente a oferta pela UI. Ao aceitar, o receptor inicializa o `ReceiveTransfer` em `active_receives` e passa a enviar `FILE_FEEDBACK` a cada 500 ms (§7.4), o que acorda o emissor.
 4. **Retransmissão em LAN Offset:** No modo LAN (`TransferMode::Offset`), se o emissor já tiver enviado todos os seus `k` símbolos e o receptor ainda não tiver completado o bloco (`!advanced`), a recepção de feedback aciona `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco atual utilizando o cache em memória `current_source_symbols`, recuperando perdas ou aceites tardios sem travar a transferência.
-5. **Sem sinal de recusa:** recusar, ou perder a oferta num bloqueio, não gera pacote no fio. O emissor não fica sabendo, não há timeout, e a transferência dele continua persistida até o cancelamento manual.
+5. **Recusa avisa o emissor, perda não:** recusar explicitamente gera um `FILE_REJECT` (§7.7). Perder a oferta num bloqueio não gera pacote: guardar a pendência fora da RAM contrariaria o item 1. O emissor também não tem timeout para um receptor que nunca responde.
+
+### 7.7 Recusa de oferta (`FILE_REJECT`, 0x24)
+
+Corpo: exatamente `file_id` (16 B), sem mais nada. Vai cifrado dentro da sessão como qualquer outro pacote (§6) e é autenticado só pelo AEAD simétrico da sessão: nenhuma assinatura, então não há prova transferível de que a recusa aconteceu (deniabilidade).
+
+1. **Emissão:** `reject_file_offer` descarta a oferta (§7.6) e, havendo sessão estabelecida com o contato, sela o pacote e o devolve ao Dart para envio. É melhor esforço: sem sessão ou com o envio falhando, a recusa local vale e o aviso se perde. Nada é persistido para reenvio.
+2. **Recepção:** o emissor só age se `file_id` for uma transferência sua em curso (direção de envio) **e** pertencer ao contato que mandou o pacote. Então remove a linha de `file_transfers`, descarta o handle de envio (o bombeamento para) e marca a mensagem como recusada. Qualquer outro caso (`file_id` desconhecido, de outro contato, ou de uma transferência de recebimento) é ignorado sem erro distinguível.
+3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
+4. **Compatibilidade:** um build antigo trata `0x24` como tipo desconhecido e o ignora sem derrubar a sessão (§6.2); para ele, a transferência continua até o cancelamento manual.
 
 ---
 

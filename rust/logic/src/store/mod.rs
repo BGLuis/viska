@@ -292,6 +292,20 @@ impl Store {
         self.with_conn(|conn| messages::mark_failed(conn, message_id))
     }
 
+    /// Liga a mensagem de saída de um arquivo ao seu `file_id`.
+    pub fn set_message_file_id(&self, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| messages::set_file_id(conn, message_id, file_id))
+    }
+
+    /// Marca como recusada a mensagem de arquivo deste contato (`FILE_REJECT`).
+    pub fn mark_message_rejected_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::mark_rejected_by_file_id(conn, file_id, contact_device_id))
+    }
+
     /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
     pub fn fail_pending_transfers(&self) -> Result<usize> {
         self.with_conn(messages::fail_pending_transfers)

@@ -53,7 +53,7 @@ class ContactDto {
 /// `store::messages::DeliveryState`. `Delivered`/`Failed` ainda não são
 /// produzidos por nenhum código desta fase (reservados para quando
 /// `MSG_RECEIPT` e relato de falha de transporte existirem).
-enum DeliveryStateDto { pending, sent, delivered, failed, sending }
+enum DeliveryStateDto { pending, sent, delivered, failed, sending, rejected }
 
 /// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
 /// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.

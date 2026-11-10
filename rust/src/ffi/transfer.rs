@@ -56,11 +56,11 @@
 //!
 //! ## O que não está aqui — relatado, não decidido em silêncio
 //!
-//! - **Sem sinal de recusa no fio para o emissor**: `reject_file_offer` descarta
-//!   a oferta localmente; o emissor continua esperando feedback até o cancelamento
-//!   manual, porque não há timeout.
+//! - **Recusa avisa o emissor só em melhor esforço**: `reject_file_offer` sela um
+//!   `FILE_REJECT` (§7.7), mas sem sessão o aviso se perde, e não há timeout no
+//!   emissor para quem nunca responde.
 //! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
-//!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe notificação de lock.
+//!   fechamento do app limpa as ofertas retidas com zeroize; o emissor não recebe `FILE_REJECT` por oferta perdida no lock.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
 //!   `use_lan: bool`.** Nenhum ajuste fino exposto.
 //! - **Controle de taxa de envio é só o que `SendTransfer` já faz**
@@ -198,6 +198,7 @@ impl Core {
             &file_name,
             created_at,
         )?;
+        self.store.set_message_file_id(message_id, &started.file_id)?;
 
         Ok(SendFileStartedDto {
             file_id: started.file_id.to_vec(),
@@ -232,6 +233,7 @@ impl Core {
             &hex::encode(started.file_id),
             created_at,
         )?;
+        self.store.set_message_file_id(message_id, &started.file_id)?;
 
         Ok(SendAudioStartedDto {
             file_id: started.file_id.to_vec(),
@@ -671,13 +673,30 @@ impl Core {
     /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
     /// a oferta e zera o material de chave sem criar registro em banco ou
     /// arquivo em staging.
-    pub fn reject_file_offer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
+    ///
+    /// Devolve o `FILE_REJECT` já selado para o Dart enviar (§7.7), ou `None`
+    /// se não há sessão estabelecida agora. A recusa local vale de qualquer
+    /// jeito: o aviso é melhor esforço e nada é guardado em disco para
+    /// reenviá-lo, para não contrariar a retenção volátil da §7.6.
+    pub fn reject_file_offer(&self, file_id: Vec<u8>) -> Result<Option<Vec<u8>>, FfiError> {
         self.ensure_not_locked()?;
         let fid = to_file_id(file_id)?;
-        self.lock_unconfirmed_offers()?
+        let offer = self
+            .lock_unconfirmed_offers()?
             .remove(&fid)
             .ok_or(FfiError::OfferNotFound)?;
-        Ok(())
+
+        let mut sessions = self.lock_sessions()?;
+        let Some(session) = sessions.get_mut(&offer.contact_device_id) else {
+            return Ok(None);
+        };
+        if !session.is_established() {
+            return Ok(None);
+        }
+        // Falha ao selar não desfaz a recusa: o chamador só perde o aviso.
+        Ok(session
+            .encrypt_outgoing(PacketType::FileReject, fid.to_vec(), Transport::DataChannel)
+            .ok())
     }
 
     fn start_receiving_transfer(
@@ -812,6 +831,30 @@ impl Core {
         let complete = transfer::FileComplete::decode(&body)?;
         self.lock_transfers()?.remove(&complete.file_id);
         self.store.delete_file_transfer(&complete.file_id)?;
+        Ok(())
+    }
+
+    /// Chamado de dentro de `Core::decrypt_incoming` quando um `FILE_REJECT`
+    /// chega (§7.7). Só encerra um envio que exista, que seja deste contato e
+    /// que ainda esteja em curso; qualquer outra coisa é ignorada sem erro
+    /// distinguível, para que um par não consiga sondar transferências alheias.
+    pub(super) fn handle_incoming_file_reject(
+        &self,
+        contact_device_id: [u8; DEVICE_ID_LEN],
+        body: Vec<u8>,
+    ) -> Result<(), FfiError> {
+        // O corpo é exatamente o `file_id`; qualquer outro tamanho é lixo.
+        let file_id: [u8; FILE_ID_LEN] = body.as_slice().try_into().map_err(|_| FfiError::Internal)?;
+        let Some(stored) = self.store.find_file_transfer(&file_id)? else {
+            return Ok(());
+        };
+        if stored.direction != Direction::Sending || stored.contact_device_id != contact_device_id {
+            return Ok(());
+        }
+        self.lock_transfers()?.remove(&file_id);
+        self.store.delete_file_transfer(&file_id)?;
+        self.store
+            .mark_message_rejected_by_file_id(&file_id, &contact_device_id)?;
         Ok(())
     }
 }
@@ -1737,6 +1780,106 @@ mod tests {
             )
             .unwrap();
         assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
+
+    /// Monta A (emissor) e B (receptor com auto-aceite baixo), com a oferta de
+    /// A já retida em B. Devolve o par e o `SendFileStartedDto`.
+    fn pair_with_pending_offer(dir_src: &tempfile::TempDir) -> (EstablishedPair, SendFileStartedDto) {
+        let pair = established_pair();
+        pair.core_b.set_auto_accept_file_size_limit(5_000).unwrap();
+        let original: Vec<u8> = (0..15_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(dir_src, "recusado.bin", &original);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
+            .unwrap();
+        (pair, started)
+    }
+
+    #[test]
+    fn rejected_offer_ends_the_senders_transfer_and_marks_the_message() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+
+        let sealed = pair
+            .core_b
+            .reject_file_offer(started.file_id.clone())
+            .unwrap()
+            .expect("sessão estabelecida sela o aviso");
+        pair.core_a
+            .decrypt_incoming(pair.device_id_b.clone(), sealed)
+            .unwrap();
+
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+        assert_eq!(
+            pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap(),
+            None
+        );
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Rejected);
+
+        // Um mark_sent tardio (fim do bombeamento no Dart) não apaga a recusa.
+        pair.core_a.mark_message_sent(started.message_id).unwrap();
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Rejected);
+    }
+
+    #[test]
+    fn rejected_offer_without_session_still_discards_locally() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        pair.core_b.lock_sessions().unwrap().clear();
+
+        let sealed = pair.core_b.reject_file_offer(started.file_id.clone()).unwrap();
+
+        assert!(sealed.is_none());
+        assert!(pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn rejected_offer_from_another_contact_or_unknown_file_id_changes_nothing() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        let other_contact = [0xEEu8; DEVICE_ID_LEN];
+
+        // Outro contato citando um file_id que existe:
+        pair.core_a
+            .handle_incoming_file_reject(other_contact, started.file_id.clone())
+            .unwrap();
+        // file_id desconhecido, vindo do contato certo:
+        pair.core_a
+            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), vec![0x77; FILE_ID_LEN])
+            .unwrap();
+        // Corpo com tamanho errado:
+        assert!(pair
+            .core_a
+            .handle_incoming_file_reject(to_device_id(pair.device_id_b.clone()).unwrap(), vec![0; 3])
+            .is_err());
+
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Pending);
+    }
+
+    #[test]
+    fn rejected_offer_does_not_touch_a_receiving_transfer() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        // B ainda não aceitou; A forja um reject do file_id que B recebe.
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+
+        pair.core_b
+            .handle_incoming_file_reject(to_device_id(pair.device_id_a.clone()).unwrap(), started.file_id.clone())
+            .unwrap();
+
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
     }
 
     #[test]

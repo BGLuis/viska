@@ -3750,6 +3750,7 @@ impl SseDecode for crate::ffi::types::DeliveryStateDto {
             2 => crate::ffi::types::DeliveryStateDto::Delivered,
             3 => crate::ffi::types::DeliveryStateDto::Failed,
             4 => crate::ffi::types::DeliveryStateDto::Sending,
+            5 => crate::ffi::types::DeliveryStateDto::Rejected,
             _ => unreachable!("Invalid variant for DeliveryStateDto: {}", inner),
         };
     }
@@ -4551,6 +4552,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::DeliveryStateDto {
             Self::Delivered => 2.into_dart(),
             Self::Failed => 3.into_dart(),
             Self::Sending => 4.into_dart(),
+            Self::Rejected => 5.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4988,6 +4990,7 @@ impl SseEncode for crate::ffi::types::DeliveryStateDto {
                 crate::ffi::types::DeliveryStateDto::Delivered => 2,
                 crate::ffi::types::DeliveryStateDto::Failed => 3,
                 crate::ffi::types::DeliveryStateDto::Sending => 4,
+                crate::ffi::types::DeliveryStateDto::Rejected => 5,
                 _ => {
                     unimplemented!("");
                 }

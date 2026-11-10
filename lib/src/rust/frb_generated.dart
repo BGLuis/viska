@@ -289,7 +289,7 @@ abstract class RustLibApi extends BaseApi {
     required List<int> peerDeviceId,
   });
 
-  Future<void> crateFfiCoreCoreRejectFileOffer({
+  Future<Uint8List?> crateFfiCoreCoreRejectFileOffer({
     required Core that,
     required List<int> fileId,
   });
@@ -2077,7 +2077,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateFfiCoreCoreRejectFileOffer({
+  Future<Uint8List?> crateFfiCoreCoreRejectFileOffer({
     required Core that,
     required List<int> fileId,
   }) {
@@ -2098,7 +2098,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
         ),
         constMeta: kCrateFfiCoreCoreRejectFileOfferConstMeta,
@@ -5122,7 +5122,12 @@ class CoreImpl extends RustOpaque implements Core {
   /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
   /// a oferta e zera o material de chave sem criar registro em banco ou
   /// arquivo em staging.
-  Future<void> rejectFileOffer({required List<int> fileId}) => RustLib
+  ///
+  /// Devolve o `FILE_REJECT` já selado para o Dart enviar (§7.7), ou `None`
+  /// se não há sessão estabelecida agora. A recusa local vale de qualquer
+  /// jeito: o aviso é melhor esforço e nada é guardado em disco para
+  /// reenviá-lo, para não contrariar a retenção volátil da §7.6.
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId}) => RustLib
       .instance
       .api
       .crateFfiCoreCoreRejectFileOffer(that: this, fileId: fileId);
