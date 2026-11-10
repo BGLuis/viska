@@ -141,6 +141,22 @@ class ChatController extends ChangeNotifier {
   /// falha, e o texto precisa dizer isso.
   bool get isSessionFailed => _sessionState == SessionStateKind.failed;
 
+  /// Título e texto do aviso de sessão; só fazem sentido com [isSessionBroken].
+  String get sessionBannerTitle => isSessionFailed ? 'SESSÃO FALHOU' : 'SESSÃO PRECISA SER RENOVADA';
+
+  String get sessionBannerMessage {
+    if (_sessionError != null) return _sessionError!;
+    final cause = isSessionFailed
+        ? 'A sessão segura com este contato falhou.'
+        : 'Esta sessão enviou mensagens demais e precisa ser renovada.';
+    // O reset é local (docs/protocol.md §11.1): se o contato seguir com a
+    // sessão dele no ar, ou já tiver reconectado antes, é preciso que ele
+    // também toque em reconectar.
+    return '$cause Reconectar abre uma sessão nova; o contato também pode precisar '
+        'reconectar do aparelho dele, e se os dois reconectarem em instantes '
+        'diferentes pode ser preciso tocar de novo. Mensagens de texto ficam na fila até lá.';
+  }
+
   var _reconnecting = false;
   bool get isReconnecting => _reconnecting;
 

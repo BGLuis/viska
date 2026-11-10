@@ -419,7 +419,6 @@ void main() {
       await pumpEventQueue();
 
       expect(events.last.state, SessionStateKind.failed);
-      expect(events.last.isBroken, isTrue);
       expect(service.sessionStateFor(contact)?.state, SessionStateKind.failed);
       await sub.cancel();
     });

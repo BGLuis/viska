@@ -44,10 +44,6 @@ class SessionStateChangedEvent extends MessageReceptionEvent {
   final bool needsRehandshake;
 
   bool get isEstablished => state == SessionStateKind.established;
-
-  /// Sessão que não serve mais para trocar mensagens: só `reset_session` a
-  /// recupera.
-  bool get isBroken => state == SessionStateKind.failed || needsRehandshake;
 }
 
 /// Arquivo genérico recebido, verificado por Merkle root e salvo em disco.
