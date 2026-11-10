@@ -45,7 +45,7 @@ pub enum DeliveryState {
     /// cifrem o mesmo corpo duas vezes.
     Sending = 4,
     /// O destinatário viu a oferta de arquivo e a recusou (`FILE_REJECT`, §7.7).
-    /// O valor 5 é o próximo livre: `delivery_state` é INTEGER sem migration.
+    /// O valor 5 é o próximo livre: `delivery_state` é INTEGER sem CHECK, então o novo estado não pede migration.
     Rejected = 5,
 }
 

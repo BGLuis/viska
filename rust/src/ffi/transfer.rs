@@ -233,6 +233,7 @@ impl Core {
             &hex::encode(started.file_id),
             created_at,
         )?;
+        // Nota de voz não recebe `FILE_REJECT` (sem oferta); a ligação fica por simetria.
         self.store.set_message_file_id(message_id, &started.file_id)?;
 
         Ok(SendAudioStartedDto {
@@ -851,10 +852,12 @@ impl Core {
         if stored.direction != Direction::Sending || stored.contact_device_id != contact_device_id {
             return Ok(());
         }
-        self.lock_transfers()?.remove(&file_id);
-        self.store.delete_file_transfer(&file_id)?;
+        // A mensagem vem antes: se esta escrita falhar, a linha de transferência
+        // ainda existe e um novo `FILE_REJECT` consegue repetir o caminho todo.
         self.store
             .mark_message_rejected_by_file_id(&file_id, &contact_device_id)?;
+        self.lock_transfers()?.remove(&file_id);
+        self.store.delete_file_transfer(&file_id)?;
         Ok(())
     }
 }
