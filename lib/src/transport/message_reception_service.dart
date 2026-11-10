@@ -569,6 +569,7 @@ class MessageReceptionService {
     }
     _connectionSubs.clear();
     _boundTransports.clear();
+    _lostTransports.clear();
     _establishedContacts.clear();
 
     await _eventsController.close();

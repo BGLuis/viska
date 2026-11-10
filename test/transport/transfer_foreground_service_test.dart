@@ -61,6 +61,25 @@ void main() {
     await lease.release();
   });
 
+  test('a refused start is retried by the next lease and stop is skipped while not running', () async {
+    var refuse = true;
+    handler = (call) {
+      calls.add(call.method);
+      if (call.method == 'start' && refuse) throw PlatformException(code: 'start_failed');
+      return null;
+    };
+    final service = makeService();
+
+    final first = await service.acquire();
+    refuse = false;
+    final second = await service.acquire();
+    expect(calls, ['start', 'start'], reason: 'a recusa do primeiro uso não condena o segundo');
+
+    await first.release();
+    await second.release();
+    expect(calls, ['start', 'start', 'stop']);
+  });
+
   test('missing platform channel is ignored', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);

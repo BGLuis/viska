@@ -464,7 +464,14 @@ class ChatController extends ChangeNotifier {
     try {
       // A conexão vem antes de `startSendFile`: ele grava a mensagem como
       // pendente, e sem par alcançável ela ficaria "Enviando…" sem nunca sair.
-      await _router.awaitConnected(_contactId, timeout: _connectTimeout);
+      // Bloco próprio para o timeout não se confundir com falha depois de a
+      // mensagem existir, que precisa ser marcada como falha.
+      try {
+        await _router.awaitConnected(_contactId, timeout: _connectTimeout);
+      } on TimeoutException {
+        _fileError = 'Sem conexão com o contato. Tente enviar o arquivo de novo.';
+        return;
+      }
       final started = await _core.startSendFile(
         peerDeviceId: _contactId.deviceId,
         filePath: filePath,
@@ -478,8 +485,6 @@ class ChatController extends ChangeNotifier {
       await _pumpOutgoingChunks(started.fileId);
       await _core.markMessageSent(messageId: started.messageId);
       await _refreshMessages();
-    } on TimeoutException {
-      _fileError = 'Sem conexão com o contato. Tente enviar o arquivo de novo.';
     } catch (_) {
       _fileError = 'Não foi possível enviar o arquivo.';
       if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
@@ -605,6 +610,8 @@ class ChatController extends ChangeNotifier {
     _sendingVoice = true;
     notifyListeners();
     final sanitizedPath = '$rawPath.viska-audio';
+    // Sem `awaitConnected` nem serviço em primeiro plano, de propósito: a nota
+    // é curta, gravada com o app aberto; sem conexão ela falha e é marcada.
     int? startedMessageId;
     try {
       // Desmonta o Ogg que o gravador produziu — sanitização por subtração,

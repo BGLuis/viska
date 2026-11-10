@@ -25,6 +25,7 @@ class TransferForegroundService {
   final MethodChannel _channel;
   final bool _enabled;
   int _leases = 0;
+  bool _running = false;
 
   /// Registra um uso do serviço, iniciando-o no primeiro. Quem chama deve
   /// liberar o [TransferLease] num `finally`.
@@ -34,25 +35,33 @@ class TransferForegroundService {
   /// deixa o app exatamente como estava antes dele.
   Future<TransferLease> acquire() async {
     _leases++;
-    if (_leases == 1) await _invoke('start');
+    // Tenta subir a cada uso enquanto não subiu: uma recusa do sistema no
+    // primeiro uso (segundo plano) não pode condenar os seguintes.
+    if (!_running) _running = await _invoke('start');
     return TransferLease._(this);
   }
 
   Future<void> _release() async {
     if (_leases == 0) return;
     _leases--;
-    if (_leases == 0) await _invoke('stop');
+    if (_leases == 0 && _running) {
+      _running = false;
+      await _invoke('stop');
+    }
   }
 
-  Future<void> _invoke(String method) async {
-    if (!_enabled) return;
+  /// `true` se o serviço nativo aceitou o comando.
+  Future<bool> _invoke(String method) async {
+    if (!_enabled) return false;
     try {
       await _channel.invokeMethod<void>(method);
+      return true;
     } on PlatformException {
       // Ver doc de [acquire].
     } on MissingPluginException {
       // Ver doc de [acquire].
     }
+    return false;
   }
 }
 

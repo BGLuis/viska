@@ -76,7 +76,7 @@ impl Core {
         }
         // Sem handle em memória o envio não retoma; a linha na timeline não pode
         // continuar "Enviando…" depois de reiniciar.
-        store.fail_pending_transfers()?;
+        let _ = store.fail_pending_transfers();
         let surviving = std::collections::HashSet::new();
         viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
 

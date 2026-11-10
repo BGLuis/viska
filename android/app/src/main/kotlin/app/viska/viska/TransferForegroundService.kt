@@ -21,12 +21,20 @@ class TransferForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onCreate() {
+        super.onCreate()
+        // Em `onCreate`, e não em `onStartCommand`: um `stopService` que chegue
+        // logo depois do `start` (seletor aberto e cancelado na hora) destrói o
+        // serviço sem nunca chamar `onStartCommand`, e o Android derrubaria o
+        // processo por `startForegroundService` sem `startForeground`.
         startForeground(
             NOTIFICATION_ID,
             buildNotification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Se o sistema matar o processo, não há transferência a retomar: o
         // envio vive só em memória.
         return START_NOT_STICKY
