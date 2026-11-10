@@ -118,6 +118,8 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use zeroize::Zeroizing;
+
 use crate::crypto::aead;
 use crate::crypto::kdf::Key;
 use crate::file::fountain::{BlockDecoder, BlockEncoder};
@@ -359,20 +361,24 @@ pub fn encode_metadata_body(
 /// `manifest::decrypt_name`).
 pub fn decode_metadata_body(
     body: &[u8],
-) -> Result<(TransferKind, [u8; TRANSFER_SECRET_LEN], Manifest)> {
+) -> Result<(TransferKind, Zeroizing<[u8; TRANSFER_SECRET_LEN]>, Manifest)> {
     let kind = TransferKind::from_u8(
         *body
             .get(METADATA_KIND_AT)
             .ok_or(Error::Malformed("FILE_METADATA curto demais para kind"))?,
     )?;
 
-    let transfer_secret: [u8; TRANSFER_SECRET_LEN] = body
+    // Copia direto para o destino zerável: `[u8; N]` é `Copy`, e um array
+    // intermediário sobraria na pilha sem zeroize.
+    let secret_bytes = body
         .get(METADATA_TRANSFER_SECRET_AT..METADATA_MANIFEST_AT)
         .ok_or(Error::Malformed(
             "FILE_METADATA curto demais para transfer_secret",
-        ))?
-        .try_into()
-        .expect("fatia do tamanho de TRANSFER_SECRET_LEN já garantida acima");
+        ))?;
+    let mut transfer_secret = Zeroizing::new([0u8; TRANSFER_SECRET_LEN]);
+    // `secret_bytes` tem exatamente TRANSFER_SECRET_LEN bytes: o intervalo
+    // `get` acima é `[AT, MANIFEST_AT)` e as constantes são travadas por assert.
+    transfer_secret.copy_from_slice(secret_bytes);
 
     let manifest_bytes = body
         .get(METADATA_MANIFEST_AT..)
@@ -1044,6 +1050,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_metadata_body_returns_zeroizing_secret() {
+        let (manifest, _original) = manifesto_de_teste(65536, 16384, 4);
+        let body = encode_metadata_body(TransferKind::File, &[7u8; TRANSFER_SECRET_LEN], &manifest).unwrap();
+
+        // Fixa o tipo: o segredo decodificado não pode voltar a ser um array solto.
+        let (_, secret, _): (_, Zeroizing<[u8; TRANSFER_SECRET_LEN]>, _) = decode_metadata_body(&body).unwrap();
+
+        assert_eq!(*secret, [7u8; TRANSFER_SECRET_LEN]);
+    }
+
+    #[test]
     fn metadata_body_roundtrip() {
         let (manifest, _original) = manifesto_de_teste(2 * 65536, 16384, 4);
         let secret = [42u8; TRANSFER_SECRET_LEN];
@@ -1053,7 +1070,7 @@ mod tests {
             let (decoded_kind, decoded_secret, decoded_manifest) = decode_metadata_body(&body).unwrap();
 
             assert_eq!(decoded_kind, kind);
-            assert_eq!(decoded_secret, secret);
+            assert_eq!(*decoded_secret, secret);
             assert_eq!(decoded_manifest, manifest);
         }
     }

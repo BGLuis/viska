@@ -266,8 +266,10 @@ impl Core {
         };
 
         let file_id: [u8; FILE_ID_LEN] = viska_proto::util::rng::array::<FILE_ID_LEN>()?;
-        let transfer_secret: [u8; TRANSFER_SECRET_LEN] =
-            viska_proto::util::rng::array::<TRANSFER_SECRET_LEN>()?;
+        // Preenche in loco: `rng::array` devolveria o array `Copy` por valor e
+        // deixaria cópias do segredo na pilha sem zeroize.
+        let mut transfer_secret = zeroize::Zeroizing::new([0u8; TRANSFER_SECRET_LEN]);
+        viska_proto::util::rng::fill(&mut *transfer_secret)?;
 
         let merkle_root: [u8; 32] = {
             let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
@@ -278,7 +280,7 @@ impl Core {
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or(FfiError::Internal)?;
-        let name_encrypted = manifest::encrypt_name(&transfer_secret, &file_id, name)?;
+        let name_encrypted = manifest::encrypt_name(&*transfer_secret, &file_id, name)?;
 
         let manifest = Manifest {
             file_id,
@@ -304,7 +306,7 @@ impl Core {
 
         let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
         let mode = if use_lan { TransferMode::Offset } else { TransferMode::Fountain };
-        let send = SendTransfer::new(manifest.clone(), kind, &transfer_secret, file).with_mode(mode);
+        let send = SendTransfer::new(manifest.clone(), kind, &*transfer_secret, file).with_mode(mode);
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
@@ -313,7 +315,7 @@ impl Core {
             Direction::Sending,
             &device_id,
             &manifest_cbor,
-            &transfer_secret,
+            &*transfer_secret,
             created_at,
             kind,
         )?;
@@ -724,7 +726,7 @@ impl Core {
     pub(super) fn handle_incoming_file_metadata(
         &self,
         contact_device_id: [u8; DEVICE_ID_LEN],
-        body: Vec<u8>,
+        body: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(), FfiError> {
         let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
         let manifest_cbor = manifest.encode()?;
@@ -733,7 +735,7 @@ impl Core {
         // Valida o nome antes de reter ou gravar qualquer coisa: uma oferta cujo
         // nome não decifra nunca poderia ser listada nem recusada, e ocuparia
         // uma das vagas do contato.
-        manifest::decrypt_name(&transfer_secret, &manifest.file_id, &manifest.name_encrypted)?;
+        manifest::decrypt_name(&*transfer_secret, &manifest.file_id, &manifest.name_encrypted)?;
 
         let auto_accept_limit = self.auto_accept_file_size_limit()?;
         if manifest.file_size > auto_accept_limit {
@@ -758,7 +760,7 @@ impl Core {
                 UnconfirmedOffer {
                     contact_device_id,
                     kind,
-                    transfer_secret: zeroize::Zeroizing::new(transfer_secret),
+                    transfer_secret,
                     manifest,
                     manifest_cbor,
                     received_at,
@@ -770,7 +772,7 @@ impl Core {
         self.start_receiving_transfer(
             contact_device_id,
             kind,
-            &transfer_secret,
+            &*transfer_secret,
             manifest,
             manifest_cbor,
             received_at,
@@ -2155,7 +2157,7 @@ mod tests {
         };
         let contact = to_device_id(pair.device_id_a.clone()).unwrap();
 
-        pair.core_b.handle_incoming_file_metadata(contact, body).unwrap();
+        pair.core_b.handle_incoming_file_metadata(contact, zeroize::Zeroizing::new(body)).unwrap();
 
         let offers = pair.core_b.lock_unconfirmed_offers().unwrap();
         assert_eq!(offers.len(), 1);
@@ -2186,7 +2188,7 @@ mod tests {
         let (body, _) = undecryptable_name_body(&pair, &dir);
         let contact = to_device_id(pair.device_id_a.clone()).unwrap();
 
-        assert!(pair.core_b.handle_incoming_file_metadata(contact, body).is_err());
+        assert!(pair.core_b.handle_incoming_file_metadata(contact, zeroize::Zeroizing::new(body)).is_err());
 
         assert!(pair.core_b.lock_unconfirmed_offers().unwrap().is_empty());
     }
@@ -2201,7 +2203,7 @@ mod tests {
         let contact = to_device_id(pair.device_id_a.clone()).unwrap();
         let staging_before = staging_entries(&pair.core_b);
 
-        assert!(pair.core_b.handle_incoming_file_metadata(contact, body).is_err());
+        assert!(pair.core_b.handle_incoming_file_metadata(contact, zeroize::Zeroizing::new(body)).is_err());
 
         assert_eq!(staging_entries(&pair.core_b), staging_before);
         assert!(pair.core_b.pending_file_offers(pair.device_id_a.clone()).unwrap().is_empty());
@@ -2228,7 +2230,7 @@ mod tests {
             UnconfirmedOffer {
                 contact_device_id: to_device_id(pair.device_id_a.clone()).unwrap(),
                 kind,
-                transfer_secret: zeroize::Zeroizing::new(secret),
+                transfer_secret: secret,
                 manifest,
                 manifest_cbor,
                 received_at: 0,
@@ -2251,7 +2253,7 @@ mod tests {
         let contact = to_device_id(pair.device_id_a.clone()).unwrap();
         pair.core_b
             .store
-            .insert_file_transfer(&bad_id, Direction::Receiving, &contact, &manifest.encode().unwrap(), &secret, 0, kind)
+            .insert_file_transfer(&bad_id, Direction::Receiving, &contact, &manifest.encode().unwrap(), &*secret, 0, kind)
             .unwrap();
         // Uma transferência boa do mesmo contato precisa continuar listada.
         pair.core_b.set_auto_accept_file_size_limit(u64::MAX).unwrap();

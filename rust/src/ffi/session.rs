@@ -256,7 +256,7 @@ impl Core {
                 received_at_unix_secs: received_at,
             })),
             PacketType::FileMetadata => {
-                let _ = self.handle_incoming_file_metadata(device_id, inner.body);
+                let _ = self.handle_incoming_file_metadata(device_id, zeroize::Zeroizing::new(inner.body));
                 Ok(None)
             }
             PacketType::FileFeedback => {
