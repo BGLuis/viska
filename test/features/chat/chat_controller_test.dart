@@ -178,6 +178,32 @@ class _FakeCore implements Core {
   }
 
   bool failMarkSent = false;
+  bool failMarkFailed = false;
+
+  final markFailedCalls = <int>[];
+
+  @override
+  Future<void> markMessageFailed({required PlatformInt64 messageId}) async {
+    markFailedCalls.add(messageId);
+    if (failMarkFailed) throw StateError('banco indisponível');
+    messagesToReturn = [
+      for (final m in messagesToReturn)
+        if (m.id == messageId)
+          MessageDto(
+            id: m.id,
+            direction: m.direction,
+            kind: m.kind,
+            body: m.body,
+            deliveryState: DeliveryStateDto.failed,
+            createdAtUnixSecs: m.createdAtUnixSecs,
+            isEphemeral: m.isEphemeral,
+            viewOnce: m.viewOnce,
+            reactions: m.reactions,
+          )
+        else
+          m,
+    ];
+  }
 
   final List<PlatformInt64> markDeliveredCalls = [];
 
@@ -556,8 +582,11 @@ class _FakeP2PTransport implements P2PTransport {
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
+  /// Segura `connect()` para simular um transporte que ainda não voltou.
+  Completer<void>? connectGate;
+
   @override
-  Future<void> connect() async {}
+  Future<void> connect() async => connectGate?.future;
 
   @override
   Future<void> send(Uint8List envelope) async {
@@ -603,12 +632,14 @@ void main() {
   late _FakeVoicePlayer player;
   late _FakePermissionHandlerPlatform permissionPlatform;
 
-  ChatController makeController() => ChatController(
+  ChatController makeController({Duration connectTimeout = const Duration(seconds: 30)}) =>
+      ChatController(
         core: core,
         router: router,
         contactId: contact,
         recorder: recorder,
         player: player,
+        connectTimeout: connectTimeout,
       );
 
   late Directory tempDir;
@@ -1351,6 +1382,124 @@ void main() {
         expect(controller.fileError, isNull);
       },
     );
+
+    group('interrupted transfer', () {
+      final fileId = Uint8List.fromList(List.filled(16, 5));
+
+      MessageDto pendingFileMessage() => MessageDto(
+            id: 77,
+            direction: MessageDirectionDto.outgoing,
+            kind: MessageKindDto.text,
+            body: 'documento.pdf',
+            deliveryState: DeliveryStateDto.pending,
+            createdAtUnixSecs: 1000,
+            isEphemeral: false,
+            viewOnce: false,
+            reactions: const [],
+          );
+
+      /// Emissor esgotado e sem `FILE_FEEDBACK` à vista: o laço de envio fica
+      /// girando, que é como o #54 trava depois que o socket cai.
+      void stallPump() {
+        core.messagesToReturn = [pendingFileMessage()];
+        core.startSendFileHandler = (_) => SendFileStartedDto(
+              fileId: fileId,
+              sealedMetadata: Uint8List.fromList([8, 8, 8]),
+              messageId: 77,
+            );
+        core.nextOutgoingWireChunkHandler = (_) => null;
+        core.transferProgressHandler = (_) => TransferProgressDto(
+              blocksDone: 0,
+              totalBlocks: 1,
+              bytesDone: BigInt.zero,
+              isComplete: false,
+            );
+      }
+
+      Future<void> dropTransportWhileSending() async {
+        final sending = controller.sendFile('/tmp/documento.pdf');
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        expect(controller.isSendingFile, isTrue, reason: 'o laço está esperando feedback');
+        transport.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.failed, reason: 'socket caiu'),
+        );
+        await sending.timeout(const Duration(seconds: 2));
+      }
+
+      test('transport failure ends file pump', () async {
+        core.sessionState = SessionStateKind.established;
+        stallPump();
+        controller = makeController();
+        await controller.initialize();
+
+        await dropTransportWhileSending();
+
+        expect(controller.fileError, isNotNull);
+        expect(controller.isSendingFile, isFalse);
+        expect(core.markSentCalls, isEmpty, reason: 'o arquivo não chegou inteiro');
+      });
+
+      test('interrupted file shown as failed', () async {
+        core.sessionState = SessionStateKind.established;
+        stallPump();
+        controller = makeController();
+        await controller.initialize();
+
+        await dropTransportWhileSending();
+
+        expect(core.markFailedCalls, [77]);
+        expect(
+          controller.messages.singleWhere((m) => m.id == 77).deliveryState,
+          DeliveryStateDto.failed,
+        );
+      });
+
+      test('failed markMessageFailed still releases the sending flag', () async {
+        core.sessionState = SessionStateKind.established;
+        stallPump();
+        controller = makeController();
+        await controller.initialize();
+        core.failMarkFailed = true;
+
+        await dropTransportWhileSending();
+
+        expect(controller.isSendingFile, isFalse);
+        expect(controller.fileError, isNotNull);
+      });
+    });
+
+    group('waiting for the transport', () {
+      test('sendFile waits for the transport before creating the transfer', () async {
+        core.sessionState = SessionStateKind.established;
+        transport.connectGate = Completer<void>();
+        controller = makeController();
+        await controller.initialize();
+
+        final sending = controller.sendFile('/tmp/documento.pdf');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(core.startSendFileCalls, isEmpty, reason: 'nada é criado antes de o par estar alcançável');
+        expect(controller.isSendingFile, isTrue);
+
+        transport.connectGate!.complete();
+        await sending;
+
+        expect(core.startSendFileCalls, ['/tmp/documento.pdf']);
+      });
+
+      test('sendFile gives up when the transport never connects', () async {
+        core.sessionState = SessionStateKind.established;
+        transport.connectGate = Completer<void>();
+        controller = makeController(connectTimeout: const Duration(milliseconds: 100));
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(core.startSendFileCalls, isEmpty, reason: 'sem mensagem pendente órfã no banco');
+        expect(controller.fileError, isNotNull);
+        expect(controller.isSendingFile, isFalse);
+      });
+    });
 
     test('sendFile failure becomes fileError, not exception', () async {
       core.sessionState = SessionStateKind.established;

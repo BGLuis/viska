@@ -278,6 +278,10 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<void> markMessageFailed({required PlatformInt64 messageId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<SealedMessageDto> sealOutgoingReceipt({
     required List<int> peerDeviceId,
     required String targetId,

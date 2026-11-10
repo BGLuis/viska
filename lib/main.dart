@@ -115,6 +115,11 @@ Future<void> main(List<String> args) async {
     }
   });
 
+  // Voltar do seletor de arquivos (ou de qualquer tela do sistema) é o momento
+  // de refazer a conexão que o Android derrubou enquanto o app estava parado.
+  // O listener vive o mesmo tempo do app: não há `dispose` a chamar.
+  AppLifecycleListener(onResume: receptionService.handleAppResumed);
+
   runApp(MainApp(
     core: core,
     router: router,

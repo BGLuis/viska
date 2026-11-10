@@ -39,6 +39,32 @@ class P2PTransportRouter {
     await routed.transport.send(envelope);
   }
 
+  /// Espera o transporte de `contact` ficar pronto para enviar, recriando-o se
+  /// ele falhar no caminho. Lança [TimeoutException] se não ficar em `timeout`.
+  ///
+  /// Serve a quem precisa da conexão **antes** de gravar algo (ex.: iniciar o
+  /// envio de um arquivo), em vez de deixar o registro pendente para sempre.
+  Future<void> awaitConnected(ContactId contact, {required Duration timeout}) async {
+    final clock = Stopwatch()..start();
+    while (true) {
+      final remaining = timeout - clock.elapsed;
+      if (remaining <= Duration.zero) throw TimeoutException('transporte não conectou', timeout);
+      try {
+        await _ensure(contact).connectFuture.timeout(remaining);
+        return;
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {
+        // O transporte que falhou já foi esquecido por `_forgetFailed`; o
+        // próximo `_ensure` cria outro. A pausa evita um laço apertado quando
+        // a falha é imediata (ex.: nenhum candidato alcançável).
+        await Future<void>.delayed(_reconnectGap);
+      }
+    }
+  }
+
+  static const _reconnectGap = Duration(seconds: 1);
+
   /// Envelopes recebidos de `contact`, ainda cifrados.
   Stream<Uint8List> incomingFor(ContactId contact) => _ensure(contact).transport.incoming;
 
