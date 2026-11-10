@@ -22,6 +22,8 @@ import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
 
+import '../../support/fake_session_events.dart';
+
 class _FakePathProviderPlatform extends PathProviderPlatform {
   _FakePathProviderPlatform(this.tempDir);
   final Directory tempDir;
@@ -66,11 +68,29 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
   }
 }
 
-class _FakeCore implements Core {
-  SessionStateKind sessionState = SessionStateKind.established;
+class _FakeCore with FakeSessionEvents implements Core {
+  _FakeCore() {
+    peerDeviceId = List.filled(16, 1);
+    sessionState = SessionStateKind.established;
+  }
+
   final sealOutgoingTextCalls = <String>[];
   final markSentCalls = <int>[];
+  final resetSessionCalls = <List<int>>[];
   var nextMessageId = 1;
+
+  /// O Rust descarta a sessão falha e abre outra: o stream publica o novo estado.
+  @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) async {
+    resetSessionCalls.add(peerDeviceId);
+    needsRehandshake = false;
+    sessionState = SessionStateKind.handshaking;
+    return SessionStatusDto(
+      state: SessionStateKind.handshaking,
+      needsRehandshake: false,
+      outgoingHandshake: null,
+    );
+  }
 
   @override
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>
@@ -758,6 +778,80 @@ void main() {
       expect(find.text('150.0 MB • Oferta de transferência direta'), findsOneWidget);
       expect(find.text('Aceitar'), findsOneWidget);
       expect(find.text('Recusar'), findsOneWidget);
+    });
+
+    Future<void> pumpChat(WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('failed session shows the warning and the reconnect button', (tester) async {
+      core.sessionState = SessionStateKind.failed;
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('session_failed_banner')), findsOneWidget);
+      expect(find.text('SESSÃO FALHOU'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('session_failed_banner')),
+          matching: find.text('RECONECTAR'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('reconnect button resets the session and the warning goes away', (tester) async {
+      core.sessionState = SessionStateKind.failed;
+      await pumpChat(tester);
+
+      await tester.tap(find.descendant(
+        of: find.byKey(const Key('session_failed_banner')),
+        matching: find.text('RECONECTAR'),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(core.resetSessionCalls, [List.filled(16, 1)]);
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
+    });
+
+    testWidgets('session that fails while the chat is open shows the warning', (tester) async {
+      core.sessionState = SessionStateKind.established;
+      await pumpChat(tester);
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
+
+      core.sessionState = SessionStateKind.failed;
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('session_failed_banner')), findsOneWidget);
+    });
+
+    testWidgets('session past the renewal threshold shows the renewal warning, not the failure one', (tester) async {
+      core.sessionState = SessionStateKind.established;
+      core.needsRehandshake = true;
+
+      await pumpChat(tester);
+
+      expect(find.text('SESSÃO PRECISA SER RENOVADA'), findsOneWidget);
+      expect(find.text('SESSÃO FALHOU'), findsNothing);
+    });
+
+    testWidgets('healthy session shows no session warning', (tester) async {
+      core.sessionState = SessionStateKind.established;
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
     });
 
     testWidgets('offers error banner shows retry and clears after a successful reload', (tester) async {

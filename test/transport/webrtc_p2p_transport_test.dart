@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' show RTCIceCandidate;
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/rust/lib.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/raw_p2p_channel.dart';
 import 'package:viska/src/transport/signaling/signaling_backend.dart';
@@ -253,6 +254,13 @@ class _FakeCore implements Core {
     required PlatformInt64 ttlSecs,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SessionStateEventDto> subscribeSessionEvents() => throw UnimplementedError();
 
   @override
   Future<int> sweepExpiredMessages() => throw UnimplementedError();

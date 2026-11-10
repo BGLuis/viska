@@ -104,6 +104,9 @@ class _MockSmokeCore implements Core {
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
 
   @override
+  Stream<SessionStateEventDto> subscribeSessionEvents() => const Stream.empty();
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

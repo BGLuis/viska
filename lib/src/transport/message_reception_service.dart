@@ -31,9 +31,23 @@ class TypingIndicatorEvent extends MessageReceptionEvent {
   const TypingIndicatorEvent(super.contactId);
 }
 
-/// Handshake concluído e sessão promovida a `established`.
-class SessionEstablishedEvent extends MessageReceptionEvent {
-  const SessionEstablishedEvent(super.contactId);
+/// O Rust mudou o estado da sessão com o contato (handshake concluído, sessão
+/// falha, limiar de renovação cruzado). [state] é `null` quando a sessão
+/// deixou de existir (bloqueio do cofre, re-pareamento ou reset).
+class SessionStateChangedEvent extends MessageReceptionEvent {
+  const SessionStateChangedEvent(
+    super.contactId, {
+    required this.state,
+    required this.needsRehandshake,
+  });
+  final SessionStateKind? state;
+  final bool needsRehandshake;
+
+  bool get isEstablished => state == SessionStateKind.established;
+
+  /// Sessão que não serve mais para trocar mensagens: só `reset_session` a
+  /// recupera.
+  bool get isBroken => state == SessionStateKind.failed || needsRehandshake;
 }
 
 /// Arquivo genérico recebido, verificado por Merkle root e salvo em disco.
@@ -79,6 +93,16 @@ class MessageReceptionService {
         _appDirPath = appDirPath,
         _tempDirProvider = tempDirProvider,
         _receivedDirProvider = receivedDirProvider {
+    // O Rust é quem sabe quando uma sessão muda de estado (inclusive sozinha,
+    // pelo limiar de falhas de AEAD, §11.1). Assina já na construção: a
+    // assinatura repete o estado atual de cada sessão, e o Rust guarda um só
+    // destinatário, então este serviço deve ser o único a assinar.
+    _sessionEventsSub = _core.subscribeSessionEvents().listen(
+      _handleSessionEvent,
+      onError: (Object e) {
+        if (kDebugMode) debugPrint('[MessageReceptionService] Erro no stream de sessões: $e');
+      },
+    );
     // Garante que qualquer transporte criado no roteador (por envio,
     // reconexão ou consulta) passe imediatamente a ser escutado por este serviço.
     _router.onTransportCreated = ensureListening;
@@ -107,7 +131,8 @@ class MessageReceptionService {
   /// Espera antes de recriar o transporte de um contato que falhou: evita um
   /// laço apertado de reconexão quando o par está simplesmente offline.
   static const _retryDelay = Duration(seconds: 5);
-  final Set<ContactId> _establishedContacts = {};
+  StreamSubscription<SessionStateEventDto>? _sessionEventsSub;
+  final Map<ContactId, SessionStateChangedEvent> _sessionStates = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingSubs = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingFileSubs = {};
 
@@ -130,6 +155,29 @@ class MessageReceptionService {
 
   /// Stream global de todos os eventos de recepção.
   Stream<MessageReceptionEvent> get events => _eventsController.stream;
+
+  /// Último estado de sessão publicado pelo Rust para o contato, ou `null` se
+  /// ainda não houve evento (a sessão pode nem existir).
+  SessionStateChangedEvent? sessionStateFor(ContactId contactId) => _sessionStates[contactId];
+
+  void _handleSessionEvent(SessionStateEventDto dto) {
+    if (_disposed) return;
+    final contactId = ContactId(dto.peerDeviceId);
+    final event = SessionStateChangedEvent(
+      contactId,
+      state: dto.state,
+      needsRehandshake: dto.needsRehandshake,
+    );
+    final wasEstablished = _sessionStates[contactId]?.isEstablished ?? false;
+    _sessionStates[contactId] = event;
+    _eventsController.add(event);
+    // A saída só destrava quando a sessão passa a `established`: antes disso o
+    // Rust devolve lista vazia. Cobre também o respondedor, cuja cadeia de
+    // envio só nasce no primeiro pacote recebido (§5.1).
+    if (event.isEstablished && !wasEstablished) {
+      unawaited(_flushPending(contactId));
+    }
+  }
 
   /// Stream de eventos filtrada para um contato específico.
   Stream<MessageReceptionEvent> eventsFor(ContactId contactId) =>
@@ -229,9 +277,14 @@ class MessageReceptionService {
     if (_isPaused || _disposed) return;
     try {
       final status = await _core.ensureSession(peerDeviceId: contactId.deviceId);
-      final alreadyEstablished = status.state == SessionStateKind.established;
+      if (status.state == SessionStateKind.failed) {
+        // Nada a fazer com o pacote: só `reset_session` reabre a sessão, e quem
+        // decide isso é a pessoa, pelo aviso do chat. O estado já foi publicado.
+        if (kDebugMode) debugPrint('[MessageReceptionService] Pacote de $contactId descartado: sessão falha');
+        return;
+      }
 
-      if (!alreadyEstablished) {
+      if (status.state != SessionStateKind.established) {
         final response = await _core.feedHandshake(
           peerDeviceId: contactId.deviceId,
           bytes: bytes,
@@ -239,7 +292,6 @@ class MessageReceptionService {
         if (response != null) {
           await _router.sendToContact(contactId, response);
         }
-        await _checkEstablishedAndFlush(contactId);
         return;
       }
 
@@ -475,13 +527,8 @@ class MessageReceptionService {
   Future<void> _tryPublishOutgoingHandshake(ContactId contactId) async {
     try {
       final status = await _core.ensureSession(peerDeviceId: contactId.deviceId);
-      if (status.state == SessionStateKind.established) {
-        _establishedContacts.add(contactId);
-        // Sessão restaurada já estabelecida: nenhuma transição vai drenar o
-        // que ficou pendente antes de o app fechar.
-        await _flushPending(contactId);
-        return;
-      }
+      // Sessão já estabelecida: o evento do stream drena o que ficou pendente.
+      if (status.state != SessionStateKind.handshaking) return;
 
       final outgoing = status.outgoingHandshake;
       if (outgoing != null) {
@@ -489,16 +536,6 @@ class MessageReceptionService {
       }
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao enviar handshake inicial para $contactId: $e');
-    }
-  }
-
-  Future<void> _checkEstablishedAndFlush(ContactId contactId) async {
-    final status = await _core.sessionStatus(peerDeviceId: contactId.deviceId);
-    if (status?.state == SessionStateKind.established) {
-      if (_establishedContacts.add(contactId)) {
-        _eventsController.add(SessionEstablishedEvent(contactId));
-        await _flushPending(contactId);
-      }
     }
   }
 
@@ -577,6 +614,7 @@ class MessageReceptionService {
   /// Encerra as assinaturas de transporte e fecha o controlador de eventos.
   Future<void> dispose() async {
     _disposed = true;
+    unawaited(_sessionEventsSub?.cancel());
     for (final timer in _retryTimers.values) {
       timer.cancel();
     }
@@ -602,7 +640,7 @@ class MessageReceptionService {
     _connectionSubs.clear();
     _boundTransports.clear();
     _lostTransports.clear();
-    _establishedContacts.clear();
+    _sessionStates.clear();
 
     await _eventsController.close();
   }

@@ -11,10 +11,14 @@ import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/rust/lib.dart';
 import 'package:viska/src/transport/lan/lan_transport.dart';
+import 'package:viska/src/transport/message_reception_service.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
+
+import '../../support/fake_session_events.dart';
 
 /// Substitui `PathProviderPlatform.instance` por um diretório temporário de
 /// verdade (do sistema de arquivos real, não um canal de plataforma) — os
@@ -90,10 +94,20 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
 /// Só implementa o que `ChatController` de fato chama — o resto arremessa
 /// `UnimplementedError` de propósito (ver o mesmo padrão em
 /// `webrtc_p2p_transport_test.dart`).
-class _FakeCore implements Core {
-  SessionStateKind sessionState = SessionStateKind.handshaking;
+class _FakeCore with FakeSessionEvents implements Core {
+  _FakeCore() {
+    peerDeviceId = List.generate(16, (i) => i);
+    sessionState = SessionStateKind.handshaking;
+  }
+
   Uint8List? outgoingHandshake;
-  var needsRehandshake = false;
+  final resetSessionCalls = <List<int>>[];
+  SessionStatusDto? resetSessionResult;
+  Object? resetSessionError;
+
+  /// Estado que `sessionStatus` devolve sem que o stream o tenha publicado —
+  /// a janela entre o Rust mudar a sessão e o evento chegar ao Dart.
+  SessionStateKind? silentStatusOverride;
 
   List<MessageDto> messagesToReturn = [];
   final sealOutgoingTextCalls = <String>[];
@@ -110,6 +124,18 @@ class _FakeCore implements Core {
   var nextMessageId = 1;
 
   @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) async {
+    resetSessionCalls.add(peerDeviceId);
+    if (resetSessionError != null) throw resetSessionError!;
+    return resetSessionResult ??
+        SessionStatusDto(
+          state: SessionStateKind.handshaking,
+          needsRehandshake: false,
+          outgoingHandshake: outgoingHandshake,
+        );
+  }
+
+  @override
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>
       SessionStatusDto(
         state: sessionState,
@@ -120,7 +146,7 @@ class _FakeCore implements Core {
   @override
   Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId}) async =>
       SessionStatusDto(
-        state: sessionState,
+        state: silentStatusOverride ?? sessionState,
         needsRehandshake: needsRehandshake,
         outgoingHandshake: outgoingHandshake,
       );
@@ -709,6 +735,110 @@ void main() {
     expect(controller.isEstablished, isTrue, reason: 'sem SessionEstablishedEvent: o evento já passou');
   });
 
+  group('session state from the Rust stream', () {
+    test('a session that fails is exposed as broken and recovers on the next event', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+      expect(controller.isSessionBroken, isFalse);
+
+      core.sessionState = SessionStateKind.failed;
+      await pumpEventQueue();
+      expect(controller.isSessionBroken, isTrue);
+      expect(controller.isSessionFailed, isTrue);
+      expect(controller.isEstablished, isFalse);
+
+      core.sessionState = SessionStateKind.established;
+      await pumpEventQueue();
+      expect(controller.isSessionBroken, isFalse);
+      expect(controller.isEstablished, isTrue);
+    });
+
+    test('needing a new handshake is broken but not failed, and not established', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+
+      core.needsRehandshake = true;
+      await pumpEventQueue();
+
+      expect(controller.isSessionBroken, isTrue);
+      expect(controller.isSessionFailed, isFalse);
+      expect(controller.isEstablished, isFalse);
+    });
+
+    test('a session dropped by lock stops counting as established', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+
+      core.dropSession();
+      await pumpEventQueue();
+
+      expect(controller.isEstablished, isFalse);
+      expect(controller.isSessionBroken, isFalse);
+    });
+
+    test('a failed session already published before the chat opened is shown on open', () async {
+      core.sessionState = SessionStateKind.failed;
+      final service = MessageReceptionService(core: core, router: router);
+      await pumpEventQueue();
+      controller = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: service,
+        recorder: recorder,
+        player: player,
+      );
+
+      await controller.initialize();
+
+      expect(controller.isSessionBroken, isTrue);
+      await service.dispose();
+    });
+
+    test('reconnectSession resets the session and publishes the new INIT', () async {
+      core.sessionState = SessionStateKind.failed;
+      core.resetSessionResult = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: Uint8List.fromList([4, 4]),
+      );
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.reconnectSession();
+
+      expect(core.resetSessionCalls, [contact.deviceId]);
+      expect(transport.sendCalls.any((b) => listEquals(b, [4, 4])), isTrue);
+      expect(controller.isReconnecting, isFalse);
+      expect(controller.sessionError, isNull);
+    });
+
+    test('reconnectSession failure becomes sessionError, not exception', () async {
+      core.sessionState = SessionStateKind.failed;
+      core.resetSessionError = StateError('banco trancado');
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.reconnectSession();
+
+      expect(controller.sessionError, isNotNull);
+      expect(controller.isReconnecting, isFalse);
+    });
+
+    test('reconnectSession twice at once resets only once', () async {
+      core.sessionState = SessionStateKind.failed;
+      controller = makeController();
+      await controller.initialize();
+
+      await Future.wait([controller.reconnectSession(), controller.reconnectSession()]);
+
+      expect(core.resetSessionCalls, hasLength(1));
+    });
+  });
+
   test('initialize keeps handshaking', () async {
     core.sessionState = SessionStateKind.handshaking;
     controller = makeController();
@@ -1004,6 +1134,35 @@ void main() {
 
       expect(controller.isRecording, isFalse);
       expect(controller.voiceError, contains('Opus'));
+    });
+
+    test('startRecording with a failed session is refused with the session message', () async {
+      core.sessionState = SessionStateKind.failed;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.startRecording();
+
+      expect(controller.isRecording, isFalse);
+      expect(controller.voiceError, ChatController.sessionBrokenMessage);
+      expect(recorder.startCalls, 0);
+    });
+
+    test('voice note recorded while the session failed is discarded, not sent', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+      await controller.startRecording();
+      final raw = File('${tempDir.path}/gravada.ogg')..writeAsBytesSync([1, 2, 3]);
+      recorder.pathToReturnOnStop = raw.path;
+      core.sessionState = SessionStateKind.failed;
+
+      await controller.stopRecordingAndSend();
+
+      expect(controller.voiceError, ChatController.sessionBrokenMessage);
+      expect(controller.isSendingVoice, isFalse);
+      await pumpEventQueue();
+      expect(raw.existsSync(), isFalse);
     });
 
     test('startRecording when granted starts recording', () async {
@@ -1527,6 +1686,44 @@ void main() {
 
       expect(controller.fileError, isNotNull);
       expect(controller.isSendingFile, isFalse);
+    });
+
+    test('sendFile with a failed session is refused with the session message, creating nothing', () async {
+      core.sessionState = SessionStateKind.failed;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.sendFile('/tmp/qualquer.bin');
+
+      expect(controller.fileError, ChatController.sessionBrokenMessage);
+      expect(core.startSendFileCalls, isEmpty);
+      expect(controller.isSendingFile, isFalse);
+    });
+
+    test('sendFile failing on a session that the stream has not reported yet says the session is the cause', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+      // O Rust derrubou a sessão no meio do envio; o evento ainda não chegou.
+      core.startSendFileHandler = (_) {
+        core.silentStatusOverride = SessionStateKind.failed;
+        throw StateError('sessão falhou');
+      };
+
+      await controller.sendFile('/tmp/qualquer.bin');
+
+      expect(controller.fileError, ChatController.sessionBrokenMessage);
+    });
+
+    test('sendFile failing on a healthy session keeps the generic message', () async {
+      core.sessionState = SessionStateKind.established;
+      core.startSendFileHandler = (_) => throw StateError('disco cheio');
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.sendFile('/tmp/qualquer.bin');
+
+      expect(controller.fileError, 'Não foi possível enviar o arquivo.');
     });
 
     test('sendFile while already sending is a no-op (second call ignored)', () async {

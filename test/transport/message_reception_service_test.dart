@@ -13,6 +13,8 @@ import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/transfer_foreground_service.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
 
+import '../support/fake_session_events.dart';
+
 class _FakeP2PTransport implements P2PTransport {
   var connectCalls = 0;
   var closeCalls = 0;
@@ -52,8 +54,11 @@ class _FakeP2PTransport implements P2PTransport {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
-class _FakeReceptionCore implements Core {
-  SessionStateKind sessionState = SessionStateKind.handshaking;
+class _FakeReceptionCore with FakeSessionEvents implements Core {
+  _FakeReceptionCore() {
+    peerDeviceId = List.generate(16, (i) => i);
+  }
+
   Uint8List? outgoingHandshake;
 
   List<ContactDto> contacts = [];
@@ -88,6 +93,10 @@ class _FakeReceptionCore implements Core {
 
   @override
   Future<List<ContactDto>> listContacts() async => contacts;
+
+  @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
 
   @override
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>
@@ -323,7 +332,7 @@ void main() {
 
       expect(core.feedHandshakeCalls, [Uint8List.fromList([1, 1])]);
       expect(transport.sendCalls, [Uint8List.fromList([7, 7, 7])]);
-      expect(events.whereType<SessionEstablishedEvent>(), isNotEmpty);
+      expect(events.whereType<SessionStateChangedEvent>(), isNotEmpty);
 
       await sub.cancel();
     });
@@ -383,17 +392,70 @@ void main() {
       expect(core.markSentCalls, [8]);
     });
 
-    test('restored session flushes pending', () async {
-      core.sessionState = SessionStateKind.established;
+    test('session that becomes established after start flushes pending', () async {
+      await service.start();
+      await pumpEventQueue();
       core.pendingToFlush = [
         SealedMessageDto(messageId: 9, bytes: Uint8List.fromList([9, 9])),
       ];
 
-      await service.start();
+      core.sessionState = SessionStateKind.established;
       await pumpEventQueue();
 
       expect(transport.sendCalls.any((b) => listEquals(b, [9, 9])), isTrue);
       expect(core.markSentCalls, [9]);
+    });
+
+    test('republishes the Rust session state as SessionStateChangedEvent', () async {
+      await service.start();
+      final events = <SessionStateChangedEvent>[];
+      final sub = service
+          .eventsFor(contact)
+          .where((e) => e is SessionStateChangedEvent)
+          .cast<SessionStateChangedEvent>()
+          .listen(events.add);
+
+      core.sessionState = SessionStateKind.failed;
+      await pumpEventQueue();
+
+      expect(events.last.state, SessionStateKind.failed);
+      expect(events.last.isBroken, isTrue);
+      expect(service.sessionStateFor(contact)?.state, SessionStateKind.failed);
+      await sub.cancel();
+    });
+
+    test('packets arriving on a failed session are dropped, not fed as handshake', () async {
+      await service.start();
+      core.sessionState = SessionStateKind.failed;
+      await pumpEventQueue();
+
+      transport.emitIncoming(Uint8List.fromList([1, 2, 3]));
+      await pumpEventQueue();
+
+      expect(core.feedHandshakeCalls, isEmpty);
+      expect(core.decryptIncomingCalls, isEmpty);
+    });
+
+    test('sessions dropped by lock flush pending again when re-established', () async {
+      await service.start();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([1])),
+      ];
+      core.sessionState = SessionStateKind.established;
+      await pumpEventQueue();
+      expect(core.markSentCalls, [1]);
+
+      core.dropSession();
+      await pumpEventQueue();
+      expect(service.sessionStateFor(contact)?.state, isNull);
+
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([2])),
+      ];
+      core.sessionState = SessionStateKind.established;
+      await pumpEventQueue();
+
+      expect(core.markSentCalls, [1, 2]);
     });
 
     test('flush does not duplicate', () async {
