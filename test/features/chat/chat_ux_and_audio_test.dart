@@ -14,6 +14,7 @@ import 'package:viska/src/features/chat/widgets/reply_preview.dart';
 import 'package:viska/src/features/chat/widgets/swipe_to_reply.dart';
 import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
@@ -146,10 +147,13 @@ class _FakeCore implements Core {
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
 
   List<FileOfferDto> unconfirmedFileOffersToReturn = [];
+  FfiError? unconfirmedFileOffersError;
 
   @override
-  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async =>
-      unconfirmedFileOffersToReturn;
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async {
+    if (unconfirmedFileOffersError != null) throw unconfirmedFileOffersError!;
+    return unconfirmedFileOffersToReturn;
+  }
 
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -751,6 +755,32 @@ void main() {
       expect(find.text('150.0 MB • Oferta de transferência direta'), findsOneWidget);
       expect(find.text('Aceitar'), findsOneWidget);
       expect(find.text('Recusar'), findsOneWidget);
+    });
+
+    testWidgets('offers error banner shows retry and clears after a successful reload', (tester) async {
+      core.unconfirmedFileOffersError = FfiError.internal;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('offers_error_banner')), findsOneWidget);
+      expect(find.text('Tentar de novo'), findsOneWidget);
+
+      core.unconfirmedFileOffersError = null;
+      await tester.tap(find.text('Tentar de novo'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('offers_error_banner')), findsNothing);
     });
   });
 }

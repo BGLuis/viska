@@ -537,6 +537,7 @@ class _FakeCore implements Core {
       keyChanged;
 
   List<FileOfferDto> unconfirmedFileOffersToReturn = [];
+  FfiError? unconfirmedFileOffersError;
   final acceptFileOfferCalls = <Uint8List>[];
   final rejectFileOfferCalls = <Uint8List>[];
   FfiError? offerActionError;
@@ -554,8 +555,10 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async =>
-      unconfirmedFileOffersToReturn;
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async {
+    if (unconfirmedFileOffersError != null) throw unconfirmedFileOffersError!;
+    return unconfirmedFileOffersToReturn;
+  }
 
   @override
   Future<BigInt> autoAcceptFileSizeLimit() async => BigInt.from(100 * 1024 * 1024);
@@ -1642,6 +1645,29 @@ void main() {
       expect(controller.unconfirmedOffers, hasLength(1));
       expect(controller.unconfirmedOffers.first.name, 'huge_archive.zip');
       expect(controller.unconfirmedOffers.first.fileSize, BigInt.from(200 * 1024 * 1024));
+    });
+
+    test('loadUnconfirmedOffers exposes offersError and keeps the last valid list', () async {
+      final offer = FileOfferDto(
+        fileId: Uint8List.fromList(List.filled(16, 9)),
+        name: 'huge_archive.zip',
+        fileSize: BigInt.from(200 * 1024 * 1024),
+      );
+      core.unconfirmedFileOffersToReturn = [offer];
+      controller = makeController();
+      await controller.initialize();
+      expect(controller.offersError, isNull);
+
+      core.unconfirmedFileOffersError = FfiError.internal;
+      await controller.loadUnconfirmedOffers();
+
+      expect(controller.offersError, isNotNull);
+      expect(controller.unconfirmedOffers, hasLength(1));
+
+      core.unconfirmedFileOffersError = null;
+      await controller.loadUnconfirmedOffers();
+
+      expect(controller.offersError, isNull);
     });
 
     test('acceptFileOffer calls core, transmits initial feedback, and refreshes list', () async {

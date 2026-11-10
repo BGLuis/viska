@@ -117,6 +117,12 @@ class ChatController extends ChangeNotifier {
   List<FileOfferDto> _unconfirmedOffers = [];
   List<FileOfferDto> get unconfirmedOffers => List.unmodifiable(_unconfirmedOffers);
 
+  String? _offersError;
+
+  /// Mensagem de falha ao listar as ofertas pendentes; `null` quando a última
+  /// listagem deu certo. A lista anterior é mantida enquanto houver erro.
+  String? get offersError => _offersError;
+
   bool _established = false;
   bool get isEstablished => _established;
 
@@ -516,8 +522,15 @@ class ChatController extends ChangeNotifier {
       final offers = await _core.unconfirmedFileOffers(peerDeviceId: _contactId.deviceId);
       if (_disposed) return;
       _unconfirmedOffers = offers;
+      _offersError = null;
       notifyListeners();
-    } catch (_) {}
+    } catch (_) {
+      if (_disposed) return;
+      // Mantém a última lista válida: sumir com ofertas já vistas por causa de
+      // uma falha de listagem é exatamente o sintoma que este erro evita.
+      _offersError = 'Não foi possível carregar as ofertas de arquivo.';
+      notifyListeners();
+    }
   }
 
   /// Aceita explicitamente uma oferta de arquivo pendente (Issue #23).

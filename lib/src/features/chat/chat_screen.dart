@@ -735,6 +735,27 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: const TextStyle(color: DarkTechTheme.alert),
               ),
             ),
+          if (controller.offersError != null)
+            Container(
+              key: const Key('offers_error_banner'),
+              width: double.infinity,
+              color: DarkTechTheme.alert.withValues(alpha: 0.2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      controller.offersError!,
+                      style: const TextStyle(color: DarkTechTheme.alert),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.loadUnconfirmedOffers,
+                    child: const Text('Tentar de novo'),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: controller.messages.isEmpty
                 ? const Center(
