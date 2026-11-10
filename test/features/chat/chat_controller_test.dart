@@ -534,12 +534,6 @@ class _FakeCore with FakeSessionEvents implements Core {
   }) async => true;
 
   @override
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
-  }) async {}
-
-  @override
   Future<String> exportEncryptedBackup({required String destPath}) =>
       throw UnimplementedError();
 

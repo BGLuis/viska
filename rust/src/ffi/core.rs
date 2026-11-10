@@ -534,14 +534,6 @@ impl Core {
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         Ok(())
     }
-
-    /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
-    pub fn configure_duress_pin(&self, duress_pin: String, action_mode: u8) -> Result<(), FfiError> {
-        self.ensure_not_locked()?;
-        self.store.configure_duress_pin(&duress_pin, action_mode)?;
-        Ok(())
-    }
-
 }
 
 impl std::fmt::Debug for Core {
@@ -867,16 +859,9 @@ mod tests {
     }
 
     #[test]
-    fn reactions_and_duress_pin() {
+    fn reactions_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
-
-        // Testa configuração de duress PIN
-        core.configure_duress_pin("9999".to_string(), 1).unwrap();
-        let (is_enabled, duress_pin, action_mode) = core.store.get_decoy_vault_config().unwrap().unwrap();
-        assert!(is_enabled);
-        assert_eq!(duress_pin.as_deref(), Some("9999"));
-        assert_eq!(action_mode, 1);
 
         // Insere contato e mensagem para testar reação
         let dir_b = tempfile::tempdir().unwrap();
