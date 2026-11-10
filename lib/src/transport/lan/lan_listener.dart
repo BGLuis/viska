@@ -40,12 +40,21 @@ Uint8List encodePreamble({required Uint8List deviceId, required LanChannel chann
 /// discar. `incoming` já exclui o preâmbulo, se houver: pronto para
 /// `wire::framing`.
 class LanConnection {
-  LanConnection({required Socket socket, required this.incoming}) : _socket = socket;
+  LanConnection({required Socket socket, required this.incoming}) : _socket = socket {
+    // Um par que some faz `done` completar com erro (Broken pipe); quem
+    // trata a queda é o `LanTransport`, via `flush`/`onDone` — sem isto o
+    // erro escapa para a zona como exceção não tratada.
+    _socket.done.then<void>((_) {}, onError: (Object _) {});
+  }
 
   final Socket _socket;
   final Stream<Uint8List> incoming;
 
   void add(List<int> bytes) => _socket.add(bytes);
+
+  /// Só completa depois que o SO aceitou os bytes — é onde um erro de escrita
+  /// aparece, já que `add` retorna antes de qualquer I/O.
+  Future<void> flush() => _socket.flush();
 
   void destroy() => _socket.destroy();
 

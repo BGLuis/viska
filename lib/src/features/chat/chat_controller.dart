@@ -399,7 +399,7 @@ class ChatController extends ChangeNotifier {
       );
       await _refreshMessages();
       if (sealed.bytes != null) {
-        await _sendSealed(sealed.messageId, sealed.bytes!);
+        await _trySendSealed(sealed.messageId, sealed.bytes!);
       }
     } finally {
       _sending = false;
@@ -431,7 +431,7 @@ class ChatController extends ChangeNotifier {
     );
     await _refreshMessages();
     if (sealed.bytes != null) {
-      await _sendSealed(sealed.messageId, sealed.bytes!);
+      await _trySendSealed(sealed.messageId, sealed.bytes!);
     }
   }
 
@@ -671,8 +671,26 @@ class ChatController extends ChangeNotifier {
     for (final message in sealed) {
       final bytes = message.bytes;
       if (bytes != null) {
-        await _sendSealed(message.messageId, bytes);
+        // Uma falha derruba o resto: a conexão caiu, as demais seguem pending.
+        if (!await _trySendSealed(message.messageId, bytes)) return;
       }
+    }
+  }
+
+  /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
+  /// continua `pending` porque `markMessageSent` não chegou a rodar, e o
+  /// `flush_pending` a reenvia depois da reconexão.
+  Future<bool> _trySendSealed(int messageId, Uint8List bytes) async {
+    try {
+      await _sendSealed(messageId, bytes);
+      return true;
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem segue pendente: $e');
+      if (!_disposed) {
+        _connectionError = 'Não foi possível enviar a mensagem.';
+        notifyListeners();
+      }
+      return false;
     }
   }
 

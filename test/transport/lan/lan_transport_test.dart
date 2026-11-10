@@ -700,4 +700,107 @@ void main() {
     expect(newerFailed, isFalse);
     passiveListener.cancelWait(deviceId: _beacon, channel: LanChannel.control);
   });
+
+  /// Dois transportes reais conectados em 127.0.0.1 (o passivo é o lado
+  /// observado nos testes de queda).
+  Future<({LanTransport passive, LanTransport active})> connectedPair() async {
+    final passiveDiscovery = _FakeLanDiscovery();
+    final activeDiscovery = _FakeLanDiscovery();
+    final passive = passiveFor(passiveListener, passiveDiscovery);
+    final active = LanTransport(
+      core: _FakeCore(
+        myDeviceId_: _deviceIdActive,
+        advertiseBeacon: _beacon,
+        scanBeacons: [_beacon],
+        weAreActive: true,
+      ),
+      contactId: ContactId(_deviceIdPassive),
+      listener: activeListener,
+      discovery: activeDiscovery,
+      frame: _fakeFrame,
+      extractFrame: _fakeExtractFrame,
+      listNetworkInterfaces: _noNetworkInterfaces,
+    );
+    addTearDown(active.close);
+    addTearDown(passive.close);
+    final passiveConnect = passive.connect();
+    await _untilAdvertised(passiveDiscovery);
+    final announced = passiveDiscovery.advertiseCalls.single;
+    final activeConnect = active.connect();
+    await _emitOnceBrowsing(
+      activeDiscovery,
+      LanPeer(instanceName: announced.instanceName, host: '127.0.0.1', port: announced.port),
+    );
+    await Future.wait([activeConnect, passiveConnect]).timeout(const Duration(seconds: 5));
+    return (passive: passive, active: active);
+  }
+
+  Future<TransportConnectionEvent> firstFailed(LanTransport t) => t.connectionEvents
+      .firstWhere((e) => e.state == TransportConnectionState.failed)
+      .timeout(const Duration(seconds: 5));
+
+  test('peer close publishes a single failed event', () async {
+    final pair = await connectedPair();
+    final failures = <TransportConnectionEvent>[];
+    pair.passive.connectionEvents
+        .where((e) => e.state == TransportConnectionState.failed)
+        .listen(failures.add);
+
+    await pair.active.close();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    // Os dois sockets do par caem, mas o transporte falha uma vez só.
+    expect(failures, hasLength(1));
+  });
+
+  test('peer close on one channel only fails the whole transport', () async {
+    final discovery = _FakeLanDiscovery();
+    final passive = passiveFor(passiveListener, discovery);
+    addTearDown(passive.close);
+    final connect = passive.connect();
+    await _untilAdvertised(discovery);
+    final port = discovery.advertiseCalls.single.port;
+
+    final control = await Socket.connect(InternetAddress.loopbackIPv4, port);
+    control.add(encodePreamble(deviceId: _beacon, channel: LanChannel.control));
+    await control.flush();
+    final file = await Socket.connect(InternetAddress.loopbackIPv4, port);
+    addTearDown(file.destroy);
+    file.add(encodePreamble(deviceId: _beacon, channel: LanChannel.file));
+    await file.flush();
+    await connect.timeout(const Duration(seconds: 5));
+
+    final failed = firstFailed(passive);
+    control.destroy();
+    await failed;
+
+    await expectLater(passive.sendFile(Uint8List.fromList([1])), throwsStateError);
+  });
+
+  test('send after peer close fails without an unhandled Broken pipe', () async {
+    final uncaught = <Object>[];
+    await runZonedGuarded(() async {
+      final pair = await connectedPair();
+      final failed = firstFailed(pair.passive);
+      await pair.active.close();
+      await failed;
+
+      await expectLater(pair.passive.send(Uint8List.fromList([1, 2])), throwsStateError);
+      await expectLater(pair.passive.sendFile(Uint8List.fromList([1, 2])), throwsStateError);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }, (e, _) => uncaught.add(e));
+
+    expect(uncaught, isEmpty);
+  });
+
+  test('local close does not publish failed', () async {
+    final pair = await connectedPair();
+    final events = <TransportConnectionState>[];
+    pair.passive.connectionEvents.listen((e) => events.add(e.state));
+
+    await pair.passive.close();
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    expect(events, isNot(contains(TransportConnectionState.failed)));
+  });
 }

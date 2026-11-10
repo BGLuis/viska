@@ -107,6 +107,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
   bool _connectStarted = false;
   bool _closed = false;
 
+  /// A conexão caiu (par fechou, erro de socket ou escrita falhou). Os dois
+  /// canais morrem juntos: um transporte com só metade dos sockets não serve
+  /// ao protocolo, e o roteador o esquece ao ver `failed`.
+  bool _dead = false;
+
   /// Preâmbulo sob o qual `connect` registrou a espera no [LanListener] — é
   /// diferente do `device_id` do contato, e `close` precisa cancelar pela
   /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
@@ -128,13 +133,43 @@ class LanTransport implements P2PTransport, TransportReadiness {
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEventsController.stream;
 
   @override
-  Future<void> send(Uint8List envelope) async {
-    _control!.add(await _frame(envelope: envelope));
-  }
+  Future<void> send(Uint8List envelope) => _write(_control, envelope);
 
   @override
-  Future<void> sendFile(Uint8List bytes) async {
-    _file!.add(await _frame(envelope: bytes));
+  Future<void> sendFile(Uint8List bytes) => _write(_file, bytes);
+
+  /// Recusar com erro (em vez de aceitar e perder) é o que impede o chamador
+  /// de marcar como enviada uma mensagem que nunca saiu: `add` sozinho retorna
+  /// antes do I/O, então só o `flush` revela a escrita que falhou.
+  Future<void> _write(LanConnection? connection, Uint8List bytes) async {
+    if (_dead || _closed || connection == null) {
+      throw StateError('conexão LAN indisponível');
+    }
+    final framed = await _frame(envelope: bytes);
+    if (_dead || _closed) throw StateError('conexão LAN indisponível');
+    try {
+      connection.add(framed);
+      await connection.flush();
+    } catch (_) {
+      _fail('falha ao escrever no socket local');
+      throw StateError('conexão LAN indisponível');
+    }
+  }
+
+  /// Idempotente e silenciosa após `close`: a queda causada por nós mesmos não
+  /// é falha.
+  void _fail(String reason) {
+    if (_dead || _closed) return;
+    _dead = true;
+    try {
+      _control?.destroy();
+      _file?.destroy();
+    } catch (_) {}
+    if (!_connectionEventsController.isClosed) {
+      _connectionEventsController.add(
+        TransportConnectionEvent(TransportConnectionState.failed, reason: reason),
+      );
+    }
   }
 
   @override
@@ -346,22 +381,15 @@ class LanTransport implements P2PTransport, TransportReadiness {
             // rejeita um quadro nunca deve ser tentado de novo sobre o
             // mesmo buffer — a única resposta correta é derrubar a conexão.
             await sub.cancel();
-            connection.destroy();
-            if (!_connectionEventsController.isClosed) {
-              _connectionEventsController.add(
-                const TransportConnectionEvent(
-                  TransportConnectionState.failed,
-                  reason: 'quadro rejeitado pelo enquadramento do socket local',
-                ),
-              );
-            }
+            _fail('quadro rejeitado pelo enquadramento do socket local');
           }
         }());
       },
       onError: (Object e, StackTrace st) {
         if (!out.isClosed) out.addError(e, st);
-        connection.destroy();
+        _fail('erro no socket local');
       },
+      onDone: () => _fail('conexão encerrada pelo par'),
     );
   }
 
