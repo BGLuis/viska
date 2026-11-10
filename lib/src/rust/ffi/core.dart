@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`
+// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `reset_inflight_state`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
@@ -299,7 +299,12 @@ abstract class Core implements RustOpaqueInterface {
   /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
   /// a oferta e zera o material de chave sem criar registro em banco ou
   /// arquivo em staging.
-  Future<void> rejectFileOffer({required List<int> fileId});
+  ///
+  /// Devolve o `FILE_REJECT` já selado para o Dart enviar (§7.7), ou `None`
+  /// se não há sessão estabelecida agora. A recusa local vale de qualquer
+  /// jeito: o aviso é melhor esforço e nada é guardado em disco para
+  /// reenviá-lo, para não contrariar a retenção volátil da §7.6.
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId});
 
   /// Re-pareamento presencial com um contato existente (§10, D24):
   /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.

@@ -44,6 +44,9 @@ pub enum DeliveryState {
     /// linha de `list_pending`, de modo que duas drenagens seguidas não
     /// cifrem o mesmo corpo duas vezes.
     Sending = 4,
+    /// O destinatário viu a oferta de arquivo e a recusou (`FILE_REJECT`, §7.7).
+    /// O valor 5 é o próximo livre: `delivery_state` é INTEGER sem CHECK, então o novo estado não pede migration.
+    Rejected = 5,
 }
 
 impl DeliveryState {
@@ -54,6 +57,7 @@ impl DeliveryState {
             2 => Ok(Self::Delivered),
             3 => Ok(Self::Failed),
             4 => Ok(Self::Sending),
+            5 => Ok(Self::Rejected),
             _ => Err(Error::Store),
         }
     }
@@ -539,10 +543,18 @@ pub fn sweep_expired_ephemeral_messages(
 }
 
 /// Marca uma mensagem de saída como entregue ao transporte.
+///
+/// Só avança de `Pending`/`Sending`: o envio de um arquivo termina depois do
+/// bombeamento, e uma recusa que chegou no meio dele não pode ser sobrescrita.
 pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
     conn.execute(
-        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
-        rusqlite::params![DeliveryState::Sent as i64, message_id],
+        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4)",
+        rusqlite::params![
+            DeliveryState::Sent as i64,
+            message_id,
+            DeliveryState::Pending as i64,
+            DeliveryState::Sending as i64
+        ],
     )
     .map_err(|_| Error::Store)?;
     Ok(())
@@ -625,6 +637,44 @@ pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
         ],
     )
     .map_err(|_| Error::Store)
+}
+
+/// Liga a mensagem de saída de um arquivo ao `file_id` da transferência, para
+/// que a recusa do par (`FILE_REJECT`) ache a linha sem depender da UI.
+pub fn set_file_id(conn: &rusqlite::Connection, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET file_id = ?1 WHERE id = ?2",
+        rusqlite::params![file_id.as_slice(), message_id],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
+/// Marca como recusada a mensagem de saída ligada a `file_id`, só se ela for
+/// deste contato e ainda não tiver terminado: `Delivered` e `Failed` não
+/// voltam atrás. Devolve se alguma linha mudou.
+pub fn mark_rejected_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE messages SET delivery_state = ?1
+             WHERE file_id = ?2 AND contact_device_id = ?3 AND direction = ?4
+               AND delivery_state IN (?5, ?6, ?7)",
+            rusqlite::params![
+                DeliveryState::Rejected as i64,
+                file_id.as_slice(),
+                contact_device_id.as_slice(),
+                Direction::Outgoing as i64,
+                DeliveryState::Pending as i64,
+                DeliveryState::Sending as i64,
+                DeliveryState::Sent as i64,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(changed > 0)
 }
 
 /// Marca uma mensagem de saída como confirmada/entregue ao destinatário (via MSG_RECEIPT).
@@ -1120,6 +1170,38 @@ mod tests {
         assert_eq!(listed[0].direction, Direction::Outgoing);
         assert_eq!(listed[0].body, "oi");
         assert_eq!(listed[0].delivery_state, DeliveryState::Pending);
+    }
+
+    #[test]
+    fn rejected_by_file_id_needs_matching_contact_and_an_unfinished_state() {
+        let contact = [12u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [7u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+
+        assert!(!mark_rejected_by_file_id(&conn, &file_id, &[13u8; 16]).unwrap());
+        assert!(!mark_rejected_by_file_id(&conn, &[8u8; 16], &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Pending);
+
+        mark_sent(&conn, id).unwrap();
+        assert!(mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Rejected);
+
+        // Recusa repetida ou envio já recusado não muda de novo.
+        assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+    }
+
+    #[test]
+    fn rejected_by_file_id_does_not_downgrade_a_delivered_message() {
+        let contact = [14u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [9u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+        mark_delivered(&conn, id).unwrap();
+
+        assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
     }
 
     #[test]

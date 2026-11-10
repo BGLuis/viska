@@ -437,6 +437,6 @@ A recepção irrestrita e automática de arquivos pesados expõe dispositivos m�
 1. **Memória volátil:** `unconfirmed_offers` não grava metadados no SQLite até o aceite explícito. A fila é limitada a 16 ofertas por contato e 64 globais para evitar flood de memória.
 2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), toda a lista de ofertas não confirmadas é destruída da memória.
 3. **Controle na UI:** O usuário tem a faculdade de aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`). Ao aceitar, o receptor registra o `ReceiveTransfer` em `active_receives` e passa a enviar `FILE_FEEDBACK` a cada 500 ms (§7.4) para engajar o emissor.
-4. **Sem sinal de recusa:** recusar, ou perder a oferta num bloqueio, não gera pacote no fio; o emissor não fica sabendo e não há timeout. Mudar isso exige um pacote novo.
+4. **Recusa avisa o emissor:** recusar explicitamente envia `FILE_REJECT` (`0x24`, §7.7), em melhor esforço e sem fila em disco. Perder a oferta num bloqueio continua sem pacote no fio, e não há timeout no emissor para quem nunca responde.
 
 **Custo de reverter:** remover a verificação de limite em `handle_incoming_file_metadata`, iniciando `start_receiving_transfer` para qualquer tamanho e expondo o aparelho móvel a downloads massivos não consentidos.

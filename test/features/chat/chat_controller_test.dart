@@ -549,6 +549,9 @@ class _FakeCore implements Core {
   final rejectFileOfferCalls = <Uint8List>[];
   FfiError? offerActionError;
 
+  /// O que `rejectFileOffer` devolve: o `FILE_REJECT` selado, ou `null` sem sessão.
+  Uint8List? sealedRejectToReturn;
+
   @override
   Future<void> acceptFileOffer({required List<int> fileId}) async {
     acceptFileOfferCalls.add(Uint8List.fromList(fileId));
@@ -556,9 +559,10 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<void> rejectFileOffer({required List<int> fileId}) async {
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId}) async {
     rejectFileOfferCalls.add(Uint8List.fromList(fileId));
     if (offerActionError != null) throw offerActionError!;
+    return sealedRejectToReturn;
   }
 
   @override
@@ -1748,6 +1752,63 @@ void main() {
       expect(core.rejectFileOfferCalls, hasLength(1));
       expect(core.rejectFileOfferCalls.single, fileId);
       expect(controller.unconfirmedOffers, isEmpty);
+    });
+
+    test('rejectFileOffer sends the sealed FILE_REJECT to the sender', () async {
+      core.sealedRejectToReturn = Uint8List.fromList([4, 2, 4]);
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.rejectFileOffer(Uint8List.fromList(List.filled(16, 8)));
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [4, 2, 4])), hasLength(1));
+      expect(controller.fileError, isNull);
+    });
+
+    test('rejectFileOffer without a session sends nothing and is not an error', () async {
+      core.sealedRejectToReturn = null;
+      controller = makeController();
+      await controller.initialize();
+      final before = transport.sendCalls.length;
+
+      await controller.rejectFileOffer(Uint8List.fromList(List.filled(16, 8)));
+
+      expect(transport.sendCalls.length, before);
+      expect(controller.fileError, isNull);
+    });
+
+    test('rejectFileOffer keeps the local rejection when the notice fails to send', () async {
+      core.sealedRejectToReturn = Uint8List.fromList([4, 2, 4]);
+      controller = makeController();
+      await controller.initialize();
+      transport.sendError = StateError('canal fechado');
+      transport.sendErrorWhen = (b) => listEquals(b, [4, 2, 4]);
+
+      await controller.rejectFileOffer(Uint8List.fromList(List.filled(16, 8)));
+
+      expect(core.rejectFileOfferCalls, hasLength(1));
+      expect(controller.fileError, isNull);
+    });
+
+    test('a rejected outgoing file is listed with the rejected state', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: 'a.bin',
+          deliveryState: DeliveryStateDto.rejected,
+          createdAtUnixSecs: PlatformInt64Util.from(1),
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+      controller = makeController();
+
+      await controller.initialize();
+
+      expect(controller.messages.single.deliveryState, DeliveryStateDto.rejected);
     });
   });
 }

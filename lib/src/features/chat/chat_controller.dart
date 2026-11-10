@@ -554,17 +554,29 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23).
+  /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23) e avisa o
+  /// emissor com o `FILE_REJECT` que o Rust selou (§7.7).
+  ///
+  /// O aviso é melhor esforço: sem sessão o Rust devolve `null`, e uma falha do
+  /// transporte não desfaz a recusa nem vira [fileError] — a oferta já foi
+  /// descartada, e o emissor só deixa de saber.
   Future<void> rejectFileOffer(Uint8List fileId) async {
     _fileError = null;
+    Uint8List? sealedReject;
     try {
-      await _core.rejectFileOffer(fileId: fileId);
+      sealedReject = await _core.rejectFileOffer(fileId: fileId);
     } catch (e) {
       _fileError = e == FfiError.offerNotFound
           ? _offerGoneMessage
           : 'Não foi possível recusar o arquivo.';
     } finally {
       await loadUnconfirmedOffers();
+    }
+    if (sealedReject == null) return;
+    try {
+      await _router.sendToContact(_contactId, sealedReject);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] aviso de recusa não enviado: $e');
     }
   }
 

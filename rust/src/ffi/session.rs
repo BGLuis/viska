@@ -274,6 +274,10 @@ impl Core {
                 let _ = self.handle_incoming_file_complete(inner.body);
                 Ok(None)
             }
+            PacketType::FileReject => {
+                let _ = self.handle_incoming_file_reject(device_id, inner.body);
+                Ok(None)
+            }
             _ => Ok(None),
         }
     }
@@ -439,6 +443,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         viska_proto::store::messages::DeliveryState::Delivered => DeliveryStateDto::Delivered,
         viska_proto::store::messages::DeliveryState::Failed => DeliveryStateDto::Failed,
         viska_proto::store::messages::DeliveryState::Sending => DeliveryStateDto::Sending,
+        viska_proto::store::messages::DeliveryState::Rejected => DeliveryStateDto::Rejected,
     };
 
     let (kind, body, audio_file_id) =
