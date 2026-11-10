@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::OptionalExtension;
+use zeroize::Zeroizing;
 
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::kdf;
@@ -534,8 +535,17 @@ fn purge_retired_on_conn(conn: &rusqlite::Connection, retired_version: u8) -> Re
 /// precisa ser formatada como blob hexadecimal (`x'...'`) para o SQLCipher não
 /// tentar interpretar bytes arbitrários como texto.
 fn apply_key(conn: &rusqlite::Connection, key: &kdf::Key) -> Result<()> {
-    let hex: String = key.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    conn.pragma_update(None, "key", format!("x'{hex}'"))
+    // Cada passo intermediário carrega a chave em hexadecimal, então todos
+    // são `Zeroizing`. O `String` interno que o rusqlite monta ao aplicar o
+    // pragma escapa ao nosso controle. `write!` evita o `String` temporário de `format!` por byte.
+    use std::fmt::Write;
+    let mut pragma = Zeroizing::new(String::with_capacity(4 + 2 * key.as_bytes().len()));
+    pragma.push_str("x'");
+    for b in key.as_bytes() {
+        write!(pragma, "{b:02x}").map_err(|_| Error::Store)?;
+    }
+    pragma.push('\'');
+    conn.pragma_update(None, "key", pragma.as_str())
         .map_err(|_| Error::Store)
 }
 

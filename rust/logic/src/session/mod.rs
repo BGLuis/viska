@@ -38,6 +38,7 @@ use crate::wire::packet_type::PacketType;
 use crate::wire::plaintext::InnerPlaintext;
 use crate::wire::transport::Transport;
 use crate::{Error, Result};
+use zeroize::Zeroizing;
 
 /// Limiar de segurança do contador de envio (`Ns`), bem abaixo de `u32::MAX`
 /// — várias ordens de grandeza acima do gatilho de re-KEM de 256 mensagens
@@ -350,14 +351,15 @@ impl Session {
         let counter = header.counter;
         let dh_pub = header.dh_pub;
 
-        let mut buffer = InnerPlaintext {
+        // Zeroizing: se `seal` falhar, o plaintext não pode ficar solto no heap.
+        let mut buffer = Zeroizing::new(InnerPlaintext {
             packet_type,
             pn: header.pn,
             kem_ek: header.kem_ek,
             kem_ct: header.kem_ct,
-            body,
+            body: Zeroizing::new(body),
         }
-        .encode(transport)?;
+        .encode(transport)?);
 
         let aad = envelope::aad(counter, &dh_pub);
         aead::seal(&message_key, counter, &aad, &mut buffer)?;
@@ -493,7 +495,9 @@ fn try_decrypt(
         }
     };
 
-    let mut buffer = sealed.to_vec();
+    // O buffer vira plaintext depois do `open`; `InnerPlaintext::decode` copia
+    // o corpo, então este precisa ser zerado em qualquer saída.
+    let mut buffer = Zeroizing::new(sealed.to_vec());
     let aad = envelope::aad(counter, &dh_pub);
     if aead::open(&message_key, counter, &aad, &mut buffer).is_err() {
         ratchet.discard_receive();
@@ -625,7 +629,7 @@ mod tests {
                     .decrypt_incoming(&envelope, Transport::DataChannel)
                     .unwrap()
                     .expect("mensagem legítima nunca deveria ser descartada");
-                assert_eq!(inner.body, body);
+                assert_eq!(*inner.body, body);
                 assert_eq!(inner.packet_type, PacketType::MsgText);
             } else {
                 let envelope = bob_session
@@ -635,7 +639,7 @@ mod tests {
                     .decrypt_incoming(&envelope, Transport::DataChannel)
                     .unwrap()
                     .expect("mensagem legítima nunca deveria ser descartada");
-                assert_eq!(inner.body, body);
+                assert_eq!(*inner.body, body);
             }
         }
     }
@@ -656,7 +660,7 @@ mod tests {
             .decrypt_incoming(&from_alice, Transport::DataChannel)
             .unwrap()
             .unwrap();
-        assert_eq!(received.body, b"oi de alice");
+        assert_eq!(received.body.as_slice(), b"oi de alice");
     }
 
     #[test]
@@ -741,7 +745,7 @@ mod tests {
             .decrypt_incoming(&seguinte, Transport::DataChannel)
             .unwrap()
             .expect("uma falha isolada não deveria impedir a próxima mensagem");
-        assert_eq!(inner.body, b"segunda");
+        assert_eq!(inner.body.as_slice(), b"segunda");
     }
 
     #[test]
@@ -834,7 +838,7 @@ mod tests {
                 .decrypt_incoming(&envelope, Transport::DataChannel)
                 .unwrap()
                 .expect("mensagem entregue e não adulterada deveria sempre decifrar");
-            assert_eq!(inner.body, body);
+            assert_eq!(*inner.body, body);
         }
     }
 
@@ -868,7 +872,7 @@ mod tests {
             .unwrap()
             .expect("MsgText subsequente deve decifrar normalmente");
         assert_eq!(inner.packet_type, PacketType::MsgText);
-        assert_eq!(inner.body, b"mensagem legitima");
+        assert_eq!(inner.body.as_slice(), b"mensagem legitima");
         assert!(bob_session.is_established());
     }
 
@@ -929,7 +933,7 @@ mod tests {
                     .decrypt_incoming(&next_env, Transport::DataChannel)
                     .unwrap()
                     .expect("mensagem na cadeia nova deve decifrar com sucesso");
-                assert_eq!(next_inner.body, b"pos-re-kem");
+                assert_eq!(next_inner.body.as_slice(), b"pos-re-kem");
                 break;
             }
         }
@@ -1366,7 +1370,7 @@ mod tests {
             Transport::DataChannel,
         ).unwrap();
         let received = bob_session.decrypt_incoming(&text_env, Transport::DataChannel).unwrap().unwrap();
-        assert_eq!(received.body, b"sessao continua");
+        assert_eq!(received.body.as_slice(), b"sessao continua");
     }
 
     #[test]

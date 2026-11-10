@@ -390,7 +390,9 @@ impl Core {
         let received_at = viska_proto::util::time::unix_seconds() as i64;
         match inner.packet_type {
             PacketType::MsgText => {
-                let body = String::from_utf8(inner.body).map_err(|_| FfiError::Internal)?;
+                let body = std::str::from_utf8(&inner.body)
+                    .map(str::to_owned)
+                    .map_err(|_| FfiError::Internal)?;
 
                 // Se o corpo for uma reação, vincula à mensagem no banco local:
                 if let Some((target_id, emoji)) = viska_proto::store::messages::parse_reaction_metadata(&body) {
@@ -432,19 +434,19 @@ impl Core {
                 received_at_unix_secs: received_at,
             })),
             PacketType::FileMetadata => {
-                let _ = self.handle_incoming_file_metadata(device_id, zeroize::Zeroizing::new(inner.body));
+                let _ = self.handle_incoming_file_metadata(device_id, inner.body);
                 Ok(None)
             }
             PacketType::FileFeedback => {
-                let _ = self.handle_incoming_file_feedback(device_id, inner.body);
+                let _ = self.handle_incoming_file_feedback(device_id, &inner.body);
                 Ok(None)
             }
             PacketType::FileComplete => {
-                let _ = self.handle_incoming_file_complete(inner.body);
+                let _ = self.handle_incoming_file_complete(&inner.body);
                 Ok(None)
             }
             PacketType::FileReject => {
-                let _ = self.handle_incoming_file_reject(device_id, inner.body);
+                let _ = self.handle_incoming_file_reject(device_id, &inner.body);
                 Ok(None)
             }
             _ => Ok(None),
