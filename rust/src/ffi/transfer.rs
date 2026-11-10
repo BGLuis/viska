@@ -384,11 +384,15 @@ impl Core {
                 continue;
             }
             let manifest = Manifest::decode(&entry.manifest_cbor)?;
-            let name = manifest::decrypt_name(
+            // Linha com nome que não decifra (gravada antes da validação na
+            // chegada) não pode esconder as demais transferências do contato.
+            let Ok(name) = manifest::decrypt_name(
                 &entry.transfer_secret,
                 &manifest.file_id,
                 &manifest.name_encrypted,
-            )?;
+            ) else {
+                continue;
+            };
             offers.push(FileOfferDto {
                 file_id: entry.file_id.to_vec(),
                 name,
@@ -609,11 +613,15 @@ impl Core {
             if offer.contact_device_id != device_id {
                 continue;
             }
-            let name = manifest::decrypt_name(
+            // Um nome que não decifra não pode derrubar a listagem inteira do
+            // contato; a oferta ruim só não aparece.
+            let Ok(name) = manifest::decrypt_name(
                 offer.transfer_secret.as_ref(),
                 &offer.manifest.file_id,
                 &offer.manifest.name_encrypted,
-            )?;
+            ) else {
+                continue;
+            };
             offers.push(FileOfferDto {
                 file_id: offer.manifest.file_id.to_vec(),
                 name,
@@ -721,6 +729,11 @@ impl Core {
         let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
         let manifest_cbor = manifest.encode()?;
         let received_at = viska_proto::util::time::unix_seconds() as i64;
+
+        // Valida o nome antes de reter ou gravar qualquer coisa: uma oferta cujo
+        // nome não decifra nunca poderia ser listada nem recusada, e ocuparia
+        // uma das vagas do contato.
+        manifest::decrypt_name(&transfer_secret, &manifest.file_id, &manifest.name_encrypted)?;
 
         let auto_accept_limit = self.auto_accept_file_size_limit()?;
         if manifest.file_size > auto_accept_limit {
@@ -2147,6 +2160,107 @@ mod tests {
         let offers = pair.core_b.lock_unconfirmed_offers().unwrap();
         assert_eq!(offers.len(), 1);
         assert_eq!(offers.get(&file_id).unwrap().received_at, -1);
+    }
+
+    /// Corpo de `FILE_METADATA` válido, mas com `name_encrypted` adulterado
+    /// (a tag AEAD do nome não confere), e um `file_id` novo para não colidir
+    /// com a oferta de onde foi derivado.
+    fn undecryptable_name_body(pair: &EstablishedPair, dir: &tempfile::TempDir) -> (Vec<u8>, [u8; FILE_ID_LEN]) {
+        let file_id = fid(&retain_offer(pair, dir, "ruim.bin"));
+        let mut offer = pair.core_b.lock_unconfirmed_offers().unwrap().remove(&file_id).unwrap();
+        offer.manifest.file_id = [0xEE; FILE_ID_LEN];
+        offer.manifest.name_encrypted[0] ^= 0x01;
+        let body = transfer::encode_metadata_body(offer.kind, &offer.transfer_secret, &offer.manifest).unwrap();
+        (body, offer.manifest.file_id)
+    }
+
+    fn staging_entries(core: &Core) -> usize {
+        std::fs::read_dir(&core.staging_dir).map_or(0, |d| d.count())
+    }
+
+    #[test]
+    fn undecryptable_name_above_limit_is_not_retained() {
+        let pair = established_pair();
+        let dir = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+        let (body, _) = undecryptable_name_body(&pair, &dir);
+        let contact = to_device_id(pair.device_id_a.clone()).unwrap();
+
+        assert!(pair.core_b.handle_incoming_file_metadata(contact, body).is_err());
+
+        assert!(pair.core_b.lock_unconfirmed_offers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn undecryptable_name_below_limit_creates_no_row_or_staging() {
+        let pair = established_pair();
+        let dir = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+        let (body, _) = undecryptable_name_body(&pair, &dir);
+        pair.core_b.set_auto_accept_file_size_limit(u64::MAX).unwrap();
+        let contact = to_device_id(pair.device_id_a.clone()).unwrap();
+        let staging_before = staging_entries(&pair.core_b);
+
+        assert!(pair.core_b.handle_incoming_file_metadata(contact, body).is_err());
+
+        assert_eq!(staging_entries(&pair.core_b), staging_before);
+        assert!(pair.core_b.pending_file_offers(pair.device_id_a.clone()).unwrap().is_empty());
+        assert!(pair
+            .core_b
+            .store
+            .list_file_transfers_for_contact(&contact, Direction::Receiving)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn undecryptable_name_in_retained_offer_does_not_hide_valid_offer() {
+        let pair = established_pair();
+        let dir = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+        let valid = retain_offer(&pair, &dir, "boa.bin");
+        // Simula uma oferta gravada antes da correção: nome ruim já retido.
+        let (body, bad_id) = undecryptable_name_body(&pair, &dir);
+        let (kind, secret, manifest) = transfer::decode_metadata_body(&body).unwrap();
+        let manifest_cbor = manifest.encode().unwrap();
+        pair.core_b.lock_unconfirmed_offers().unwrap().insert(
+            bad_id,
+            UnconfirmedOffer {
+                contact_device_id: to_device_id(pair.device_id_a.clone()).unwrap(),
+                kind,
+                transfer_secret: zeroize::Zeroizing::new(secret),
+                manifest,
+                manifest_cbor,
+                received_at: 0,
+            },
+        );
+
+        let offers = pair.core_b.unconfirmed_file_offers(pair.device_id_a.clone()).unwrap();
+
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].file_id, valid);
+    }
+
+    #[test]
+    fn undecryptable_name_in_stored_row_does_not_fail_pending_file_offers() {
+        let pair = established_pair();
+        let dir = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+        let (body, bad_id) = undecryptable_name_body(&pair, &dir);
+        let (kind, secret, manifest) = transfer::decode_metadata_body(&body).unwrap();
+        let contact = to_device_id(pair.device_id_a.clone()).unwrap();
+        pair.core_b
+            .store
+            .insert_file_transfer(&bad_id, Direction::Receiving, &contact, &manifest.encode().unwrap(), &secret, 0, kind)
+            .unwrap();
+        // Uma transferência boa do mesmo contato precisa continuar listada.
+        pair.core_b.set_auto_accept_file_size_limit(u64::MAX).unwrap();
+        let good = retain_offer(&pair, &dir, "boa.bin");
+
+        let offers = pair.core_b.pending_file_offers(pair.device_id_a.clone()).unwrap();
+
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].file_id, good);
     }
 
     #[test]
