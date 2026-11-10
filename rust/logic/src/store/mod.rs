@@ -330,6 +330,15 @@ impl Store {
         self.with_conn(|conn| messages::mark_expired_by_file_id(conn, file_id, contact_device_id))
     }
 
+    /// Marca como falha a mensagem de arquivo deste contato (envio cancelado pelo reset).
+    pub fn mark_message_failed_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::mark_failed_by_file_id(conn, file_id, contact_device_id))
+    }
+
     /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
     pub fn fail_pending_transfers(&self) -> Result<usize> {
         self.with_conn(messages::fail_pending_transfers)

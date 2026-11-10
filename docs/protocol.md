@@ -701,8 +701,11 @@ descartada e a falha é local, mas fica o risco residual de duplicata se o par c
 antes. Isso difere do texto que estava em `Sending` quando a Core abriu ou foi trancada: ali não se
 sabe se os bytes saíram, e recifrá-los entregaria a mesma mensagem duas vezes, então ele vira
 `unknown` e só a pessoa o reenvia (a linha e o `global_id` são os mesmos, e o par deduplica). Os
-envios de arquivo e de nota de voz em andamento com o par são cancelados e as linhas marcadas como
-falha, porque o `FILE_METADATA` foi selado na sessão que deixou de existir. O estado de cada sessão é empurrado ao
+envios de arquivo e de nota de voz em andamento com o par são cancelados e as mensagens marcadas como
+falha (`Failed`) — inclusive a oferta já enviada (`Sent`) sem resposta e o envio aceito e incompleto, que
+sem isso ficariam `Sent` para sempre —, porque o `FILE_METADATA` foi selado na sessão que deixou de existir.
+Só entram os envios que ainda têm linha em `file_transfers` e mensagem ainda não terminada: um envio
+concluído (sem linha) e os estados finais `Delivered`, `Rejected` e `Expired` não mudam. O estado de cada sessão é empurrado ao
 Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
 segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
 

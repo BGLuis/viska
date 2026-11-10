@@ -1540,15 +1540,8 @@ mod tests {
         pair.core_a.cancel_transfer(vec![0u8; 16]).unwrap();
     }
 
-    #[test]
-    fn reset_session_cancels_outgoing_transfer_and_fails_its_row() {
-        let pair = established_pair();
-        let dir_src = tempfile::tempdir().unwrap();
-        let src_path = write_temp_file(&dir_src, "a.bin", &[7u8; 4096]);
-        let started = pair
-            .core_a
-            .start_send_file(pair.device_id_b.clone(), src_path, false)
-            .unwrap();
+    /// Leva a sessão de A com B a `Failed` por AEAD adulterado repetido (§11.2).
+    fn force_session_failed(pair: &EstablishedPair) {
         // `core_b` precisa de cadeia de envio para adulterar mensagens a `core_a`.
         let hello = pair
             .core_a
@@ -1570,6 +1563,101 @@ mod tests {
         }
         assert!(pair.core_a.session_status(pair.device_id_b.clone()).unwrap().unwrap().state
             == SessionStateKind::Failed);
+    }
+
+    fn state_of(pair: &EstablishedPair, message_id: i64) -> DeliveryStateDto {
+        pair.core_a
+            .list_messages(pair.device_id_b.clone())
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == message_id)
+            .unwrap()
+            .delivery_state
+    }
+
+    #[test]
+    fn reset_session_fails_sent_unanswered_offer() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        // O fim do bombeamento no Dart promove a mensagem a `Sent`.
+        pair.core_a.mark_message_sent(started.message_id).unwrap();
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
+        force_session_failed(&pair);
+
+        pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
+
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reset_session_fails_accepted_but_incomplete_transfer() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        pair.core_a.mark_message_sent(started.message_id).unwrap();
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+        let feedback = pair
+            .core_b
+            .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            .unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), feedback).unwrap();
+        force_session_failed(&pair);
+
+        pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
+
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
+    }
+
+    #[test]
+    fn reset_session_keeps_answered_offer() {
+        // Recusada: estado final, a linha já não existe.
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, rejected) = pair_with_pending_offer(&dir_src);
+        let sealed = pair.core_b.reject_file_offer(rejected.file_id.clone()).unwrap().unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), sealed).unwrap();
+
+        // Concluída: o `FILE_COMPLETE` apaga a linha e o handle e a mensagem fica `Sent`.
+        let src_path = write_temp_file(&dir_src, "feito.bin", &[3u8; 2_000]);
+        let done = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_a.mark_message_sent(done.message_id).unwrap();
+        let complete = transfer::FileComplete { file_id: fid(&done.file_id) };
+        pair.core_a.handle_incoming_file_complete(complete.encode()).unwrap();
+        assert!(pair.core_a.store.find_file_transfer(&fid(&done.file_id)).unwrap().is_none());
+
+        force_session_failed(&pair);
+        pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
+
+        assert_eq!(state_of(&pair, rejected.message_id), DeliveryStateDto::Rejected);
+        assert_eq!(state_of(&pair, done.message_id), DeliveryStateDto::Sent);
+    }
+
+    #[test]
+    fn reset_session_noop_when_established() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        pair.core_a.mark_message_sent(started.message_id).unwrap();
+
+        pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
+
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+        assert_eq!(pair.core_a.lock_unanswered_offers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reset_session_cancels_outgoing_transfer_and_fails_its_row() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let src_path = write_temp_file(&dir_src, "a.bin", &[7u8; 4096]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        force_session_failed(&pair);
 
         pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
 

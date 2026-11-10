@@ -756,6 +756,17 @@ pub fn mark_expired_by_file_id(
     mark_unfinished_by_file_id(conn, DeliveryState::Expired, file_id, contact_device_id)
 }
 
+/// Como [`mark_rejected_by_file_id`], para o envio cancelado localmente (reset
+/// de sessão): falha local, não recusa nem prazo vencido. Como as demais,
+/// só move `Pending`, `Sending` e `Sent`.
+pub fn mark_failed_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<bool> {
+    mark_unfinished_by_file_id(conn, DeliveryState::Failed, file_id, contact_device_id)
+}
+
 fn mark_unfinished_by_file_id(
     conn: &rusqlite::Connection,
     state: DeliveryState,
@@ -1294,6 +1305,49 @@ mod tests {
 
         // Recusa repetida ou envio já recusado não muda de novo.
         assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+    }
+
+    #[test]
+    fn failed_by_file_id_reaches_sent_but_not_finished_or_foreign_rows() {
+        let contact = [15u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [6u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+        mark_sent(&conn, id).unwrap();
+
+        assert!(!mark_failed_by_file_id(&conn, &file_id, &[16u8; 16]).unwrap());
+        assert!(mark_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Failed);
+        // Repetir (reset refeito depois de uma falha no meio) não muda nada.
+        assert!(!mark_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+
+        // `Pending` e `Sending` também são envios ainda não terminados.
+        for (n, advance) in [(1u8, mark_sending as fn(&_, i64) -> _), (2, |_, _| Ok(()))] {
+            let fid = [30 + n; 16];
+            let m = insert_pending(&conn, &contact, PacketType::AudioChunk, "v.opus", 2).unwrap();
+            set_file_id(&conn, m, &fid).unwrap();
+            advance(&conn, m).unwrap();
+            assert!(mark_failed_by_file_id(&conn, &fid, &contact).unwrap());
+        }
+
+        let delivered = [41u8; 16];
+        let m = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 2).unwrap();
+        set_file_id(&conn, m, &delivered).unwrap();
+        mark_delivered(&conn, m).unwrap();
+        assert!(!mark_failed_by_file_id(&conn, &delivered, &contact).unwrap());
+
+        let rejected = [42u8; 16];
+        let m = insert_pending(&conn, &contact, PacketType::FileMetadata, "c.bin", 3).unwrap();
+        set_file_id(&conn, m, &rejected).unwrap();
+        assert!(mark_rejected_by_file_id(&conn, &rejected, &contact).unwrap());
+        assert!(!mark_failed_by_file_id(&conn, &rejected, &contact).unwrap());
+
+        let expired = [43u8; 16];
+        let m = insert_pending(&conn, &contact, PacketType::FileMetadata, "d.bin", 4).unwrap();
+        set_file_id(&conn, m, &expired).unwrap();
+        assert!(mark_expired_by_file_id(&conn, &expired, &contact).unwrap());
+        assert!(!mark_failed_by_file_id(&conn, &expired, &contact).unwrap());
     }
 
     #[test]

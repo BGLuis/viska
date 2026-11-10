@@ -109,7 +109,7 @@ impl Core {
         self.open_session(&mut sessions, device_id)
     }
 
-    /// Cancela os envios de arquivo e voz deste contato e falha as linhas.
+    /// Cancela os envios de arquivo e voz deste contato e falha as mensagens.
     fn abort_outgoing_transfers(&self, device_id: &[u8; DEVICE_ID_LEN]) -> Result<(), FfiError> {
         let outgoing = self
             .store
@@ -126,7 +126,14 @@ impl Core {
                 unanswered.remove(&transfer.file_id);
             }
         }
+        // Antes de apagar as linhas, e por `file_id` delas: a mensagem de um envio
+        // concluído também fica `Sent` e sem linha, então só a linha ainda
+        // existente prova que este envio foi cortado. A mensagem é marcada logo antes
+        // de a sua linha ser apagada: se uma etapa falhar, as linhas que sobraram
+        // deixam o reset repetido refazer o resto.
         for transfer in &outgoing {
+            self.store
+                .mark_message_failed_by_file_id(&transfer.file_id, device_id)?;
             self.store.delete_file_transfer(&transfer.file_id)?;
         }
         let active: std::collections::HashSet<_> =
