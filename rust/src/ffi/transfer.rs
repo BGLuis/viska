@@ -2163,4 +2163,89 @@ mod tests {
             Err(FfiError::OfferNotFound)
         );
     }
+
+    #[test]
+    fn auto_accept_limit_change_does_not_affect_retained_offers() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+
+        let file_id = retain_offer(&pair, &dir_src, "retida.bin");
+
+        // O limite só é lido na chegada do FILE_METADATA: subir o teto depois
+        // não promove a oferta já retida a transferência automática.
+        pair.core_b
+            .set_auto_accept_file_size_limit(u64::MAX)
+            .unwrap();
+
+        let retained = pair
+            .core_b
+            .unconfirmed_file_offers(pair.device_id_a.clone())
+            .unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].file_id, file_id);
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&file_id))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn auto_accept_limit_change_does_not_affect_transfer_in_progress() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let dir_dst = tempfile::tempdir().unwrap();
+        pair.core_b
+            .set_auto_accept_file_size_limit(u64::MAX)
+            .unwrap();
+
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let src_path = write_temp_file(&dir_src, "em_andamento.bin", &original);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), src_path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+        assert!(pair
+            .core_b
+            .store
+            .find_file_transfer(&fid(&started.file_id))
+            .unwrap()
+            .is_some());
+
+        // Reduzir o teto a zero com a recepção já aceita não pode abortá-la.
+        pair.core_b.set_auto_accept_file_size_limit(0).unwrap();
+
+        for _ in 0..10_000 {
+            let progress = pair
+                .core_b
+                .transfer_progress(started.file_id.clone())
+                .unwrap();
+            if progress.map(|p| p.is_complete).unwrap_or(false) {
+                break;
+            }
+            let Some(wire_chunk) = pair
+                .core_a
+                .next_outgoing_wire_chunk(started.file_id.clone())
+                .unwrap()
+            else {
+                break;
+            };
+            pair.core_b.ingest_incoming_wire_bytes(wire_chunk).unwrap();
+        }
+
+        let dst_path = dir_dst.path().join("em_andamento_recebido.bin");
+        pair.core_b
+            .finish_receive_file(
+                pair.device_id_a.clone(),
+                started.file_id.clone(),
+                dst_path.to_str().unwrap().to_owned(),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&dst_path).unwrap(), original);
+    }
 }

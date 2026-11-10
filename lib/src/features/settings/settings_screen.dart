@@ -6,6 +6,7 @@ import 'package:viska/src/features/backup/backup_screen.dart';
 import 'package:viska/src/features/backup/restore_screen.dart';
 import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/security_channel.dart';
+import 'package:viska/src/features/settings/auto_accept_limit_tile.dart';
 import 'package:viska/src/features/settings/proxy_settings_screen.dart';
 import 'package:viska/src/features/settings/screens/duress_pin_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
@@ -160,6 +161,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               );
             },
           ),
+          const Divider(),
+
+          const SectionHeader(title: 'Transferência de Arquivos'),
+          AutoAcceptLimitTile(core: widget.controller.activeCore),
           const Divider(),
 
           const SectionHeader(title: 'Backup e Restauração Cifrada'),
