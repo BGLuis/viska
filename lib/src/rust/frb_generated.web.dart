@@ -14,6 +14,7 @@ import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
+import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -26,6 +27,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
+
+  @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
   Core
@@ -46,6 +50,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<SessionStateEventDto>
+  dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -62,6 +70,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw);
+
+  @protected
+  SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw);
 
   @protected
   SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw);
@@ -150,6 +161,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw);
 
   @protected
+  SessionStateKind? dco_decode_opt_box_autoadd_session_state_kind(dynamic raw);
+
+  @protected
   SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw);
 
   @protected
@@ -178,6 +192,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw);
+
+  @protected
+  SessionStateEventDto dco_decode_session_state_event_dto(dynamic raw);
 
   @protected
   SessionStateKind dco_decode_session_state_kind(dynamic raw);
@@ -210,6 +227,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
   Core
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     SseDeserializer deserializer,
@@ -224,6 +244,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   Core
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<SessionStateEventDto>
+  sse_decode_StreamSink_session_state_event_dto_Sse(
     SseDeserializer deserializer,
   );
 
@@ -246,6 +272,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SessionStateKind sse_decode_box_autoadd_session_state_kind(
     SseDeserializer deserializer,
   );
 
@@ -356,6 +387,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SessionStateKind? sse_decode_opt_box_autoadd_session_state_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   );
@@ -394,6 +430,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SessionStateEventDto sse_decode_session_state_event_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SessionStateKind sse_decode_session_state_kind(SseDeserializer deserializer);
 
   @protected
@@ -428,6 +469,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     Core self,
@@ -445,6 +492,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     Core self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_session_state_event_dto_Sse(
+    RustStreamSink<SessionStateEventDto> self,
     SseSerializer serializer,
   );
 
@@ -475,6 +528,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_ingested_chunk_dto(
     IngestedChunkDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_session_state_kind(
+    SessionStateKind self,
     SseSerializer serializer,
   );
 
@@ -617,6 +676,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_session_state_kind(
+    SessionStateKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_session_status_dto(
     SessionStatusDto? self,
     SseSerializer serializer,
@@ -664,6 +729,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_send_file_started_dto(
     SendFileStartedDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_state_event_dto(
+    SessionStateEventDto self,
     SseSerializer serializer,
   );
 

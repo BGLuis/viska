@@ -4,9 +4,9 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import '../lib.dart';
 import 'error.dart';
 
-import 'package:collection/collection.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'types.dart';
@@ -315,6 +315,23 @@ abstract class Core implements RustOpaqueInterface {
   /// Só afeta mensagens `sending`.
   Future<void> requeueMessage({required PlatformInt64 messageId});
 
+  /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
+  /// uma nova com o mesmo contato — o que `ensure_session` nunca faz.
+  ///
+  /// Só age quando a sessão realmente não serve: com ela `Established` sã ou
+  /// em handshake, devolve o status atual sem tocar em nada, para um toque
+  /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
+  ///
+  /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
+  /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
+  /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+  ///
+  /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
+  /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
+  /// andamento com este contato são cancelados e marcados como falha, porque
+  /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId});
+
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
@@ -425,6 +442,12 @@ abstract class Core implements RustOpaqueInterface {
     required bool useLan,
   });
 
+  /// Passa a receber os eventos de mudança de estado das sessões, a partir
+  /// do estado atual de cada uma (replay): um evento emitido antes da
+  /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
+  /// a anterior.
+  Stream<SessionStateEventDto> subscribeSessionEvents();
+
   /// Varre e destrói chaves de mensagens efêmeras expiradas.
   Future<int> sweepExpiredMessages();
 
@@ -447,16 +470,4 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> contactDeviceId,
     required bool verified,
   });
-}
-
-class U8Array16 extends NonGrowableListView<int> {
-  static const arraySize = 16;
-
-  @internal
-  Uint8List get inner => _inner;
-  final Uint8List _inner;
-
-  U8Array16(this._inner) : assert(_inner.length == arraySize), super(_inner);
-
-  U8Array16.init() : this(Uint8List(arraySize));
 }
