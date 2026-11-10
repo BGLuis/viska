@@ -6,9 +6,7 @@
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'error.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `reset_inflight_state`
@@ -220,7 +218,10 @@ abstract class Core implements RustOpaqueInterface {
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
   /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.
-  Future<void> lock();
+  ///
+  /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+  /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+  Future<List<SealedNoticeDto>> lock();
 
   /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
   Future<void> markMessageDelivered({required PlatformInt64 messageId});

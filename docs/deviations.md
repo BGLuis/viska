@@ -266,6 +266,13 @@ retomar uma transferência não depende de reconstruir um estado de ratchet espe
 sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
 desenhada dentro do ratchet — projeto à parte.
 
+**Estado atual (pendente):** a retomada que esta decisão torna possível ainda **não existe**. `Core::lock`
+e a abertura do app tratam toda transferência sem handle em memória como abortada e apagam a linha e o
+`transfer_secret` (U-03, issue #9), de modo que o segredo persistido hoje nunca é lido de volta. O
+envio de arquivo, em particular, não sobrevive a bloqueio nem a reinício, e por isso o prazo de oferta
+sem resposta do §7.7 item 5 também vive só em memória. Reconstruir `SendTransfer`/`ReceiveTransfer` a
+partir do banco no `unlock` é trabalho à parte.
+
 ---
 
 ## D16 — Notas de voz reusam o pipeline de arquivo com discriminador de `kind`

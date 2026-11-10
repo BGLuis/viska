@@ -55,8 +55,9 @@ class _MockSmokeCore implements Core {
   }
 
   @override
-  Future<void> lock() async {
+  Future<List<SealedNoticeDto>> lock() async {
     lockCalls++;
+    return const [];
   }
 
   @override

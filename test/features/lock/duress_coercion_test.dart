@@ -10,6 +10,7 @@ import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/features/settings/screens/duress_pin_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/types.dart';
 
 class _FakeLocalAuthentication implements LocalAuthentication {
   _FakeLocalAuthentication({this.shouldSucceed = false});
@@ -57,8 +58,9 @@ class _FakeCore implements Core {
   var emergencyEraseCalls = 0;
 
   @override
-  Future<void> lock() async {
+  Future<List<SealedNoticeDto>> lock() async {
     lockCalls++;
+    return const [];
   }
 
   @override

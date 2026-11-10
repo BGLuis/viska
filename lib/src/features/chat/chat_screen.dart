@@ -1415,6 +1415,8 @@ class _MessageBubble extends StatelessWidget {
         return 'Falhou';
       case DeliveryStateDto.rejected:
         return 'Recusada';
+      case DeliveryStateDto.expired:
+        return 'Sem resposta';
     }
   }
 }

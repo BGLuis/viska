@@ -8,6 +8,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:path/path.dart' as p;
 import 'package:viska/src/features/lock/security_channel.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/types.dart';
 
 /// Controlador do estado de bloqueio, segurança em repouso e defesa física contra coerção.
 ///
@@ -29,6 +30,7 @@ class LockController with WidgetsBindingObserver {
     this.autoLockTimeout = const Duration(minutes: 1),
     this.autoLockOnBackground = true,
     this.exitFn,
+    this.sendLockNotices,
     DateTime Function()? clock,
   })  : _localAuth = localAuth ?? LocalAuthentication(),
         _clock = clock ?? DateTime.now {
@@ -52,8 +54,16 @@ class LockController with WidgetsBindingObserver {
     return action();
   }
 
+  static const _lockNoticeTimeout = Duration(seconds: 3);
+
   final Core core;
   final String appDirPath;
+
+  /// Entrega ao transporte os `FILE_REJECT` que `core.lock()` selou para as
+  /// ofertas retidas (§7.6.2). Melhor esforço: falha ou demora não atrasam nem
+  /// desfazem o bloqueio.
+  final Future<void> Function(List<SealedNoticeDto> notices)? sendLockNotices;
+
   final LocalAuthentication _localAuth;
   final DateTime Function() _clock;
 
@@ -352,11 +362,20 @@ class LockController with WidgetsBindingObserver {
       isDecoyVault.value = false;
     }
 
+    var notices = const <SealedNoticeDto>[];
     try {
-      await core.lock();
+      notices = await core.lock();
     } catch (_) {}
 
+    // A tela tranca antes de qualquer espera de rede.
     isLocked.value = true;
+
+    final send = sendLockNotices;
+    if (send != null && notices.isNotEmpty) {
+      try {
+        await send(notices).timeout(_lockNoticeTimeout);
+      } catch (_) {}
+    }
   }
 
   /// Desbloqueia o aplicativo mediante autenticação biométrica / credencial do SO.

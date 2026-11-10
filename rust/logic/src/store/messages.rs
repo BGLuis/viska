@@ -47,6 +47,9 @@ pub enum DeliveryState {
     /// O destinatário viu a oferta de arquivo e a recusou (`FILE_REJECT`, §7.7).
     /// O valor 5 é o próximo livre: `delivery_state` é INTEGER sem CHECK, então o novo estado não pede migration.
     Rejected = 5,
+    /// O destinatário nunca respondeu à oferta dentro do prazo do emissor (§7.7).
+    /// O 6 está reservado a outro estado, por isso o salto.
+    Expired = 7,
 }
 
 impl DeliveryState {
@@ -58,6 +61,7 @@ impl DeliveryState {
             3 => Ok(Self::Failed),
             4 => Ok(Self::Sending),
             5 => Ok(Self::Rejected),
+            7 => Ok(Self::Expired),
             _ => Err(Error::Store),
         }
     }
@@ -719,13 +723,32 @@ pub fn mark_rejected_by_file_id(
     file_id: &[u8; 16],
     contact_device_id: &[u8; 16],
 ) -> Result<bool> {
+    mark_unfinished_by_file_id(conn, DeliveryState::Rejected, file_id, contact_device_id)
+}
+
+/// Como [`mark_rejected_by_file_id`], para o envio cuja oferta ninguém
+/// respondeu a tempo.
+pub fn mark_expired_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<bool> {
+    mark_unfinished_by_file_id(conn, DeliveryState::Expired, file_id, contact_device_id)
+}
+
+fn mark_unfinished_by_file_id(
+    conn: &rusqlite::Connection,
+    state: DeliveryState,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<bool> {
     let changed = conn
         .execute(
             "UPDATE messages SET delivery_state = ?1
              WHERE file_id = ?2 AND contact_device_id = ?3 AND direction = ?4
                AND delivery_state IN (?5, ?6, ?7)",
             rusqlite::params![
-                DeliveryState::Rejected as i64,
+                state as i64,
                 file_id.as_slice(),
                 contact_device_id.as_slice(),
                 Direction::Outgoing as i64,
@@ -1251,6 +1274,27 @@ mod tests {
 
         // Recusa repetida ou envio já recusado não muda de novo.
         assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+    }
+
+    #[test]
+    fn expired_by_file_id_only_touches_unfinished_messages_of_that_contact() {
+        let contact = [15u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [6u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+
+        assert!(!mark_expired_by_file_id(&conn, &file_id, &[16u8; 16]).unwrap());
+        mark_sent(&conn, id).unwrap();
+        assert!(mark_expired_by_file_id(&conn, &file_id, &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Expired);
+        // Uma recusa tardia não reescreve o estado final.
+        assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+
+        let other = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 2).unwrap();
+        set_file_id(&conn, other, &[5u8; 16]).unwrap();
+        mark_delivered(&conn, other).unwrap();
+        assert!(!mark_expired_by_file_id(&conn, &[5u8; 16], &contact).unwrap());
     }
 
     #[test]

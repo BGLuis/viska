@@ -13,7 +13,7 @@ use zeroize::Zeroize;
 
 use crate::ffi::error::FfiError;
 use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
-use crate::ffi::types::{ContactDto, SafetyNumberDto};
+use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
 use crate::session_events::SessionEvents;
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
@@ -56,6 +56,9 @@ pub struct Core {
     /// Ofertas de arquivo recebidas com tamanho acima do limite de auto-aceite,
     /// aguardando confirmação do usuário (Issue #23, U-08).
     pub(super) unconfirmed_offers: Mutex<HashMap<[u8; 16], UnconfirmedOffer>>,
+    /// Quando cada oferta de arquivo enviada saiu (segundos Unix) e ainda não
+    /// teve resposta. Só em RAM, como a própria transferência (U-03).
+    pub(super) unanswered_offers: Mutex<HashMap<[u8; 16], i64>>,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
@@ -105,6 +108,7 @@ impl Core {
             transfers: Mutex::new(HashMap::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
+            unanswered_offers: Mutex::new(HashMap::new()),
             staging_dir,
             app_dir: dir.to_path_buf(),
         })
@@ -113,11 +117,16 @@ impl Core {
     /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
     /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
     /// limpa a chave mestra nativa injetada.
-    pub fn lock(&self) -> Result<(), FfiError> {
+    ///
+    /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+    /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+    pub fn lock(&self) -> Result<Vec<SealedNoticeDto>, FfiError> {
+        let notices = self.seal_lock_notices();
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
         // O Dart não pode seguir achando que há sessão estabelecida.
         self.publish_all_sessions();
         self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?.clear();
         {
             let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
             for file_id in transfers.keys() {
@@ -137,7 +146,7 @@ impl Core {
 
         self.store.close()?;
         keyring::clear_injected_master_secret();
-        Ok(())
+        Ok(notices)
     }
 
     /// Destranca a Core após autenticação bem-sucedida: recarrega a chave

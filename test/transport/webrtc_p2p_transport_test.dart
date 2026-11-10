@@ -243,7 +243,7 @@ class _FakeCore implements Core {
   Future<List<Uint8List>> listActiveFileTransferIds() => throw UnimplementedError();
 
   @override
-  Future<void> lock() => throw UnimplementedError();
+  Future<List<SealedNoticeDto>> lock() => throw UnimplementedError();
 
   @override
   Future<void> markMessageRead({required PlatformInt64 messageId}) => throw UnimplementedError();

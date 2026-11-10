@@ -135,6 +135,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
 
   @protected
+  List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw);
+
+  @protected
   MessageDirectionDto dco_decode_message_direction_dto(dynamic raw);
 
   @protected
@@ -186,6 +189,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SealedMessageDto dco_decode_sealed_message_dto(dynamic raw);
+
+  @protected
+  SealedNoticeDto dco_decode_sealed_notice_dto(dynamic raw);
 
   @protected
   SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw);
@@ -355,6 +361,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MessageDirectionDto sse_decode_message_direction_dto(
     SseDeserializer deserializer,
   );
@@ -418,6 +429,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer);
+
+  @protected
+  SealedNoticeDto sse_decode_sealed_notice_dto(SseDeserializer deserializer);
 
   @protected
   SendAudioStartedDto sse_decode_send_audio_started_dto(
@@ -634,6 +648,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sealed_notice_dto(
+    List<SealedNoticeDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_message_direction_dto(
     MessageDirectionDto self,
     SseSerializer serializer,
@@ -717,6 +737,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_sealed_message_dto(
     SealedMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_sealed_notice_dto(
+    SealedNoticeDto self,
     SseSerializer serializer,
   );
 
