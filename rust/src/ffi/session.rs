@@ -80,7 +80,7 @@ impl Core {
         let had_session = {
             let sessions = self.lock_sessions()?;
             match sessions.get(&device_id) {
-                Some(session) if !session.is_failed() && !session.needs_rehandshake() => {
+                Some(session) if is_usable(session) => {
                     return Ok(status_dto(session));
                 }
                 Some(_) => true,
@@ -101,7 +101,7 @@ impl Core {
         // já ter reaberto a sessão, e tirá-la de novo invalidaria a INIT que
         // ele entregou ao Dart.
         if let Some(session) = sessions.get(&device_id) {
-            if !session.is_failed() && !session.needs_rehandshake() {
+            if is_usable(session) {
                 return Ok(status_dto(session));
             }
         }
@@ -631,19 +631,30 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
     }
 }
 
-fn snapshot(session: &Session) -> (SessionStateKind, bool) {
-    let status = status_dto(session);
-    (status.state, status.needs_rehandshake)
+/// Sessão que não precisa de `reset_session`: nem falhou, nem passou do limiar
+/// de §11.2. Regra única para a checagem de antes e a de depois da trava.
+fn is_usable(session: &Session) -> bool {
+    !session.is_failed() && !session.needs_rehandshake()
 }
 
-fn status_dto(session: &Session) -> SessionStatusDto {
-    let state = if session.is_failed() {
+fn session_state(session: &Session) -> SessionStateKind {
+    if session.is_failed() {
         SessionStateKind::Failed
     } else if session.is_established() {
         SessionStateKind::Established
     } else {
         SessionStateKind::Handshaking
-    };
+    }
+}
+
+/// Sem passar por `status_dto`: este cálculo roda ao sair de todo método que
+/// mexe em sessão, e `status_dto` copiaria a INIT pendente só para descartá-la.
+fn snapshot(session: &Session) -> (SessionStateKind, bool) {
+    (session_state(session), session.needs_rehandshake())
+}
+
+fn status_dto(session: &Session) -> SessionStatusDto {
+    let state = session_state(session);
     let outgoing_handshake = session.pending_outgoing_handshake().map(<[u8]>::to_vec);
 
     SessionStatusDto {

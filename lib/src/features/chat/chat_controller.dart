@@ -21,6 +21,7 @@ import '../../transport/webrtc_p2p_transport.dart';
 import '../../transport/webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 import '../../transport/wifi_aware/wifi_aware_transport.dart';
 import '../voice/voice_io.dart';
+import 'session_health.dart';
 import 'widgets/reply_preview.dart';
 
 /// Tipos de transporte P2P ativos para indicador visual na conversa.
@@ -123,39 +124,13 @@ class ChatController extends ChangeNotifier {
   /// listagem deu certo. A lista anterior é mantida enquanto houver erro.
   String? get offersError => _offersError;
 
-  SessionStateKind? _sessionState;
-  var _needsRehandshake = false;
+  final _session = SessionHealth();
 
-  /// Já chegou algum estado pelo stream do Rust. A leitura avulsa de
-  /// [initialize] só vale até lá: depois dela o evento é mais recente.
-  var _sessionStateStreamed = false;
-
-  /// Sessão utilizável: estabelecida e sem pedido de renovação.
-  bool get isEstablished => _sessionState == SessionStateKind.established && !_needsRehandshake;
-
-  /// Sessão que só `reset_session` recupera: falhou, ou passou do limiar de
-  /// §11.2 e o Rust recusa cifrar mais mensagens.
-  bool get isSessionBroken => _sessionState == SessionStateKind.failed || _needsRehandshake;
-
-  /// Qual dos dois motivos vale para o aviso: a renovação preventiva não é uma
-  /// falha, e o texto precisa dizer isso.
-  bool get isSessionFailed => _sessionState == SessionStateKind.failed;
-
-  /// Título e texto do aviso de sessão; só fazem sentido com [isSessionBroken].
-  String get sessionBannerTitle => isSessionFailed ? 'SESSÃO FALHOU' : 'SESSÃO PRECISA SER RENOVADA';
-
-  String get sessionBannerMessage {
-    if (_sessionError != null) return _sessionError!;
-    final cause = isSessionFailed
-        ? 'A sessão segura com este contato falhou.'
-        : 'Esta sessão enviou mensagens demais e precisa ser renovada.';
-    // O reset é local (docs/protocol.md §11.1): se o contato seguir com a
-    // sessão dele no ar, ou já tiver reconectado antes, é preciso que ele
-    // também toque em reconectar.
-    return '$cause Reconectar abre uma sessão nova; o contato também pode precisar '
-        'reconectar do aparelho dele, e se os dois reconectarem em instantes '
-        'diferentes pode ser preciso tocar de novo. Mensagens de texto ficam na fila até lá.';
-  }
+  bool get isEstablished => _session.isEstablished;
+  bool get isSessionBroken => _session.isBroken;
+  bool get isSessionFailed => _session.isFailed;
+  String get sessionBannerTitle => _session.bannerTitle;
+  String get sessionBannerMessage => _sessionError ?? _session.bannerMessage;
 
   var _reconnecting = false;
   bool get isReconnecting => _reconnecting;
@@ -165,17 +140,16 @@ class ChatController extends ChangeNotifier {
   /// Falha do último "reconectar"; `null` quando não houve ou deu certo.
   String? get sessionError => _sessionError;
 
-  static const sessionBrokenMessage =
-      'A sessão segura com este contato não está ativa. Reconecte para enviar arquivos e notas de voz.';
+  static const sessionBrokenMessage = SessionHealth.brokenSendMessage;
 
-  void _applySessionState(SessionStateKind? state, bool needsRehandshake) {
-    if (_sessionState == state && _needsRehandshake == needsRehandshake) return;
-    _sessionState = state;
-    _needsRehandshake = needsRehandshake;
+  void _applySessionState(SessionStateKind? state, bool needsRehandshake, {required bool fromStream}) {
+    if (!_session.apply(state, needsRehandshake, fromStream: fromStream)) return;
     // Sessão recuperada: um erro de envio antigo sobre ela deixou de valer.
-    if (!isSessionBroken && _fileError == sessionBrokenMessage) _fileError = null;
-    if (!isSessionBroken && _voiceError == sessionBrokenMessage) _voiceError = null;
-    if (!isSessionBroken) _sessionError = null;
+    if (!_session.isBroken) {
+      if (_fileError == sessionBrokenMessage) _fileError = null;
+      if (_voiceError == sessionBrokenMessage) _voiceError = null;
+      _sessionError = null;
+    }
     if (!_disposed) notifyListeners();
   }
 
@@ -397,14 +371,13 @@ class ChatController extends ChangeNotifier {
       // Eventos que passaram antes de esta conversa abrir já estão no serviço.
       final known = _receptionService.sessionStateFor(_contactId);
       if (known != null) {
-        _sessionStateStreamed = true;
-        _applySessionState(known.state, known.needsRehandshake);
+        _applySessionState(known.state, known.needsRehandshake, fromStream: true);
       }
       final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
       // Só vale se nenhum evento chegou: um evento que passe durante o await é
       // mais recente que esta leitura e não deve ser sobrescrito por ela.
-      if (!_sessionStateStreamed) {
-        _applySessionState(session.state, session.needsRehandshake);
+      if (!_session.streamed) {
+        _applySessionState(session.state, session.needsRehandshake, fromStream: false);
       }
       await refreshTrustState();
       await loadUnconfirmedOffers();
@@ -429,8 +402,7 @@ class ChatController extends ChangeNotifier {
       case TypingIndicatorEvent():
         break;
       case SessionStateChangedEvent(:final state, :final needsRehandshake):
-        _sessionStateStreamed = true;
-        _applySessionState(state, needsRehandshake);
+        _applySessionState(state, needsRehandshake, fromStream: true);
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();
