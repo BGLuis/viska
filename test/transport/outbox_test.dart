@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:viska/src/transport/outbox.dart';
 
@@ -125,6 +128,56 @@ void main() {
         outbox.enqueue(Uint8List.fromList([1])),
         throwsA(isA<StateError>()),
       );
+    });
+
+    test('simulated 16 KiB symbols with real 5-25 ms jitter achieves >= 10 MB/s with fake clock', () {
+      fakeAsync((async) {
+        var jitterCalls = 0;
+        final random = math.Random(42);
+
+        // sampleJitter real de 5-25 ms (§6.5)
+        Future<Duration> realSampleJitter() async {
+          jitterCalls++;
+          final ms = 5 + random.nextInt(21); // 5 a 25 ms
+          return Duration(milliseconds: ms);
+        }
+
+        final outbox = JitteredOutbox(
+          rawSend: (bytes) async {},
+          sampleJitter: realSampleJitter,
+          burstSize: 20,
+        );
+
+        const symbolCount = 200;
+        final symbolBytes = Uint8List(16 * 1024); // 16 KiB
+        var completedCount = 0;
+
+        final stopwatch = clock.stopwatch()..start();
+
+        Duration? elapsedAtCompletion;
+
+        // Envia símbolos sequencialmente (como o pump do ChatController)
+        unawaited(() async {
+          for (var i = 0; i < symbolCount; i++) {
+            await outbox.enqueue(symbolBytes);
+            completedCount++;
+          }
+          elapsedAtCompletion = stopwatch.elapsed;
+        }());
+
+        // Avança o relógio simulado até concluir todos os símbolos
+        async.elapse(const Duration(seconds: 1));
+
+        expect(completedCount, symbolCount);
+        expect(elapsedAtCompletion, isNotNull);
+        final elapsedSeconds = elapsedAtCompletion!.inMicroseconds / 1000000.0;
+        final totalBytesSent = symbolCount * 16 * 1024;
+        final throughputMBps = (totalBytesSent / (1024 * 1024)) / elapsedSeconds;
+
+        expect(throughputMBps, greaterThanOrEqualTo(10.0));
+        // Com burstSize = 20, jitter é chamado apenas a cada 20 símbolos (10 vezes para 200 símbolos)
+        expect(jitterCalls, symbolCount ~/ 20);
+      });
     });
   });
 }

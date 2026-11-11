@@ -15,7 +15,8 @@ use crate::crypto::identity::{
     LocalIdentity, PublicIdentity, DEVICE_ID_LEN, SIGNATURE_LEN, SIGNING_KEY_LEN,
 };
 use crate::crypto::kdf;
-use crate::{Error, Result, PROTOCOL_VERSION};
+use crate::crypto::Suite;
+use crate::{Error, Result};
 
 /// Deslocamentos dos campos dentro do payload do QR.
 const VERSION_AT: usize = 0;
@@ -32,12 +33,12 @@ pub const QR_PAYLOAD_LEN: usize = SIGNATURE_AT + SIGNATURE_LEN;
 
 const _: () = assert!(QR_PAYLOAD_LEN == 145);
 
-/// Serializa a identidade local no payload do QR Code.
-pub fn encode_qr(identity: &LocalIdentity) -> [u8; QR_PAYLOAD_LEN] {
+/// Serializa a identidade local no payload do QR Code para uma suíte específica (§10, D24).
+pub fn encode_qr_with_suite(identity: &LocalIdentity, suite: Suite) -> [u8; QR_PAYLOAD_LEN] {
     let public = identity.public();
     let mut payload = [0u8; QR_PAYLOAD_LEN];
 
-    payload[VERSION_AT] = PROTOCOL_VERSION;
+    payload[VERSION_AT] = suite.id();
     payload[DEVICE_ID_AT..SIGNING_AT].copy_from_slice(&public.device_id);
     payload[SIGNING_AT..DH_AT].copy_from_slice(&public.signing);
     payload[DH_AT..SIGNATURE_AT].copy_from_slice(public.dh.as_bytes());
@@ -47,6 +48,11 @@ pub fn encode_qr(identity: &LocalIdentity) -> [u8; QR_PAYLOAD_LEN] {
     payload[SIGNATURE_AT..].copy_from_slice(&signature);
 
     payload
+}
+
+/// Serializa a identidade local no payload do QR Code (Suíte V1 congelada).
+pub fn encode_qr(identity: &LocalIdentity) -> [u8; QR_PAYLOAD_LEN] {
+    encode_qr_with_suite(identity, Suite::V1)
 }
 
 /// Decodifica e valida um payload lido pela câmera.
@@ -62,11 +68,7 @@ pub fn decode_qr(payload: &[u8], local: &PublicIdentity) -> Result<PublicIdentit
     }
 
     let version = payload[VERSION_AT];
-    if version != PROTOCOL_VERSION {
-        // Sem downgrade negociado: uma versão desconhecida para o fluxo aqui.
-        // Negociar para baixo é uma vulnerabilidade, não uma funcionalidade.
-        return Err(Error::UnsupportedVersion(version));
-    }
+    let _suite = Suite::from_id(version)?;
 
     let mut device_id = [0u8; DEVICE_ID_LEN];
     device_id.copy_from_slice(&payload[DEVICE_ID_AT..SIGNING_AT]);
@@ -202,5 +204,40 @@ mod tests {
             decode_qr(&payload, &bob.public()),
             Err(Error::LowOrderPoint)
         ));
+    }
+
+    #[test]
+    fn accepts_valid_suite_v2_when_enabled() {
+        use crate::crypto::suite::set_test_suite_v2_enabled;
+
+        let (alice, bob) = pair();
+        set_test_suite_v2_enabled(true);
+        let payload_v2 = encode_qr_with_suite(&alice, Suite::TestV2);
+        assert_eq!(payload_v2[VERSION_AT], 0x02);
+
+        let scanned = decode_qr(&payload_v2, &bob.public()).unwrap();
+        assert_eq!(scanned, alice.public());
+
+        set_test_suite_v2_enabled(false);
+        assert!(matches!(
+            decode_qr(&payload_v2, &bob.public()),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+    }
+
+    #[test]
+    fn rejects_retired_suite_in_qr() {
+        use crate::crypto::suite::set_suite_retired;
+
+        let (alice, bob) = pair();
+        let payload = encode_qr(&alice);
+        set_suite_retired(1, true);
+
+        assert!(matches!(
+            decode_qr(&payload, &bob.public()),
+            Err(Error::SuiteRetired(1))
+        ));
+
+        set_suite_retired(1, false);
     }
 }

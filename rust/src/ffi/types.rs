@@ -55,7 +55,8 @@ pub enum SessionStateKind {
     Handshaking,
     /// Pronta para cifrar/decifrar mensagens.
     Established,
-    /// Precisa de uma sessão nova (`Core::ensure_session` de novo).
+    /// Precisa de uma sessão nova: `Core::reset_session` (`ensure_session`
+    /// devolve a sessão falha como está, nunca a reabre).
     Failed,
 }
 
@@ -75,6 +76,18 @@ pub struct SessionStatusDto {
     /// de uma parte do app pode precisar deles em momentos diferentes (ver
     /// `Session::pending_outgoing_handshake`).
     pub outgoing_handshake: Option<Vec<u8>>,
+}
+
+/// Mudança de estado de uma sessão, empurrada pelo stream de
+/// `Core::subscribe_session_events`. Só dado público: o mesmo que
+/// `Core::session_status` já devolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStateEventDto {
+    pub peer_device_id: Vec<u8>,
+    /// `None` quando a sessão deixou de existir (bloqueio do cofre,
+    /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
+    pub state: Option<SessionStateKind>,
+    pub needs_rehandshake: bool,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão
@@ -119,17 +132,26 @@ pub enum DeliveryStateDto {
     Sent,
     Delivered,
     Failed,
+    Sending,
+    Rejected,
+    Expired,
+    /// Texto cujos bytes saíram do Rust sem que se saiba se chegaram (a Core
+    /// abriu ou foi trancada com ele em `Sending`). Nunca é reenviado sozinho;
+    /// ver `Core::resend_unknown_message`.
+    Unknown,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
-/// Fase 5. Espelha os dois valores de `packet_type` que hoje entram em
-/// `messages` (`MSG_TEXT`/`AUDIO_CHUNK`); qualquer outro `packet_type`
-/// nunca é persistido nesta tabela (`store::messages::reject_typing` e o
-/// resto do desenho da Fase 3).
+/// Fase 5. Espelha os tipos de pacote que entram em `messages` (`MSG_TEXT`/
+/// `AUDIO_CHUNK`/`FILE_METADATA` — arquivo genérico adicionado na Fase 4
+/// para timeline unificada); qualquer outro `packet_type` nunca é persistido
+/// nesta tabela (`store::messages::reject_typing` e o resto do desenho da
+/// Fase 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKindDto {
     Text,
     VoiceNote,
+    File,
 }
 
 /// Uma mensagem já persistida, pronta para a tela de chat renderizar — texto
@@ -138,6 +160,7 @@ pub enum MessageKindDto {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageDto {
     pub id: i64,
+    pub global_id: Option<String>,
     pub direction: MessageDirectionDto,
     pub kind: MessageKindDto,
     /// Corpo de texto — só significa algo quando `kind == Text`. Vazio para
@@ -155,7 +178,19 @@ pub struct MessageDto {
     pub reactions: Vec<String>,
 }
 
+/// Pacote já selado que o Dart precisa enviar a um contato depois que a Core
+/// foi trancada, quando a sessão que o selou já não existe mais.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedNoticeDto {
+    pub peer_device_id: Vec<u8>,
+    pub bytes: Vec<u8>,
+}
+
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
+/// Carrega o `message_id` da linha `Pending` já inserida na timeline
+/// (para exibição imediata no chat enquanto os chunks são enviados), para
+/// quem chama poder marcá-la `Sent` depois (`Core::mark_message_sent`) —
+/// mesmo padrão de `SendAudioStartedDto`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendFileStartedDto {
     /// Identifica a transferência nas chamadas seguintes
@@ -163,6 +198,8 @@ pub struct SendFileStartedDto {
     pub file_id: Vec<u8>,
     /// Corpo do `FILE_METADATA` já selado — mandar pelo canal `control`.
     pub sealed_metadata: Vec<u8>,
+    /// `id` na tabela `messages` — usado depois em `Core::mark_message_sent`.
+    pub message_id: i64,
 }
 
 /// Como [`SendFileStartedDto`], para `Core::start_send_audio` — carrega
@@ -216,15 +253,19 @@ pub struct SignalingTopicsDto {
     pub subscribe_topics: Vec<String>,
 }
 
-/// `BeaconID`s de descoberta local para um contato — `docs/protocol.md` §9.1.
-/// Os dois lados calculam o mesmo `advertise_beacon`, ao contrário dos
-/// tópicos de sinalização (que têm direção).
+/// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
+/// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryBeaconsDto {
-    /// Beacon para anunciar agora — só a época corrente.
+    /// Beacon para anunciar agora — só a época corrente, nossa direção.
     pub advertise_beacon: Vec<u8>,
     /// Os três beacons aceitáveis para procurar — épocas
-    /// anterior/atual/seguinte.
+    /// anterior/atual/seguinte, na direção do par.
     pub scan_beacons: Vec<Vec<u8>>,
+    /// Preâmbulo TCP para discar agora — época corrente, nossa direção.
+    pub dial_preamble: Vec<u8>,
+    /// Os três preâmbulos TCP aceitáveis para receber — épocas
+    /// anterior/atual/seguinte, direção do par.
+    pub listen_preambles: Vec<Vec<u8>>,
 }
 

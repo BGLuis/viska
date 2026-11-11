@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+
 import 'p2p_transport.dart';
 import 'webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 
@@ -41,6 +43,8 @@ class SelectingP2PTransport implements P2PTransport {
 
   P2PTransport? _chosen;
   bool _connectStarted = false;
+  bool _closed = false;
+  final _subscriptions = <StreamSubscription<Object?>>[];
   final _closedCandidates = <P2PTransport>{};
 
   @override
@@ -62,26 +66,42 @@ class SelectingP2PTransport implements P2PTransport {
     _connectStarted = true;
 
     for (final candidate in _candidates) {
+      // `close()` pode chegar (o roteador reage a `failed`) enquanto este laço
+      // espera um candidato; seguir em frente tentaria escrever em controladores
+      // já fechados.
+      if (_closed) break;
       if (candidate is TransportReadiness && !(candidate as TransportReadiness).isLikelyReachable) {
         continue;
       }
       try {
         await candidate.connect().timeout(_candidateTimeout);
-      } catch (_) {
+      } catch (e) {
+        if (kDebugMode) debugPrint('[SelectingP2PTransport] ${candidate.runtimeType} falhou: $e');
         await _closeCandidate(candidate);
         continue;
       }
 
+      if (_closed) {
+        await _closeCandidate(candidate);
+        break;
+      }
+
       _chosen = candidate;
-      candidate.incoming.listen(_incomingController.add);
-      candidate.incomingFile.listen(_incomingFileController.add);
-      candidate.connectionEvents.listen(_connectionEventsController.add);
+      // Guardadas para `close()` cancelar: um candidato como o WebRTC emite
+      // `closed` só depois de terminar o próprio `close()`, quando os
+      // controladores daqui já podem ter sido fechados.
+      _subscriptions
+        ..add(candidate.incoming.listen(_incomingController.add))
+        ..add(candidate.incomingFile.listen(_incomingFileController.add))
+        ..add(candidate.connectionEvents.listen(_connectionEventsController.add));
       _selectionDone.complete();
       _connectionEventsController.add(
         const TransportConnectionEvent(TransportConnectionState.connected),
       );
       return;
     }
+
+    if (_closed) throw _closedError();
 
     final error = StateError('Nenhum transporte candidato conseguiu conectar');
     if (!_selectionDone.isCompleted) {
@@ -110,6 +130,21 @@ class SelectingP2PTransport implements P2PTransport {
 
   @override
   Future<void> close() async {
+    _closed = true;
+    // Antes de fechar qualquer candidato, para que nada deles chegue a um
+    // controlador fechado — inclusive pela segunda chamada a `close()`, que
+    // retorna e fecha os controladores enquanto a primeira ainda espera. O
+    // `closed` do candidato some junto de propósito: quem fecha é o roteador,
+    // que já sabe e está recriando o transporte.
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    _subscriptions.clear();
+    // Um `send` pendente não pode ficar esperando uma seleção que não vai mais
+    // acontecer.
+    if (!_selectionDone.isCompleted) {
+      _selectionDone.completeError(_closedError());
+    }
     // Fecha todos os candidatos construídos, não só o escolhido — os que já
     // perderam (fechados pelo `catch` de `connect()`) são pulados via
     // `_closedCandidates`, para não fechar duas vezes o mesmo candidato; os
@@ -122,6 +157,8 @@ class SelectingP2PTransport implements P2PTransport {
     if (!_incomingFileController.isClosed) await _incomingFileController.close();
     if (!_connectionEventsController.isClosed) await _connectionEventsController.close();
   }
+
+  StateError _closedError() => StateError('SelectingP2PTransport fechado durante a seleção');
 
   Future<void> _closeCandidate(P2PTransport candidate) async {
     if (_closedCandidates.add(candidate)) {

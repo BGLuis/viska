@@ -191,6 +191,13 @@ impl core::fmt::Debug for StagingReader {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Quantas vezes `decrypt_to` rodou nesta thread — permite a um teste
+    /// afirmar quantas leituras completas do staging um fluxo faz.
+    pub(crate) static DECRYPT_PASSES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 impl StagingReader {
     pub fn open(
         staging_dir: &Path,
@@ -198,6 +205,22 @@ impl StagingReader {
         key: Key,
         total_len: u64,
     ) -> Result<Self> {
+        Self::open_with_version(staging_dir, file_id, key, total_len, 1)
+    }
+
+    pub fn open_with_version(
+        staging_dir: &Path,
+        file_id: [u8; FILE_ID_LEN],
+        key: Key,
+        total_len: u64,
+        cipher_version: u8,
+    ) -> Result<Self> {
+        if crate::crypto::Suite::is_retired(cipher_version) {
+            return Err(Error::SuiteRetired(cipher_version));
+        }
+        if cipher_version != 1 {
+            return Err(Error::UnsupportedVersion(cipher_version));
+        }
         let path = staging_path(staging_dir, &file_id);
         let file =
             File::open(&path).map_err(|_| Error::Malformed("staging não encontrado para leitura"))?;
@@ -234,9 +257,12 @@ impl StagingReader {
     /// recebido páginas anteriores já decididas como autênticas, mas o
     /// chamador nunca deve tratar um `Err` no meio como "arquivo parcialmente
     /// válido" — a verificação de integridade completa é a raiz de Merkle
-    /// (`file::merkle`), recomputada só depois que este método terminar com
-    /// sucesso.
+    /// (`file::merkle`), conferida por
+    /// `ReceiveTransfer::finish` sobre o plaintext hasheado na gravação, antes
+    /// de chamar este método.
     pub fn decrypt_to(&mut self, mut out: impl Write) -> Result<()> {
+        #[cfg(test)]
+        DECRYPT_PASSES.with(|n| n.set(n.get() + 1));
         for page_index in 0..self.page_count() {
             let plaintext_len = self.page_plaintext_len(page_index);
             let encrypted_len = plaintext_len + aead::XNONCE_LEN + aead::TAG_LEN;
@@ -470,5 +496,53 @@ mod tests {
         sweep_orphaned(dir.path(), &Default::default()).unwrap();
 
         assert!(dir.path().join("nota.txt").exists());
+    }
+
+    #[test]
+    fn staging_recorded_before_migration_resumes_and_merkle_root_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_id = [7u8; FILE_ID_LEN];
+        let key = chave_de_teste(7);
+        let original: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+
+        // 1. Grava o staging (formato V1)
+        let mut writer = StagingWriter::create(dir.path(), file_id, key.clone()).unwrap();
+        writer.write(&original).unwrap();
+        writer.finish().unwrap();
+
+        // 2. Abre usando a versão padrão migrada (1)
+        let mut reader = StagingReader::open_with_version(
+            dir.path(),
+            file_id,
+            key,
+            original.len() as u64,
+            1,
+        )
+        .unwrap();
+
+        let mut decrypted = Vec::new();
+        reader.decrypt_to(&mut decrypted).unwrap();
+        assert_eq!(decrypted, original);
+
+        // 3. Raiz de Merkle bate com a do conteúdo original
+        let expected_root = crate::file::merkle::merkle_root(std::io::Cursor::new(&original)).unwrap();
+        let actual_root = crate::file::merkle::merkle_root(std::io::Cursor::new(&decrypted)).unwrap();
+        assert_eq!(actual_root, expected_root);
+    }
+
+    #[test]
+    fn staging_with_unknown_version_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_id = [8u8; FILE_ID_LEN];
+        let key = chave_de_teste(8);
+
+        let res = StagingReader::open_with_version(
+            dir.path(),
+            file_id,
+            key,
+            100,
+            9,
+        );
+        assert!(matches!(res, Err(Error::UnsupportedVersion(9))));
     }
 }

@@ -142,7 +142,17 @@ class WebrtcTransport implements RawP2PChannel {
     );
     _wireChannel(DataChannelKind.file, file);
 
-    final offer = await pc.createOffer();
+    // Sem estas restrições o libwebrtc de desktop (alvo Linux) inclui m-lines
+    // de áudio e vídeo para recepção, e a SDP passa do teto de 974 B do
+    // payload selado de sinalização (protocol.md §8.2): o selo falha e o
+    // WebRTC nunca chega a ser tentado. O transporte só usa DataChannels.
+    final offer = await pc.createOffer({
+      'mandatory': {
+        'OfferToReceiveAudio': false,
+        'OfferToReceiveVideo': false,
+      },
+      'optional': [],
+    });
     await pc.setLocalDescription(offer);
     _startIceTimeout();
 
@@ -267,7 +277,11 @@ class WebrtcTransport implements RawP2PChannel {
       'iceServers': _iceServers,
       'sdpSemantics': 'unified-plan',
     });
+    // O RTCPeerConnection nativo continua disparando callbacks durante e
+    // depois de `close()` (estado `closed`, candidatos atrasados); os
+    // controladores já fechados não aceitam mais eventos.
     pc.onIceCandidate = (candidate) {
+      if (_closed) return;
       if (candidate.candidate != null) {
         _localIceCandidates.add(candidate);
       }
@@ -289,6 +303,7 @@ class WebrtcTransport implements RawP2PChannel {
           sampleJitter: _jitterProvider,
         );
         channel.onMessage = (message) {
+          if (_closed) return;
           if (message.isBinary) {
             _incoming.add(message.binary);
           }
@@ -304,14 +319,37 @@ class WebrtcTransport implements RawP2PChannel {
         };
       case DataChannelKind.file:
         _fileChannel = channel;
+        channel.bufferedAmountLowThreshold = 64 * 1024;
+        Completer<void>? lowBufferCompleter;
+        channel.onBufferedAmountLow = (_) {
+          if (lowBufferCompleter != null && !lowBufferCompleter!.isCompleted) {
+            lowBufferCompleter!.complete();
+            lowBufferCompleter = null;
+          }
+        };
         _fileOutbox = JitteredOutbox(
           rawSend: (bytes) async {
             await _fileChannelOpen.future;
+            // Controle de fluxo / ritmo (P-03): se o buffer do canal de dados
+            // estiver acima de 256 KiB, aguarda o evento onBufferedAmountLow
+            // antes de enviar novos chunks para não estourar o buffer nativo.
+            final currentBuffer = channel.bufferedAmount ?? 0;
+            if (currentBuffer > 256 * 1024) {
+              lowBufferCompleter ??= Completer<void>();
+              await lowBufferCompleter!.future.timeout(
+                const Duration(milliseconds: 250),
+                onTimeout: () {
+                  lowBufferCompleter = null;
+                },
+              );
+            }
             await channel.send(RTCDataChannelMessage.fromBinary(bytes));
           },
           sampleJitter: _jitterProvider,
+          burstSize: 20,
         );
         channel.onMessage = (message) {
+          if (_closed) return;
           if (message.isBinary) {
             _incomingFile.add(message.binary);
           }
@@ -329,13 +367,14 @@ class WebrtcTransport implements RawP2PChannel {
     if (!_controlChannelOpen.isCompleted) {
       _controlChannelOpen.complete();
     }
-    if (_reachedConnected) return;
+    if (_reachedConnected || _closed) return;
     _reachedConnected = true;
     _iceTimeoutTimer?.cancel();
     _connectionEvents.add(const TransportConnectionEvent(TransportConnectionState.connected));
   }
 
   void _handleIceConnectionState(RTCIceConnectionState state) {
+    if (_closed) return;
     final event = mapIceConnectionState(state);
     if (event == null) return;
 

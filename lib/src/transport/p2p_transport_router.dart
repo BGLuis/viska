@@ -39,6 +39,32 @@ class P2PTransportRouter {
     await routed.transport.send(envelope);
   }
 
+  /// Espera o transporte de `contact` ficar pronto para enviar, recriando-o se
+  /// ele falhar no caminho. Lança [TimeoutException] se não ficar em `timeout`.
+  ///
+  /// Serve a quem precisa da conexão **antes** de gravar algo (ex.: iniciar o
+  /// envio de um arquivo), em vez de deixar o registro pendente para sempre.
+  Future<void> awaitConnected(ContactId contact, {required Duration timeout}) async {
+    final clock = Stopwatch()..start();
+    while (true) {
+      final remaining = timeout - clock.elapsed;
+      if (remaining <= Duration.zero) throw TimeoutException('transporte não conectou', timeout);
+      try {
+        await _ensure(contact).connectFuture.timeout(remaining);
+        return;
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {
+        // O transporte que falhou já foi esquecido por `_forgetFailed`; o
+        // próximo `_ensure` cria outro. A pausa evita um laço apertado quando
+        // a falha é imediata (ex.: nenhum candidato alcançável).
+        await Future<void>.delayed(_reconnectGap);
+      }
+    }
+  }
+
+  static const _reconnectGap = Duration(seconds: 1);
+
   /// Envelopes recebidos de `contact`, ainda cifrados.
   Stream<Uint8List> incomingFor(ContactId contact) => _ensure(contact).transport.incoming;
 
@@ -65,6 +91,7 @@ class P2PTransportRouter {
   Future<void> closeContact(ContactId contact) async {
     final routed = _routed.remove(contact);
     if (routed == null) return;
+    await routed.eventsSub?.cancel();
     await routed.transport.close();
   }
 
@@ -75,14 +102,43 @@ class P2PTransportRouter {
     }
   }
 
+  /// Callback opcional invocado quando um transporte novo é criado para um contato.
+  /// Usado pelo serviço de recepção para iniciar escuta contínua assim que
+  /// qualquer transporte for instanciado.
+  void Function(ContactId contactId)? onTransportCreated;
+
   _RoutedTransport _ensure(ContactId contact) {
-    return _routed.putIfAbsent(contact, () {
+    var created = false;
+    final routed = _routed.putIfAbsent(contact, () {
+      created = true;
       final transport = _transportFactory(_core, contact);
       final connectFuture = transport.connect();
-      // Evita exceção não tratada na zona se connect() falhar antes de um envio explícito
-      connectFuture.ignore();
-      return _RoutedTransport(transport, connectFuture);
+      final entry = _RoutedTransport(transport, connectFuture);
+      // Um transporte que falhou não se recupera sozinho. Mantido no mapa, ele
+      // deixaria o contato offline até reiniciar o app; esquecido, o próximo
+      // envio (ou o "Reconectar" da conversa) começa uma tentativa do zero.
+      // O `onError` também evita exceção não tratada na zona quando connect()
+      // falha antes de um envio explícito.
+      connectFuture.then((_) {}, onError: (Object _) => _forgetFailed(contact, entry));
+      entry.eventsSub = transport.connectionEvents.listen((event) {
+        if (event.state == TransportConnectionState.failed ||
+            event.state == TransportConnectionState.closed) {
+          _forgetFailed(contact, entry);
+        }
+      });
+      return entry;
     });
+    if (created) {
+      onTransportCreated?.call(contact);
+    }
+    return routed;
+  }
+
+  void _forgetFailed(ContactId contact, _RoutedTransport entry) {
+    if (!identical(_routed[contact], entry)) return;
+    _routed.remove(contact);
+    unawaited(entry.eventsSub?.cancel());
+    unawaited(entry.transport.close().catchError((_) {}));
   }
 
   static P2PTransport _defaultFactory(Core core, ContactId contactId) =>
@@ -99,4 +155,6 @@ class _RoutedTransport {
   /// `connectionEventsFor` não precisam esperar, porque devolvem `Stream`s
   /// que só emitem depois que houver algo para emitir de qualquer forma.
   final Future<void> connectFuture;
+
+  StreamSubscription<TransportConnectionEvent>? eventsSub;
 }

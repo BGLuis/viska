@@ -22,7 +22,7 @@ class LoopbackP2PTransport implements P2PTransport {
 
   final _incoming = StreamController<Uint8List>();
   final _incomingFile = StreamController<Uint8List>();
-  final _connectionEvents = StreamController<TransportConnectionEvent>();
+  final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
   @override
   Stream<Uint8List> get incoming => _incoming.stream;

@@ -4,22 +4,41 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+import '../lib.dart';
 import 'error.dart';
-import 'package:collection/collection.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`
+// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `reset_inflight_state`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
 abstract class Core implements RustOpaqueInterface {
+  /// Aceita manualmente uma oferta de arquivo retida por exceder o limite
+  /// de auto-aceite. Cria o registro em `file_transfers`, inicializa o
+  /// `ReceiveTransfer` em `.staging` e passa a aceitar os pacotes do arquivo.
+  Future<void> acceptFileOffer({required List<int> fileId});
+
   /// Adiciona uma reação emoji a uma mensagem persistida (Fase 9).
   Future<void> addReaction({
     required U8Array16 contactDeviceId,
     required PlatformInt64 targetMsgId,
     required String emoji,
   });
+
+  /// Adiciona uma reação emoji a uma mensagem persistida buscando pelo identificador global (Fase 9).
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  });
+
+  /// Consulta o teto de tamanho de arquivo em bytes para aceitação automática.
+  /// Retorna `DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT` se não configurado.
+  Future<BigInt> autoAcceptFileSizeLimit();
+
+  /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`. Do lado receptor, também apaga o
@@ -32,12 +51,6 @@ abstract class Core implements RustOpaqueInterface {
   /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
   /// entre aparelhos próximos em pareamento.
   Future<String> computeSasCode({required List<int> peerPayload});
-
-  /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
-  });
 
   /// Decodifica o formato interno devolvido por
   /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
@@ -72,15 +85,16 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> envelope,
   });
 
-  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
+  /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
+  /// `docs/protocol.md` §9.1 e §9.3. Direcional (a2b/b2a), evitando ligar os pares (S-10).
   Future<DiscoveryBeaconsDto> discoveryBeacons({
     required List<int> peerDeviceId,
   });
 
   /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-  /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+  /// remoção física dos arquivos do banco SQLite e limpeza dos diretórios staging e received.
   Future<void> emergencyErase();
 
   /// Abre (ou devolve, se já existir) a sessão com um contato pareado.
@@ -110,6 +124,14 @@ abstract class Core implements RustOpaqueInterface {
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
+  });
+
+  /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
+  /// indicado, refletindo o progresso atual do `ReceiveTransfer` (U-02).
+  /// Devolve o payload selado pronto para envio pelo canal de controle.
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
   });
 
   /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
@@ -170,6 +192,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Informa se a Core está trancada.
   Future<bool> isLocked();
 
+  /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
+  Future<List<Uint8List>> listActiveFileTransferIds();
+
   /// Todos os contatos já pareados.
   Future<List<ContactDto>> listContacts();
 
@@ -177,10 +202,28 @@ abstract class Core implements RustOpaqueInterface {
   /// — histórico completo para a tela de chat abrir com.
   Future<List<MessageDto>> listMessages({required List<int> peerDeviceId});
 
+  /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  });
+
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-  /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+  /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.
-  Future<void> lock();
+  ///
+  /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+  /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+  Future<List<SealedNoticeDto>> lock();
+
+  /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+  Future<void> markMessageDelivered({required PlatformInt64 messageId});
+
+  /// Marca uma mensagem de saída como falha — chamar quando o envio de um
+  /// arquivo é interrompido por queda do transporte. Só afeta mensagens
+  /// ainda `pending`.
+  Future<void> markMessageFailed({required PlatformInt64 messageId});
 
   /// Marca uma mensagem como lida, disparando o temporizador de expiração.
   Future<void> markMessageRead({required PlatformInt64 messageId});
@@ -197,9 +240,8 @@ abstract class Core implements RustOpaqueInterface {
   /// Dart nunca vê `K_sig`, só o resultado do casamento.
   Future<ContactDto?> matchDiscoveredBeacon({required List<int> beacon});
 
-  /// `device_id` desta identidade local — dado já público (trocado no QR,
-  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// `device_id` desta identidade local — dado já público (trocado no QR).
+  /// Só existe nesta fronteira porque nada em `ffi::core` precisava
   /// dele até a descoberta local.
   Future<Uint8List> myDeviceId();
 
@@ -225,10 +267,9 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Decifra um payload de sinalização recebido do broker.
   ///
-  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-  /// inválida — sem distinguir a causa, mesma política de
-  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-  /// confiável.
+  /// Valida o AAD contra a direção do par e a janela de épocas aceitáveis
+  /// (anterior, atual e seguinte). Se o broker refletir nossa própria mensagem
+  /// ou retransmitir épocas antigas, a abertura falha e devolve `Ok(None)` (S-12).
   Future<Uint8List?> openSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> sealed,
@@ -250,6 +291,47 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> peerDeviceId,
   });
 
+  /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
+  /// a oferta e zera o material de chave sem criar registro em banco ou
+  /// arquivo em staging.
+  ///
+  /// Devolve o `FILE_REJECT` já selado para o Dart enviar (§7.7), ou `None`
+  /// se não há sessão estabelecida agora. A recusa local vale de qualquer
+  /// jeito: o aviso é melhor esforço e nada é guardado em disco para
+  /// reenviá-lo, para não contrariar a retenção volátil da §7.6.
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId});
+
+  /// Re-pareamento presencial com um contato existente (§10, D24):
+  /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
+  Future<ContactDto> repairFromQr({required List<int> payload});
+
+  /// Devolve à fila uma mensagem que foi cifrada mas não chegou a sair
+  /// (`sendToContact` falhou), para a próxima drenagem tentá-la de novo.
+  /// Só afeta mensagens `sending`.
+  Future<void> requeueMessage({required PlatformInt64 messageId});
+
+  /// Devolve à fila um texto `Unknown` (não se sabe se chegou ao par), por
+  /// pedido explícito da pessoa. Mantém a linha e o `global_id`; o chamador
+  /// drena a fila em seguida. Só afeta mensagens `unknown`.
+  Future<void> resendUnknownMessage({required PlatformInt64 messageId});
+
+  /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
+  /// uma nova com o mesmo contato — o que `ensure_session` nunca faz.
+  ///
+  /// Só age quando a sessão realmente não serve: com ela `Established` sã ou
+  /// em handshake, devolve o status atual sem tocar em nada, para um toque
+  /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
+  ///
+  /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
+  /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
+  /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+  ///
+  /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
+  /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
+  /// andamento com este contato são cancelados e marcados como falha, porque
+  /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId});
+
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
@@ -270,13 +352,22 @@ abstract class Core implements RustOpaqueInterface {
     required String destinationPath,
   });
 
+  /// Cifra e empacota um recibo de entrega (MSG_RECEIPT) confirmando o recebimento de uma mensagem.
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
+  });
+
   /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
   /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
   /// mesmo que o transporte esteja indisponível no momento da chamada.
   ///
   /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-  /// `Established`: a mensagem já está persistida, e `flush_pending` a
-  /// entrega assim que a sessão ficar pronta.
+  /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
+  /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
+  /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+  /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
+  /// enviá-los deve chamar `requeue_message`.
   Future<SealedMessageDto> sealOutgoingText({
     required List<int> peerDeviceId,
     required String body,
@@ -284,6 +375,8 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já
   /// serializado) para publicar — sempre exatamente 1024 B.
+  ///
+  /// O AAD amarra o payload à direção deste lado e à época atual (S-12).
   Future<Uint8List> sealSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> payloadBytes,
@@ -292,6 +385,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Status atual da sessão com um contato, sem alterar nada — `None` se
   /// `ensure_session` nunca foi chamado para ele.
   Future<SessionStatusDto?> sessionStatus({required List<int> peerDeviceId});
+
+  /// Define o teto de tamanho de arquivo em bytes para aceitação automática.
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes});
 
   /// Define chave de configuração arbitrária.
   Future<void> setConfig({required String key, required String value});
@@ -337,7 +433,7 @@ abstract class Core implements RustOpaqueInterface {
   /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
   /// precisa da raiz completa antes do primeiro símbolo sair.
   ///
-  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+  /// `use_lan` escolhe `symbol_size`: 65535 (LAN, `LAN_SYMBOL_SIZE`) ou 16384
   /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
   /// `block_symbols` é sempre o teto de D6 (1024).
   Future<SendFileStartedDto> startSendFile({
@@ -346,12 +442,24 @@ abstract class Core implements RustOpaqueInterface {
     required bool useLan,
   });
 
+  /// Passa a receber os eventos de mudança de estado das sessões, a partir
+  /// do estado atual de cada uma (replay): um evento emitido antes da
+  /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
+  /// a anterior.
+  Stream<SessionStateEventDto> subscribeSessionEvents();
+
   /// Varre e destrói chaves de mensagens efêmeras expiradas.
   Future<int> sweepExpiredMessages();
 
   /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
   /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
   Future<TransferProgressDto?> transferProgress({required List<int> fileId});
+
+  /// Lista as ofertas de arquivo pendentes de confirmação do usuário para
+  /// o contato especificado (Issue #23, U-08).
+  Future<List<FileOfferDto>> unconfirmedFileOffers({
+    required List<int> peerDeviceId,
+  });
 
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
   /// mestre e reabre a conexão do SQLCipher.
@@ -362,16 +470,4 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> contactDeviceId,
     required bool verified,
   });
-}
-
-class U8Array16 extends NonGrowableListView<int> {
-  static const arraySize = 16;
-
-  @internal
-  Uint8List get inner => _inner;
-  final Uint8List _inner;
-
-  U8Array16(this._inner) : assert(_inner.length == arraySize), super(_inner);
-
-  U8Array16.init() : this(Uint8List(arraySize));
 }

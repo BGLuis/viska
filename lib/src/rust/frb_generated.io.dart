@@ -12,6 +12,7 @@ import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
+import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -24,6 +25,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_CorePtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCorePtr;
+
+  @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
   Core
@@ -44,6 +48,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<SessionStateEventDto>
+  dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw);
+
+  @protected
   String dco_decode_String(dynamic raw);
 
   @protected
@@ -62,10 +70,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw);
 
   @protected
+  SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw);
+
+  @protected
   SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw);
 
   @protected
   TransferProgressDto dco_decode_box_autoadd_transfer_progress_dto(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_usize(dynamic raw);
 
   @protected
   ContactDto dco_decode_contact_dto(dynamic raw);
@@ -119,6 +133,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
 
   @protected
+  List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw);
+
+  @protected
   MessageDirectionDto dco_decode_message_direction_dto(dynamic raw);
 
   @protected
@@ -145,12 +162,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw);
 
   @protected
+  SessionStateKind? dco_decode_opt_box_autoadd_session_state_kind(dynamic raw);
+
+  @protected
   SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw);
 
   @protected
   TransferProgressDto? dco_decode_opt_box_autoadd_transfer_progress_dto(
     dynamic raw,
   );
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_usize(dynamic raw);
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
@@ -166,10 +189,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SealedMessageDto dco_decode_sealed_message_dto(dynamic raw);
 
   @protected
+  SealedNoticeDto dco_decode_sealed_notice_dto(dynamic raw);
+
+  @protected
   SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw);
 
   @protected
   SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw);
+
+  @protected
+  SessionStateEventDto dco_decode_session_state_event_dto(dynamic raw);
 
   @protected
   SessionStateKind dco_decode_session_state_kind(dynamic raw);
@@ -202,6 +231,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
   Core
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     SseDeserializer deserializer,
@@ -216,6 +248,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   Core
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<SessionStateEventDto>
+  sse_decode_StreamSink_session_state_event_dto_Sse(
     SseDeserializer deserializer,
   );
 
@@ -242,6 +280,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SessionStateKind sse_decode_box_autoadd_session_state_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SessionStatusDto sse_decode_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   );
@@ -250,6 +293,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferProgressDto sse_decode_box_autoadd_transfer_progress_dto(
     SseDeserializer deserializer,
   );
+
+  @protected
+  BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer);
 
   @protected
   ContactDto sse_decode_contact_dto(SseDeserializer deserializer);
@@ -313,6 +359,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MessageDirectionDto sse_decode_message_direction_dto(
     SseDeserializer deserializer,
   );
@@ -345,6 +396,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SessionStateKind? sse_decode_opt_box_autoadd_session_state_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   );
@@ -353,6 +409,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferProgressDto? sse_decode_opt_box_autoadd_transfer_progress_dto(
     SseDeserializer deserializer,
   );
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_usize(SseDeserializer deserializer);
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -370,12 +429,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SealedMessageDto sse_decode_sealed_message_dto(SseDeserializer deserializer);
 
   @protected
+  SealedNoticeDto sse_decode_sealed_notice_dto(SseDeserializer deserializer);
+
+  @protected
   SendAudioStartedDto sse_decode_send_audio_started_dto(
     SseDeserializer deserializer,
   );
 
   @protected
   SendFileStartedDto sse_decode_send_file_started_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SessionStateEventDto sse_decode_session_state_event_dto(
     SseDeserializer deserializer,
   );
 
@@ -414,6 +481,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     Core self,
@@ -431,6 +504,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     Core self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_session_state_event_dto_Sse(
+    RustStreamSink<SessionStateEventDto> self,
     SseSerializer serializer,
   );
 
@@ -465,6 +544,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_session_state_kind(
+    SessionStateKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_session_status_dto(
     SessionStatusDto self,
     SseSerializer serializer,
@@ -475,6 +560,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     TransferProgressDto self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_box_autoadd_usize(BigInt self, SseSerializer serializer);
 
   @protected
   void sse_encode_contact_dto(ContactDto self, SseSerializer serializer);
@@ -558,6 +646,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_sealed_notice_dto(
+    List<SealedNoticeDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_message_direction_dto(
     MessageDirectionDto self,
     SseSerializer serializer,
@@ -600,6 +694,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_session_state_kind(
+    SessionStateKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_session_status_dto(
     SessionStatusDto? self,
     SseSerializer serializer,
@@ -610,6 +710,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     TransferProgressDto? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_box_autoadd_usize(BigInt? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
@@ -636,6 +739,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_sealed_notice_dto(
+    SealedNoticeDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_send_audio_started_dto(
     SendAudioStartedDto self,
     SseSerializer serializer,
@@ -644,6 +753,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_send_file_started_dto(
     SendFileStartedDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_session_state_event_dto(
+    SessionStateEventDto self,
     SseSerializer serializer,
   );
 

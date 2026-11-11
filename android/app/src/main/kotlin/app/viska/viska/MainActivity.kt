@@ -28,5 +28,8 @@ class MainActivity : FlutterFragmentActivity() {
         // (docs/protocol.md §9.2); declarar CHANGE_WIFI_MULTICAST_STATE no
         // AndroidManifest não é suficiente sem acquire() em runtime.
         MulticastLockPlugin.register(messenger, applicationContext)
+        // Serviço em primeiro plano durante seletor de arquivos e transferências:
+        // sem ele o Android congela o app e derruba os sockets.
+        TransferServicePlugin.register(messenger, applicationContext)
     }
 }

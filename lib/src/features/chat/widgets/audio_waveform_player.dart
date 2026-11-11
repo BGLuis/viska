@@ -15,7 +15,8 @@ import 'package:viska/src/theme/dark_tech_theme.dart';
 class AudioWaveformPlayer extends StatefulWidget {
   const AudioWaveformPlayer({
     super.key,
-    required this.audioBytes,
+    this.audioBytes,
+    this.loadAudioBytes,
     this.player,
     this.barCount = 36,
     this.activeColor = DarkTechTheme.primary,
@@ -23,8 +24,12 @@ class AudioWaveformPlayer extends StatefulWidget {
     this.speedColor = DarkTechTheme.secondary,
   });
 
-  /// Bytes de áudio decodificados em formato WAV (D18).
+  /// Bytes de áudio decodificados em formato WAV (D18). Se nulo, pode ser carregado
+  /// sob demanda via [loadAudioBytes] ao iniciar a reprodução.
   final Uint8List? audioBytes;
+
+  /// Callback para carregar os bytes de áudio sob demanda no momento do play.
+  final Future<Uint8List?> Function()? loadAudioBytes;
 
   /// Player opcional injetável para testes. Se nulo, cria um `AudioPlayer` interno.
   final AudioPlayer? player;
@@ -53,6 +58,8 @@ class _AudioWaveformPlayerState extends State<AudioWaveformPlayer> {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = false;
+  bool _isLoading = false;
+  Uint8List? _loadedBytes;
   double _speed = 1.0;
 
   StreamSubscription<PlayerState>? _stateSub;
@@ -65,23 +72,26 @@ class _AudioWaveformPlayerState extends State<AudioWaveformPlayer> {
     _isExternalPlayer = widget.player != null;
     _player = widget.player ?? AudioPlayer();
 
-    _waveformLevels = _extractWaveformPeaks(widget.audioBytes, widget.barCount);
-    _initAudio();
+    _loadedBytes = widget.audioBytes;
+    _waveformLevels = _extractWaveformPeaks(_loadedBytes, widget.barCount);
+    if (_loadedBytes != null && _loadedBytes!.isNotEmpty) {
+      _initAudio(_loadedBytes!);
+    }
   }
 
   @override
   void didUpdateWidget(covariant AudioWaveformPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.audioBytes != widget.audioBytes) {
-      _waveformLevels = _extractWaveformPeaks(widget.audioBytes, widget.barCount);
-      _initAudio();
+      _loadedBytes = widget.audioBytes;
+      _waveformLevels = _extractWaveformPeaks(_loadedBytes, widget.barCount);
+      if (_loadedBytes != null && _loadedBytes!.isNotEmpty) {
+        _initAudio(_loadedBytes!);
+      }
     }
   }
 
-  Future<void> _initAudio() async {
-    final bytes = widget.audioBytes;
-    if (bytes == null || bytes.isEmpty) return;
-
+  Future<void> _initAudio(Uint8List bytes) async {
     try {
       await _player.setAudioSource(BytesAudioSource(bytes));
       if (!mounted) return;
@@ -119,17 +129,41 @@ class _AudioWaveformPlayerState extends State<AudioWaveformPlayer> {
   }
 
   Future<void> _togglePlayPause() async {
-    if (widget.audioBytes == null || widget.audioBytes!.isEmpty) return;
+    if (_isLoading) return;
+
+    if (_isPlaying) {
+      try {
+        await _player.pause();
+      } catch (_) {}
+      return;
+    }
+
+    if (_loadedBytes == null || _loadedBytes!.isEmpty) {
+      if (widget.loadAudioBytes != null) {
+        setState(() => _isLoading = true);
+        try {
+          final bytes = await widget.loadAudioBytes!();
+          if (!mounted) return;
+          if (bytes != null && bytes.isNotEmpty) {
+            _loadedBytes = bytes;
+            _waveformLevels = _extractWaveformPeaks(bytes, widget.barCount);
+            await _initAudio(bytes);
+          }
+        } finally {
+          if (mounted) {
+            setState(() => _isLoading = false);
+          }
+        }
+      }
+    }
+
+    if (_loadedBytes == null || _loadedBytes!.isEmpty) return;
 
     try {
-      if (_isPlaying) {
-        await _player.pause();
-      } else {
-        if (_position >= _duration && _duration > Duration.zero) {
-          await _player.seek(Duration.zero);
-        }
-        await _player.play();
+      if (_position >= _duration && _duration > Duration.zero) {
+        await _player.seek(Duration.zero);
       }
+      await _player.play();
     } catch (_) {}
   }
 
@@ -205,11 +239,22 @@ class _AudioWaveformPlayerState extends State<AudioWaveformPlayer> {
                         width: 1.2,
                       ),
                     ),
-                    child: Icon(
-                      _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                      color: _isPlaying ? widget.activeColor : DarkTechTheme.textPrimary,
-                      size: 24,
-                    ),
+                    child: _isLoading
+                        ? Center(
+                            child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: widget.activeColor,
+                              ),
+                            ),
+                          )
+                        : Icon(
+                            _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                            color: _isPlaying ? widget.activeColor : DarkTechTheme.textPrimary,
+                            size: 24,
+                          ),
                   ),
                 ),
               ),

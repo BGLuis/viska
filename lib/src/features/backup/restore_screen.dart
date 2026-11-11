@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import '../../common_widgets/feedback/viska_banner.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
@@ -126,7 +127,10 @@ class _RestoreScreenState extends State<RestoreScreen> {
         ),
         content: const Text(
           'Esta operação substituirá sua identidade local e sua lista de contatos '
-          'pelos dados contidos no backup restaurado.\n\nDeseja prosseguir?',
+          'pelos dados contidos no backup restaurado.\n\n'
+          'O aparelho de origem do backup continuará com a mesma identidade. '
+          'Apague-o (ou desinstale o Viska nele) depois de restaurar.\n\n'
+          'Deseja prosseguir?',
         ),
         actions: [
           TextButton(
@@ -159,9 +163,9 @@ class _RestoreScreenState extends State<RestoreScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Backup restaurado com sucesso! Identidade e contatos recuperados.'),
+          content: Text('Backup restaurado! Apague agora o aparelho de origem: ele ainda tem a mesma identidade.'),
           backgroundColor: DarkTechTheme.primary,
-          duration: Duration(seconds: 4),
+          duration: Duration(seconds: 8),
         ),
       );
 
@@ -213,6 +217,12 @@ class _RestoreScreenState extends State<RestoreScreen> {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          const ViskaBanner(
+            tone: ViskaBannerTone.warning,
+            title: 'SUBSTITUIÇÃO DE IDENTIDADE',
+            message: 'A restauração deste backup substituirá a identidade criptográfica atual deste dispositivo. Sessões anteriores não incluídas no backup serão irrecuperáveis. O aparelho de origem continuará com a mesma identidade: apague-o depois de restaurar.',
           ),
           const SizedBox(height: 20),
 

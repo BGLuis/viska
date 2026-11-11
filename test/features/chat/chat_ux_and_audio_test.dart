@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
@@ -14,11 +14,15 @@ import 'package:viska/src/features/chat/widgets/reply_preview.dart';
 import 'package:viska/src/features/chat/widgets/swipe_to_reply.dart';
 import 'package:viska/src/features/voice/voice_io.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/features/chat/chat_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
+
+import '../../support/fake_session_events.dart';
 
 class _FakePathProviderPlatform extends PathProviderPlatform {
   _FakePathProviderPlatform(this.tempDir);
@@ -64,11 +68,29 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
   }
 }
 
-class _FakeCore implements Core {
-  SessionStateKind sessionState = SessionStateKind.established;
+class _FakeCore with FakeSessionEvents implements Core {
+  _FakeCore() {
+    peerDeviceId = List.filled(16, 1);
+    sessionState = SessionStateKind.established;
+  }
+
   final sealOutgoingTextCalls = <String>[];
   final markSentCalls = <int>[];
+  final resetSessionCalls = <List<int>>[];
   var nextMessageId = 1;
+
+  /// O Rust descarta a sessão falha e abre outra: o stream publica o novo estado.
+  @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) async {
+    resetSessionCalls.add(peerDeviceId);
+    needsRehandshake = false;
+    sessionState = SessionStateKind.handshaking;
+    return SessionStatusDto(
+      state: SessionStateKind.handshaking,
+      needsRehandshake: false,
+      outgoingHandshake: null,
+    );
+  }
 
   @override
   Future<SessionStatusDto> ensureSession({required List<int> peerDeviceId}) async =>
@@ -100,6 +122,9 @@ class _FakeCore implements Core {
   }
 
   @override
+  Future<void> requeueMessage({required int messageId}) async {}
+
+  @override
   Future<void> markMessageSent({required int messageId}) async {
     markSentCalls.add(messageId);
   }
@@ -107,11 +132,51 @@ class _FakeCore implements Core {
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async => [];
 
-  @override
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => [];
+  List<MessageDto> messagesToReturn = [];
 
   @override
-  Future<void> markMessageRead({required int messageId}) async {}
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
+
+  @override
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) async {
+    var res = messagesToReturn;
+    if (sinceId != null) {
+      res = res.where((m) => m.id > sinceId).toList();
+    }
+    if (limit != null) {
+      res = res.take(limit.toInt()).toList();
+    }
+    return res;
+  }
+
+  final List<int> markReadCalls = [];
+
+  @override
+  Future<void> markMessageRead({required int messageId}) async {
+    markReadCalls.add(messageId);
+  }
+
+  @override
+  Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId}) async => 0;
+
+  @override
+  Future<bool> isContactVerified({required List<int> contactDeviceId}) async => false;
+
+  @override
+  Future<bool> isKeyChanged({required List<int> contactDeviceId}) async => false;
+
+  List<FileOfferDto> unconfirmedFileOffersToReturn = [];
+  FfiError? unconfirmedFileOffersError;
+
+  @override
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) async {
+    if (unconfirmedFileOffersError != null) throw unconfirmedFileOffersError!;
+    return unconfirmedFileOffersToReturn;
+  }
 
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -207,6 +272,50 @@ void main() {
 
       // Verifica exibição de CustomPaint com o waveform
       expect(find.byType(CustomPaint), findsWidgets);
+    });
+
+    testWidgets('defers audio decoding until play button is tapped when using loadAudioBytes', (tester) async {
+      var loadCalled = 0;
+      final completer = Completer<Uint8List?>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: Scaffold(
+            body: Center(
+              child: AudioWaveformPlayer(
+                loadAudioBytes: () {
+                  loadCalled++;
+                  return completer.future;
+                },
+                barCount: 20,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Confirma que NÃO chamou loadAudioBytes durante a renderização inicial
+      expect(loadCalled, 0);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+      expect(find.byType(CustomPaint), findsWidgets);
+
+      // Toca no botão de play
+      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      await tester.pump();
+
+      // Confirma que disparou a chamada e exibe o indicador de progresso
+      expect(loadCalled, 1);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+      // Simula término do carregamento retornando nulo (ex: cancelamento ou áudio indisponível)
+      completer.complete(null);
+      await tester.pump();
+
+      // Indicador de progresso desaparece após o carregamento e botão volta para play
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
     });
   });
 
@@ -431,6 +540,34 @@ void main() {
       expect(decoded['emoji'], '🔥');
     });
 
+    test('sendReaction resolves targetMessageId to globalId when message is present', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 42,
+          globalId: 'global-msg-uuid-1234',
+          direction: MessageDirectionDto.incoming,
+          deliveryState: DeliveryStateDto.delivered,
+          kind: MessageKindDto.text,
+          body: 'Hello',
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: [],
+        ),
+      ];
+      await controller.initialize();
+
+      await controller.sendReaction(targetMessageId: 42, emoji: '❤️');
+
+      expect(core.sealOutgoingTextCalls, hasLength(1));
+      final payload = core.sealOutgoingTextCalls.single;
+      final decoded = jsonDecode(payload) as Map<String, dynamic>;
+
+      expect(decoded['type'], 'reaction');
+      expect(decoded['targetId'], 'global-msg-uuid-1234');
+      expect(decoded['emoji'], '❤️');
+    });
+
     test('cancelRecording stops recorder and removes temp file without sending', () async {
       await controller.initialize();
 
@@ -448,10 +585,29 @@ void main() {
       expect(core.sealOutgoingTextCalls, isEmpty);
     });
 
-    test('viewOnce tracking marks message as opened', () {
+    test('viewOnce tracking marks message as opened and invokes core markMessageRead', () async {
       expect(controller.isViewOnceOpened(100), isFalse);
-      controller.markViewOnceOpened(100);
+      await controller.markViewOnceOpened(100);
       expect(controller.isViewOnceOpened(100), isTrue);
+      expect(core.markReadCalls, contains(100));
+    });
+
+    test('isViewOnceOpened recognizes already destroyed message from storage', () async {
+      core.messagesToReturn = [
+        MessageDto(
+          id: 200,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.text,
+          body: '<mensagem expirada e destruída>',
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 1000,
+          isEphemeral: true,
+          viewOnce: true,
+          reactions: const [],
+        ),
+      ];
+      await controller.initialize();
+      expect(controller.isViewOnceOpened(200), isTrue);
     });
 
     test('ParsedMessageContent handles plain text, json quoted reply, and reactions', () {
@@ -483,6 +639,245 @@ void main() {
       expect(p3.isReaction, isTrue);
       expect(p3.targetReactionId, 99);
       expect(p3.reactionEmoji, '👍');
+    });
+  });
+
+  group('file attachment UI', () {
+    late Directory tempDir;
+    late _FakeCore core;
+    late _FakeP2PTransport transport;
+    late P2PTransportRouter router;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('viska-chat-ui-test');
+      PathProviderPlatform.instance = _FakePathProviderPlatform(tempDir);
+      core = _FakeCore();
+      transport = _FakeP2PTransport();
+      router = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) => transport,
+      );
+    });
+
+    tearDown(() {
+      tempDir.deleteSync(recursive: true);
+    });
+
+    testWidgets('attach_file_button is present in input bar', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('attach_file_button')), findsOneWidget);
+      expect(find.byIcon(Icons.attach_file_rounded), findsOneWidget);
+    });
+
+    testWidgets('file message bubble renders progress indicator while receiving', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.file,
+          body: 'documento.pdf',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('Recebendo arquivo…'), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    });
+
+    testWidgets('file message bubble renders icon, filename and sent status for outgoing file', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 8));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 2,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'foto.png',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.sent,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('foto.png'), findsOneWidget);
+      expect(find.text('Enviado'), findsOneWidget);
+      expect(find.byIcon(Icons.insert_drive_file_rounded), findsOneWidget);
+    });
+
+    testWidgets('unconfirmed file offer renders FileOfferCard with accept and reject options', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 42));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(
+          fileId: fileId,
+          name: 'large_dataset.tar.gz',
+          fileSize: BigInt.from(150 * 1024 * 1024),
+        ),
+      ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('large_dataset.tar.gz'), findsOneWidget);
+      expect(find.text('150.0 MB • Oferta de transferência direta'), findsOneWidget);
+      expect(find.text('Aceitar'), findsOneWidget);
+      expect(find.text('Recusar'), findsOneWidget);
+    });
+
+    Future<void> pumpChat(WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('failed session shows the warning and the reconnect button', (tester) async {
+      core.sessionState = SessionStateKind.failed;
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('session_failed_banner')), findsOneWidget);
+      expect(find.text('SESSÃO FALHOU'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('session_failed_banner')),
+          matching: find.text('RECONECTAR'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('reconnect button resets the session and the warning goes away', (tester) async {
+      core.sessionState = SessionStateKind.failed;
+      await pumpChat(tester);
+
+      await tester.tap(find.descendant(
+        of: find.byKey(const Key('session_failed_banner')),
+        matching: find.text('RECONECTAR'),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(core.resetSessionCalls, [List.filled(16, 1)]);
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
+    });
+
+    testWidgets('session that fails while the chat is open shows the warning', (tester) async {
+      core.sessionState = SessionStateKind.established;
+      await pumpChat(tester);
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
+
+      core.sessionState = SessionStateKind.failed;
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('session_failed_banner')), findsOneWidget);
+    });
+
+    testWidgets('session past the renewal threshold shows the renewal warning, not the failure one', (tester) async {
+      core.sessionState = SessionStateKind.established;
+      core.needsRehandshake = true;
+
+      await pumpChat(tester);
+
+      expect(find.text('SESSÃO PRECISA SER RENOVADA'), findsOneWidget);
+      expect(find.text('SESSÃO FALHOU'), findsNothing);
+    });
+
+    testWidgets('healthy session shows no session warning', (tester) async {
+      core.sessionState = SessionStateKind.established;
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('session_failed_banner')), findsNothing);
+    });
+
+    testWidgets('offers error banner shows retry and clears after a successful reload', (tester) async {
+      core.unconfirmedFileOffersError = FfiError.internal;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('offers_error_banner')), findsOneWidget);
+      expect(find.text('Tentar de novo'), findsOneWidget);
+
+      core.unconfirmedFileOffersError = null;
+      await tester.tap(find.text('Tentar de novo'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('offers_error_banner')), findsNothing);
     });
   });
 }

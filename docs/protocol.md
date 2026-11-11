@@ -323,12 +323,20 @@ offset  tam  campo
 0x21 FILE_SYMBOL         símbolo RaptorQ
 0x22 FILE_FEEDBACK       progresso esparso (D6)
 0x23 FILE_COMPLETE       confirmação atômica de integridade
+0x24 FILE_REJECT         o receptor recusou a oferta, ver §7.7
 0x30 AUDIO_CHUNK         quadro Opus
 0x40 CONTROL_PING        keepalive / cover traffic
 0x41 CONTROL_REKEM       carrega apenas material de re-KEM
+0x42 CONTROL_SUITES      anúncio de suítes suportadas: count (1 B) ‖ suites (count B)
 ```
 
 `0x01`/`0x02` (handshake) nunca aparecem aqui — vivem fora do envelope, antes de existir sessão.
+
+O corpo de `CONTROL_SUITES (0x42)` é composto por:
+- `count` (1 byte): quantidade de suítes suportadas pelo build.
+- `suites` (`count` bytes): lista dos identificadores `suite_id` (u8) suportados.
+
+Qualquer tipo de pacote desconhecido recebido dentro de uma sessão autenticada é descartado sem erro, permitindo compatibilidade futura entre versões diferentes do protocolo.
 
 ### 6.3 Buckets de padding (D5)
 
@@ -387,7 +395,7 @@ layout definido pela spec além de `FILE_METADATA` em si).
 ```
 file_id        16 B aleatórios
 file_size      u64
-symbol_size    u16   16384 no WebRTC, 65536 na LAN
+symbol_size    u16   16384 no WebRTC, 65535 na LAN (D23)
 source_blocks  u32   número de source blocks RaptorQ
 block_symbols  u16   símbolos-fonte por bloco, máx. 1024 (D6)
 merkle_root    32 B  raiz BLAKE3 do plaintext do arquivo
@@ -401,14 +409,30 @@ envelope externo diferencia os dois (§6.6, D16).
 
 ### 7.2 Merkle BLAKE3
 
-A raiz é o hash BLAKE3 do plaintext completo — a árvore interna do BLAKE3 (chunks de 1024 B) é o
-que permite verificação incremental. O receptor verifica cada source block contra a árvore assim
-que o decodifica, e a raiz completa no final, antes do commit atômico.
+A raiz é o hash BLAKE3 do plaintext completo. O receptor **não** verifica cada source block contra a
+árvore ao decodificá-lo: ele acumula o hash do plaintext à medida que os blocos são decodificados, mas
+só finaliza e compara com `merkle_root` do manifesto uma vez, depois que todos os blocos completaram, e
+só então decifra o staging para o destino (§7.5). Raiz que não bate faz `finish` devolver erro sem escrever
+nada no destino final (D26). Notas de voz seguem o mesmo caminho.
+
+O que há por bloco é integridade e autenticidade **por símbolo**, não por bloco contra a raiz: cada
+`FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `K_symbol` (`AUDIO_CHUNK`, sob `K_audio_chunk`; cifra e nonce em D11, origem da chave em D15, formato em §7.3.1), e um símbolo adulterado ou
+forjado por quem não detém o segredo da transferência falha na abertura e é descartado antes do
+decodificador. Isso **não** autentica o conteúdo contra a raiz: um par pareado que erre ou minta sobre
+o conteúdo só é pego no fim, e o `merkle_root` vem do próprio manifesto desse par. Verificar um bloco
+do meio contra uma raiz de 32 B exigiria dado extra no manifesto (um CV por bloco) e só funciona onde
+o bloco é subárvore BLAKE3 alinhada, o que não vale na LAN (`symbol_size` 65535, D23).
 
 ### 7.3 RaptorQ (D6)
 
 - Ativado apenas em transportes não confiáveis (DataChannel em modo `ordered:false, maxRetransmits:0`).
-- Desativado na LAN TCP, que usa transferência por offset com retomada.
+- Desativado na LAN TCP, que usa transferência por offset (`TransferMode::Offset`): `symbol_size`
+  de 65535 (D23), só os `k` símbolos-fonte de cada bloco, em ordem, sem reparo. O emissor retoma por
+  bloco: o bitmap de `FILE_FEEDBACK` faz o emissor pular os blocos que o receptor já gravou.
+  `FILE_FEEDBACK` e `FILE_METADATA` não mudam de formato; o modo é uma escolha local do emissor
+  e o receptor não precisa saber dele.
+- O quadro TCP aceita até o pacote selado do canal `file` (`file_id ‖ cabeçalho ‖ símbolo ‖ nonce ‖
+  tag`), que é maior que um envelope (§6.4).
 - Source blocks de no máximo 1024 símbolos, para limitar o decodificador a ~16 MB de RAM.
 - O emissor gera símbolos de reparo continuamente até receber `FILE_FEEDBACK` indicando bloco completo.
 
@@ -453,6 +477,26 @@ destino final e apaga o staging. Se abortar, `K_staging` é destruída — o res
 criptograficamente inacessível, o que é mais confiável que sobrescrever bytes em armazenamento
 com wear leveling.
 
+### 7.6 Limite de auto-aceite e retenção volátil de ofertas
+
+Para proteger a largura de banda e o armazenamento de aparelhos móveis contra transferências pesadas não solicitadas, o receptor impõe um limite de auto-aceite configurável (`auto_accept_file_size_limit`, padrão de 100 MiB).
+
+1. **Retenção volátil:** Ao receber `FILE_METADATA`, se `file_size > auto_accept_file_size_limit`, a transferência receptora não é iniciada automaticamente. A oferta é retida em memória volátil (`unconfirmed_offers`), limitada a 16 ofertas por contato e 64 no total do processo para conter exaustão de RAM.
+2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), todas as ofertas não confirmadas em `unconfirmed_offers` são imediatamente destruídas da memória volátil.
+3. **Confirmação e recuperação:** O usuário pode aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`) explicitamente a oferta pela UI. Ao aceitar, o receptor inicializa o `ReceiveTransfer` em `active_receives` e passa a enviar `FILE_FEEDBACK` a cada 500 ms (§7.4), o que acorda o emissor.
+4. **Retransmissão em LAN Offset:** No modo LAN (`TransferMode::Offset`), se o emissor já tiver enviado todos os seus `k` símbolos e o receptor ainda não tiver completado o bloco (`!advanced`), a recepção de feedback aciona `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco atual utilizando o cache em memória `current_source_symbols`, recuperando perdas ou aceites tardios sem travar a transferência.
+5. **Recusa e perda no bloqueio avisam o emissor:** recusar explicitamente gera um `FILE_REJECT` (§7.7), e `Core::lock()` gera um para cada oferta retida, selado antes de as sessões serem zeradas e devolvido ao Dart para envio. Nada é guardado fora da RAM, então o item 1 se mantém. O aviso é melhor esforço; quando se perde (sem sessão ou transporte no bloqueio), o emissor cobre com o prazo do §7.7 item 5.
+
+### 7.7 Recusa de oferta e oferta sem resposta (`FILE_REJECT`, 0x24)
+
+Corpo: exatamente `file_id` (16 B), sem mais nada. Vai cifrado dentro da sessão como qualquer outro pacote (§6) e é autenticado só pelo AEAD simétrico da sessão: nenhuma assinatura, então não há prova transferível de que a recusa aconteceu (deniabilidade).
+
+1. **Emissão:** `reject_file_offer` descarta a oferta (§7.6) e, havendo sessão estabelecida com o contato, sela o pacote e o devolve ao Dart para envio. `Core::lock()` faz o mesmo para toda oferta retida (§7.6.2). É melhor esforço: sem sessão ou com o envio falhando, a recusa local vale e o aviso se perde. Nada é persistido para reenvio. O pacote é o mesmo nos dois casos: o emissor não distingue recusa de bloqueio.
+2. **Recepção:** o emissor só age se `file_id` for uma transferência sua em curso (direção de envio) **e** pertencer ao contato que mandou o pacote. Então remove a linha de `file_transfers`, descarta o handle de envio (o bombeamento para) e marca a mensagem como recusada. Qualquer outro caso (`file_id` desconhecido, de outro contato, ou de uma transferência de recebimento) é ignorado sem erro distinguível.
+3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou, ou que bloqueou o app com ela pendente. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
+4. **Compatibilidade:** um build antigo trata `0x24` como tipo desconhecido e o ignora sem derrubar a sessão (§6.2); para ele, a transferência continua até o cancelamento manual, ou até o prazo do item 5.
+5. **Prazo do emissor:** se nem `FILE_FEEDBACK` nem `FILE_REJECT` chegarem em 24 h (`OFFER_RESPONSE_TIMEOUT_SECS`) contadas do envio do `FILE_METADATA`, o emissor desiste: marca a mensagem como expirada, descarta o handle e remove a linha de `file_transfers`. O primeiro `FILE_FEEDBACK` encerra o prazo, pois prova que a oferta foi aceita. O prazo vive só em memória, como a própria transferência de envio (U-03, `deviations.md` D15): bloqueio ou reinício abortam o envio antes dele. Não há timer; a expiração é aplicada quando a timeline é lida e quando um feedback chega. Vale só para arquivos, não para notas de voz. O prazo usa o relógio de parede, não um relógio monotônico, que não conta o tempo com o aparelho em suspensão; um salto do relógio para frente pode expirar a oferta antes da hora.
+
 ---
 
 ## 8. Sinalização remota (D8)
@@ -479,7 +523,10 @@ inscreve as épocas `e-1`, `e` e `e+1` para tolerar desvio de relógio.
 ### 8.2 Payload
 
 SDP e candidatos ICE são cifrados com **XChaCha20-Poly1305** sob `K_sig`, com nonce aleatório de
-24 B prefixado, e preenchidos até 1024 B.
+24 B prefixado, e preenchidos até 1024 B. O AAD amarra o selo ao contexto, à direção e à época:
+`"viska-sig-v1" ‖ dir ‖ u64_be(epoch)` (o mesmo material de `topic_hex`, §8.1). O plaintext inclui
+um carimbo de tempo Unix (u64 BE, 8 B) seguido do comprimento do payload (u16 BE, 2 B) e uma janela
+de aceitação temporal para impedir repetição e reflexão pelo broker (§1.1, S-12).
 
 > A escolha do XChaCha aqui não é estética. O ChaCha20-Poly1305 comum precisaria de um nonce
 > aleatório de 12 B, que seria um terceiro esquema de nonce no protocolo — nem determinístico por
@@ -520,13 +567,16 @@ Interface plugável, na ordem de tentativa: MQTT público → relay Nostr → tr
 
 ```
 epoch    = floor(unix_time / 3600)
-beacon   = BLAKE3_keyed(K_sig, "viska-beacon-v1" ‖ u64_be(epoch))[0..16]
+beacon   = BLAKE3_keyed(K_sig, "viska-beacon-v1" ‖ dir ‖ u64_be(epoch))[0..16]
 ```
 
 Os 16 bytes são o **UUID de serviço BLE de 128 bits** anunciado — e não manufacturer data, porque
 o iOS em background não anuncia esse campo e move os service UUIDs para a overflow area, onde só
-são encontrados por um scanner que procure exatamente aquele UUID. O scanner procura os UUIDs das
-épocas `e-1`, `e` e `e+1`.
+são encontrados por um scanner que procure exatamente aquele UUID. Tanto o anúncio quanto a varredura
+são direcionais (`dir` sendo `a2b` ou `b2a`, com base em `PublicIdentity::is_before`): quem anuncia
+usa sua própria direção, e quem procura varre a direção oposta (`dir.flip()`) nas épocas `e-1`, `e` e
+`e+1`. Isso garante que os beacons de A e B para o mesmo par sejam distintos no ar, impedindo que um
+observador passivo ligue os dois aparelhos (S-10).
 
 Endereço MAC: aleatorização de endereço privado resolvível habilitada. Nenhum dado de identidade
 é anunciado.
@@ -538,18 +588,26 @@ Serviço `_viska._tcp` com nome de instância igual ao `beacon` em hex. Mesma ro
 ### 9.3 Multiplexação de canais no socket TCP local
 
 ```
-preâmbulo (17 B) = device_id (16 B) ‖ canal (1 B: 0x00 control, 0x01 file)
+preâmbulo (17 B) = preamble_id (16 B) ‖ canal (1 B: 0x00 control, 0x01 file)
 ```
 
 `wire::framing` (§6.4) não carrega identificador de canal — só o prefixo de comprimento. No socket
 TCP local, cada conexão recebe esse preâmbulo uma vez, antes do primeiro quadro, enviado por quem
-discou. `device_id` é dado já público (trocado no QR); varia por contato, então não vira uma
-impressão digital fixa de DPI (mesma motivação de D4). Cada canal lógico (`control`/`file`) usa uma
-conexão TCP própria — duas conexões por par ativo.
+discou. `preamble_id` é derivado de `K_sig` por contato, direção e época:
+
+```
+epoch       = floor(unix_time / 3600)
+preamble_id = BLAKE3_keyed(K_sig, "viska-preamble-v1" ‖ dir ‖ u64_be(epoch))[0..16]
+```
+
+Diferente do `device_id` de longo prazo (que é fixo por aparelho e permitiria rastreamento entre
+redes), o `preamble_id` varia por contato e por época (S-10), não virando uma impressão digital
+fixa de DPI (mesma motivação de D4). Cada canal lógico (`control`/`file`) usa uma conexão TCP
+própria — duas conexões por par ativo.
 
 Papel ativo/passivo: a mesma regra de §4 (`PublicIdentity::is_before`) que decide quem inicia o
 handshake decide quem disca a conexão TCP; o outro lado escuta. Um único `ServerSocket` por
-processo atende a todos os contatos, roteando cada conexão entrante pelo `device_id` do preâmbulo.
+processo atende a todos os contatos, roteando cada conexão entrante pelo `preamble_id` do preâmbulo.
 
 ### 9.4 Wi-Fi Aware (Android)
 
@@ -589,11 +647,15 @@ exigiria BLE L2CAP ou um dos aparelhos virar ponto de acesso; nenhum dos dois es
 
 ---
 
-## 10. Versionamento
+## 10. Versionamento e suítes criptográficas
 
-`version = 0x01` no QR e no handshake. Um par que receba uma versão desconhecida aborta e informa
-ao usuário para atualizar. Não há downgrade negociado — downgrade negociável é uma vulnerabilidade,
-não uma funcionalidade.
+O byte 0 do payload do QR Code e das mensagens de handshake (`INIT`/`RESP`) representa o identificador de suíte criptográfica (`suite_id`). A combinação atual de primitivas da §1 é formalizada como Suíte `0x01`, idêntica byte a byte ao formato vigente.
+
+1. **Gravação por contato:** A suíte de um contato é definida no momento do pareamento e gravada no banco local (`contacts.suite_id`). O handshake aceita suíte igual ou maior que a gravada para o contato e suportada por ambos os pares, e recusa qualquer suíte menor com erro de versão.
+2. **Anúncio de capacidades:** Imediatamente após a sessão alcançar o estado `Established`, cada ponta transmite um pacote `CONTROL_SUITES` (§6.2, `0x42`) com as suítes suportadas pelo seu build. A suíte acordada para o próximo handshake é a maior em comum entre os dois pares. O papel de iniciador do handshake seguinte permanece sendo o par com menor `IK_dh` (§4).
+3. **Momento da gravação:** A suíte gravada para o contato só é elevada no banco local após a conclusão bem-sucedida de um handshake completo na suíte nova. O recebimento do anúncio isolado não persiste nenhuma alteração; se o handshake na suíte nova falhar, a suíte gravada permanece inalterada e a próxima tentativa reabre na suíte anterior.
+4. **Retirada de suíte:** Uma suíte comprometida pode ser marcada como desativada pelo build. O app recusa conexões e handshakes nessa suíte e orienta o usuário a re-parear presencialmente com o contato. O re-pareamento atualiza as chaves e a suíte, mantendo integralmente o histórico de mensagens e apelido.
+5. **Não há downgrade negociado:** Não há downgrade negociado — downgrade negociável é uma vulnerabilidade, não uma funcionalidade. Nenhum anúncio ou negociação em claro pode reduzir a suíte de um contato abaixo do valor já registrado no banco local.
 
 ---
 
@@ -638,6 +700,32 @@ distinguir a causa de uma falha própria (evitar oráculo). Falhas consecutivas 
 pequeno (8 falhas, contadas só em memória, nunca persistidas) levam a sessão para `Failed` — acima
 disso, assume-se dessincronia irrecuperável (por exemplo, o par perdeu o estado do ratchet e
 reiniciou) em vez de continuar tentando indefinidamente.
+
+**Recuperação de uma sessão `Failed` (reset local):** `Failed` só sai de cena com uma sessão nova, e
+quem decide abri-la é a pessoa, pelo aviso do chat — nunca uma tentativa automática, que viraria laço
+de handshake depois de 8 falhas de AEAD. `Core::reset_session` descarta a sessão e abre outra com o
+mesmo par (não repete o pareamento, só o AKE de §4). Só age em `Failed` ou depois do limiar de §11.2;
+com a sessão `Established` sã ou em handshake não faz nada. Mensagens de texto que estavam em
+`Sending` voltam à fila (`pending`) e são cifradas de novo na sessão nova; a sessão que as selou foi
+descartada e a falha é local, mas fica o risco residual de duplicata se o par chegou a recebê-las
+antes. Isso difere do texto que estava em `Sending` quando a Core abriu ou foi trancada: ali não se
+sabe se os bytes saíram, e recifrá-los entregaria a mesma mensagem duas vezes, então ele vira
+`unknown` e só a pessoa o reenvia (a linha e o `global_id` são os mesmos, e o par deduplica). Os
+envios de arquivo e de nota de voz em andamento com o par são cancelados e as mensagens marcadas como
+falha (`Failed`) — inclusive a oferta já enviada (`Sent`) sem resposta e o envio aceito e incompleto, que
+sem isso ficariam `Sent` para sempre —, porque o `FILE_METADATA` foi selado na sessão que deixou de existir.
+Só entram os envios que ainda têm linha em `file_transfers` e mensagem ainda não terminada: um envio
+concluído (sem linha) e os estados finais `Delivered`, `Rejected` e `Expired` não mudam. O estado de cada sessão é empurrado ao
+Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
+segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
+
+**Lacuna conhecida:** o reset é unilateral. Sem marcador de tipo no fio (D4), o par não é avisado:
+se ele seguir `Established`, a INIT nova é lida lá como envelope inválido e descartada em silêncio, e
+só passa a valer depois que a sessão dele também falhar (8 falhas) e for reaberta. Quem reabre como
+respondedor (`AwaitingPeerInit`) não envia nada, e uma INIT que o iniciador tenha enviado enquanto
+ele ainda estava `Failed` foi descartada: com os dois lados reabrindo em instantes diferentes, a INIT
+só é publicada de novo quando o transporte for recriado ou o iniciador reconectar de novo. Um sinal para o par depende de decisão de projeto
+compatível com D4 e com a deniabilidade (issue #78).
 
 ### 11.2 Política de rotação do contador
 

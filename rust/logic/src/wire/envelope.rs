@@ -58,6 +58,14 @@ pub const COUNTER_LEN: usize = 4;
 /// Tamanho do cabeçalho em claro inteiro: contador seguido do `dh_pub`.
 const HEADER_LEN: usize = COUNTER_LEN + DH_PUB_LEN;
 
+/// Extrai apenas o contador em claro dos primeiros 4 bytes do envelope.
+pub fn counter(envelope: &[u8]) -> Result<u32> {
+    if envelope.len() < COUNTER_LEN {
+        return Err(Error::Malformed("envelope curto demais para ler contador"));
+    }
+    read_u32(envelope).ok_or(Error::Malformed("falha ao ler contador do envelope"))
+}
+
 /// Monta o envelope a partir do contador, do `dh_pub` do emissor (§6.1,
 /// `RatchetHeader.dh_pub`) e de um ciphertext já selado (`ciphertext ‖ tag`,
 /// como `crypto::aead::seal` o produz).

@@ -20,6 +20,8 @@ String pairingErrorMessage(FfiError error) {
       return 'Não foi possível salvar o contato. Tente novamente.';
     case FfiError.contactNotFound:
       return 'Contato não encontrado.';
+    case FfiError.contactKeyMismatch:
+      return 'Este contato já existe mas apresentou chaves criptográficas diferentes. O pareamento foi recusado por segurança.';
     // As variantes abaixo não são produzidas pelo fluxo de pareamento — só
     // por chamadas de sessão/mensagem (Fase 3) ou de transferência de
     // arquivo/áudio (Fase 4/5) — mas o switch precisa ser exaustivo sobre o
@@ -36,6 +38,10 @@ String pairingErrorMessage(FfiError error) {
       return 'Falha de decifragem ou autenticação dos dados.';
     case FfiError.malformed:
       return 'Dados recebidos em formato inválido ou corrompido.';
+    case FfiError.suiteRetired:
+      return 'A suíte criptográfica deste contato foi desativada e requer novo pareamento.';
+    case FfiError.offerNotFound:
+      return 'A oferta de arquivo não foi encontrada ou já foi cancelada.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

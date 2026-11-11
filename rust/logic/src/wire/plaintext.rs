@@ -29,6 +29,7 @@ use crate::util::encoding;
 use crate::wire::packet_type::PacketType;
 use crate::wire::transport::Transport;
 use crate::{Error, Result};
+use zeroize::Zeroizing;
 
 const PACKET_TYPE_AT: usize = 0;
 const PN_AT: usize = PACKET_TYPE_AT + 1;
@@ -46,16 +47,17 @@ const FLAG_KEM_CT: u8 = 0b0000_0010;
 /// formato ser interpretada de forma incompatível por implementações antigas.
 const FLAG_RESERVED_MASK: u8 = !(FLAG_KEM_EK | FLAG_KEM_CT);
 
-/// O maior cabeçalho fixo possível: os dois flags de KEM setados ao mesmo tempo.
+/// O maior cabeçalho fixo que o decodificador aceita: os dois flags de KEM
+/// setados ao mesmo tempo.
 ///
-/// Uma mensagem de re-KEM em andamento pode legitimamente carregar `KEM_ek` e
-/// `KEM_ct` juntos (§5.4): o par que dispara o rekem manda `KEM_ek` novo, e a
-/// contraparte, se já estiver no meio de outro re-KEM, pode responder com
-/// `KEM_ct` na mesma mensagem que carrega seu próprio `KEM_ek`.
+/// O emissor nunca produz essa combinação (§5.4): a interação entre as duas
+/// posições de dobra em `RK` é frágil demais para o ganho. O decodificador a
+/// aceita mesmo assim, então o teto de padding precisa cobrir o pior caso
+/// decodificável, e não só o que este emissor gera.
 pub const MAX_HEADER_LEN: usize = KEM_MATERIAL_AT + PUBLIC_KEY_LEN + CIPHERTEXT_LEN;
 
 /// Plaintext interno do envelope, antes de cifrar e depois de decifrar.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct InnerPlaintext {
     pub packet_type: PacketType,
     /// Número de mensagens da cadeia de envio anterior (`PN` do ratchet).
@@ -64,7 +66,23 @@ pub struct InnerPlaintext {
     pub kem_ek: Option<KemPublicKey>,
     /// `KEM_ct` de resposta a um `KEM_ek` recebido anteriormente.
     pub kem_ct: Option<KemCiphertext>,
-    pub body: Vec<u8>,
+    /// `Zeroizing` porque é o plaintext da mensagem: sem isso cada clone e cada
+    /// drop deixaria o corpo no heap.
+    pub body: Zeroizing<Vec<u8>>,
+}
+
+// `Debug` manual: o derive imprimiria o corpo da mensagem em qualquer log ou
+// `unwrap` que falhe.
+impl std::fmt::Debug for InnerPlaintext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InnerPlaintext")
+            .field("packet_type", &self.packet_type)
+            .field("pn", &self.pn)
+            .field("kem_ek", &self.kem_ek.is_some())
+            .field("kem_ct", &self.kem_ct.is_some())
+            .field("body", &format_args!("<redigido: {} bytes>", self.body.len()))
+            .finish()
+    }
 }
 
 impl InnerPlaintext {
@@ -192,10 +210,12 @@ impl InnerPlaintext {
         let body_end = offset
             .checked_add(body_len)
             .ok_or(Error::Malformed("overflow calculando o fim do corpo"))?;
-        let body = bytes
-            .get(offset..body_end)
-            .ok_or(Error::Malformed("body_len maior que o buffer disponível"))?
-            .to_vec();
+        let body = Zeroizing::new(
+            bytes
+                .get(offset..body_end)
+                .ok_or(Error::Malformed("body_len maior que o buffer disponível"))?
+                .to_vec(),
+        );
 
         Ok(Self {
             packet_type,
@@ -211,6 +231,28 @@ impl InnerPlaintext {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn debug_does_not_leak_body() {
+        let inner = InnerPlaintext {
+            packet_type: PacketType::MsgText,
+            pn: 0,
+            kem_ek: None,
+            kem_ct: None,
+            body: Zeroizing::new(b"segredo-da-mensagem".to_vec()),
+        };
+        let rendered = format!("{inner:?}");
+        assert!(!rendered.contains("segredo"));
+        assert!(rendered.contains("<redigido"));
+    }
+
+    #[test]
+    fn decoded_body_is_zeroizing() {
+        let bytes = amostra(PacketType::MsgText, false, false, b"x".to_vec()).encode(Transport::DataChannel).unwrap();
+        let decoded = InnerPlaintext::decode(&bytes, Transport::DataChannel).unwrap();
+        // Trava de tipo: se `body` voltar a ser `Vec<u8>` simples, não compila.
+        let _: &Zeroizing<Vec<u8>> = &decoded.body;
+    }
 
     fn kem_ek_de_teste() -> KemPublicKey {
         KemPublicKey::from_slice(&[0xABu8; PUBLIC_KEY_LEN]).unwrap()
@@ -231,7 +273,7 @@ mod tests {
             pn: 7,
             kem_ek: has_ek.then(kem_ek_de_teste),
             kem_ct: has_ct.then(kem_ct_de_teste),
-            body,
+            body: Zeroizing::new(body),
         }
     }
 
@@ -328,6 +370,19 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn rejects_handshake_bytes_in_plaintext() {
+        let pacote = amostra(PacketType::MsgText, false, false, b"x".to_vec());
+        for byte in [0x01, 0x02] {
+            let mut encoded = pacote.encode(Transport::DataChannel).unwrap();
+            encoded[PACKET_TYPE_AT] = byte;
+            assert!(matches!(
+                InnerPlaintext::decode(&encoded, Transport::DataChannel),
+                Err(Error::Malformed(_))
+            ));
+        }
+    }
+
     /// Estratégia de `PacketType` a partir do índice em `ALL`, para uso nos
     /// property tests abaixo.
     fn estrategia_packet_type() -> impl Strategy<Value = PacketType> {
@@ -356,7 +411,7 @@ mod tests {
                 pn,
                 kem_ek: has_ek.then(kem_ek_de_teste),
                 kem_ct: has_ct.then(kem_ct_de_teste),
-                body,
+                body: Zeroizing::new(body),
             };
 
             let encoded = original.encode(Transport::DataChannel).unwrap();
@@ -383,7 +438,7 @@ mod tests {
                 pn,
                 kem_ek: has_ek.then(kem_ek_de_teste),
                 kem_ct: has_ct.then(kem_ct_de_teste),
-                body,
+                body: Zeroizing::new(body),
             };
 
             let encoded = original.encode(Transport::LocalSocket).unwrap();

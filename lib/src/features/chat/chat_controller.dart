@@ -1,22 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 
 import '../../transport/lan/lan_transport.dart';
+import '../../transport/message_reception_service.dart';
 import '../../transport/multipeer/multipeer_transport.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
 import '../../transport/selecting_p2p_transport.dart';
+import '../../transport/transfer_foreground_service.dart';
 import '../../transport/webrtc_p2p_transport.dart';
 import '../../transport/webrtc_transport.dart' show TransportConnectionEvent, TransportConnectionState;
 import '../../transport/wifi_aware/wifi_aware_transport.dart';
 import '../voice/voice_io.dart';
+import 'session_health.dart';
 import 'widgets/reply_preview.dart';
 
 /// Tipos de transporte P2P ativos para indicador visual na conversa.
@@ -78,25 +83,75 @@ class ChatController extends ChangeNotifier {
     required Core core,
     required P2PTransportRouter router,
     required ContactId contactId,
+    MessageReceptionService? receptionService,
     VoiceRecorder? recorder,
     VoicePlayer? player,
+    TransferForegroundService? foregroundService,
+    Duration connectTimeout = const Duration(seconds: 30),
   })  : _core = core,
+        _foregroundService = foregroundService ?? TransferForegroundService.shared,
+        _connectTimeout = connectTimeout,
         _router = router,
         _contactId = contactId,
+        _ownsReceptionService = receptionService == null,
+        _receptionService = receptionService ?? MessageReceptionService(core: core, router: router),
         _recorder = recorder ?? RecordVoiceRecorder(),
         _player = player ?? JustAudioVoicePlayer();
 
   final Core _core;
   final P2PTransportRouter _router;
+  final TransferForegroundService _foregroundService;
+
+  /// Quanto `sendFile` espera o transporte do contato antes de desistir. Mais
+  /// que isso e a pessoa já deixou de olhar a tela; menos e uma reconexão
+  /// lenta depois do seletor falharia à toa.
+  final Duration _connectTimeout;
+  final bool _ownsReceptionService;
   final ContactId _contactId;
+  final MessageReceptionService _receptionService;
   final VoiceRecorder _recorder;
   final VoicePlayer _player;
 
   List<MessageDto> _messages = [];
   List<MessageDto> get messages => List.unmodifiable(_messages);
 
-  bool _established = false;
-  bool get isEstablished => _established;
+  List<FileOfferDto> _unconfirmedOffers = [];
+  List<FileOfferDto> get unconfirmedOffers => List.unmodifiable(_unconfirmedOffers);
+
+  String? _offersError;
+
+  /// Mensagem de falha ao listar as ofertas pendentes; `null` quando a última
+  /// listagem deu certo. A lista anterior é mantida enquanto houver erro.
+  String? get offersError => _offersError;
+
+  final _session = SessionHealth();
+
+  bool get isEstablished => _session.isEstablished;
+  bool get isSessionBroken => _session.isBroken;
+  bool get isSessionFailed => _session.isFailed;
+  String get sessionBannerTitle => _session.bannerTitle;
+  String get sessionBannerMessage => _sessionError ?? _session.bannerMessage;
+
+  var _reconnecting = false;
+  bool get isReconnecting => _reconnecting;
+
+  String? _sessionError;
+
+  /// Falha do último "reconectar"; `null` quando não houve ou deu certo.
+  String? get sessionError => _sessionError;
+
+  static const sessionBrokenMessage = SessionHealth.brokenSendMessage;
+
+  void _applySessionState(SessionStateKind? state, bool needsRehandshake, {required bool fromStream}) {
+    if (!_session.apply(state, needsRehandshake, fromStream: fromStream)) return;
+    // Sessão recuperada: um erro de envio antigo sobre ela deixou de valer.
+    if (!_session.isBroken) {
+      if (_fileError == sessionBrokenMessage) _fileError = null;
+      if (_voiceError == sessionBrokenMessage) _voiceError = null;
+      _sessionError = null;
+    }
+    if (!_disposed) notifyListeners();
+  }
 
   String? _connectionError;
   String? get connectionError => _connectionError;
@@ -116,7 +171,7 @@ class ChatController extends ChangeNotifier {
 
   ActiveTransportType get activeTransport {
     if (_transportOverride != null) return _transportOverride!;
-    if (!_established || _connectionError != null) {
+    if (!isEstablished || _connectionError != null) {
       return ActiveTransportType.offline;
     }
 
@@ -165,12 +220,24 @@ class ChatController extends ChangeNotifier {
   String? _voiceError;
   String? get voiceError => _voiceError;
 
-  /// WAV já decodificado (D18) por `hex(file_id)` — de notas enviadas
+  /// Áudio interno comprimido por `hex(file_id)` — de notas enviadas
   /// (cacheado ao sanitizar, antes de apagar o arquivo sanitizado) e
   /// recebidas (cacheado ao completar `_finishReceivingVoiceNote`). Uma
   /// entrada aqui é o sinal de "pronta para tocar" que a UI usa; sem
   /// entrada e `kind == VoiceNote` significa "ainda recebendo".
+  ///
+  /// Guarda o formato comprimido, não o WAV (D18): o PCM custa ~5,6 MB por
+  /// minuto e acumulava sem limite durante a vida do controlador.
   final Map<String, Uint8List> _voiceNoteAudio = {};
+
+  /// Único WAV decodificado mantido vivo — o da última nota pedida.
+  ({String id, Uint8List wav})? _decodedWav;
+
+  /// Sequencial de requisições de decodificação para proteção contra condições de corrida.
+  int _wavRequestSeq = 0;
+
+  /// Requisição de decodificação em andamento para deduplicar chamadas concorrentes da mesma nota.
+  ({String id, Future<Uint8List> future})? _pendingDecode;
 
   int? _playingMessageId;
   int? get playingMessageId => _playingMessageId;
@@ -181,14 +248,72 @@ class ChatController extends ChangeNotifier {
   bool isVoiceNoteReady(MessageDto message) {
     final fileId = message.audioFileId;
     if (fileId == null) return false;
-    return _voiceNoteAudio.containsKey(_hex(fileId));
+    return _voiceNoteAudio.containsKey(_hex(fileId)) ||
+        _receptionService.isVoiceNoteReady(fileId);
   }
 
-  /// Retorna os bytes WAV decodificados em cache de uma nota de voz pronta.
-  Uint8List? getVoiceNoteAudio(MessageDto message) {
+  /// Decodifica sob demanda o WAV de uma nota de voz pronta (D18), mantendo
+  /// só o da última nota pedida. Protegido contra condições de corrida e
+  /// chamadas concorrentes simultâneas.
+  Future<Uint8List?> voiceNoteWav(MessageDto message) async {
     final fileId = message.audioFileId;
     if (fileId == null) return null;
-    return _voiceNoteAudio[_hex(fileId)];
+    final id = _hex(fileId);
+
+    final cached = _decodedWav;
+    if (cached != null && cached.id == id) return cached.wav;
+
+    if (_pendingDecode != null && _pendingDecode!.id == id) {
+      return await _pendingDecode!.future;
+    }
+
+    final internal = _voiceNoteAudio[id] ?? _receptionService.getVoiceNoteAudio(fileId);
+    if (internal == null) return null;
+
+    final seq = ++_wavRequestSeq;
+    final future = _core.decodeAudioToWav(internalBytes: internal);
+    _pendingDecode = (id: id, future: future);
+
+    try {
+      final wav = await future;
+      // Garante que apenas o término da requisição cronologicamente mais recente
+      // atualize o cache de entrada única, prevenindo sobrescrita fora de ordem.
+      if (_wavRequestSeq == seq) {
+        _decodedWav = (id: id, wav: wav);
+      }
+      return wav;
+    } finally {
+      if (_pendingDecode?.future == future) {
+        _pendingDecode = null;
+      }
+    }
+  }
+
+  bool _sendingFile = false;
+  bool get isSendingFile => _sendingFile;
+
+  String? _fileError;
+  String? get fileError => _fileError;
+
+  /// Caminhos temporários de arquivos genéricos recebidos e verificados,
+  /// indexados por hex do `file_id`. Permite à UI confirmar que um arquivo
+  /// chegou completo sem round-trip adicional ao Rust.
+  final Map<String, String> _receivedFilePaths = {};
+
+  /// `true` se o arquivo recebido já está disponível no diretório temporário.
+  bool isFileReady(MessageDto message) {
+    final fileId = message.audioFileId;
+    if (fileId == null) return false;
+    return _receivedFilePaths.containsKey(_hex(fileId)) ||
+        _receptionService.getReceivedFilePath(fileId) != null;
+  }
+
+  /// Caminho absoluto do arquivo recebido e verificado, ou `null` se ainda
+  /// em recebimento.
+  String? getReceivedFilePath(MessageDto message) {
+    final fileId = message.audioFileId;
+    if (fileId == null) return null;
+    return _receivedFilePaths[_hex(fileId)] ?? _receptionService.getReceivedFilePath(fileId);
   }
 
   /// Reações mapeadas por ID de mensagem de destino: messageId -> { emoji: count }
@@ -200,10 +325,39 @@ class ChatController extends ChangeNotifier {
   /// Mensagens de visualização única abertas nesta sessão.
   final Set<int> _openedViewOnceMessageIds = {};
 
-  bool isViewOnceOpened(int messageId) => _openedViewOnceMessageIds.contains(messageId);
+  bool isViewOnceOpened(int messageId) {
+    if (_openedViewOnceMessageIds.contains(messageId)) return true;
+    final msg = _messages.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (msg != null && (msg.viewOnce || msg.isEphemeral) && msg.body == '<mensagem expirada e destruída>') {
+      return true;
+    }
+    return false;
+  }
 
-  void markViewOnceOpened(int messageId) {
+  Future<void> markViewOnceOpened(int messageId) async {
     _openedViewOnceMessageIds.add(messageId);
+    try {
+      await _core.markMessageRead(messageId: messageId);
+      await _refreshMessages();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao marcar visualização única como lida: $e');
+    }
+    notifyListeners();
+  }
+
+
+  /// Reenvia um texto em `unknown`. A confirmação com o aviso de duplicata é
+  /// da tela; aqui só se pede o reenvio e se relê a lista.
+  Future<void> resendUnknown(int messageId) async {
+    try {
+      await _receptionService.resendUnknown(_contactId, messageId);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reenviar mensagem incerta: $e');
+    }
+    await _refreshMessages();
     notifyListeners();
   }
 
@@ -211,8 +365,7 @@ class ChatController extends ChangeNotifier {
 
   Set<String> userReactionsFor(int messageId) => _userReactions[messageId] ?? const {};
 
-  StreamSubscription<Uint8List>? _incomingSub;
-  StreamSubscription<Uint8List>? _incomingFileSub;
+  StreamSubscription<MessageReceptionEvent>? _receptionSub;
   StreamSubscription<TransportConnectionEvent>? _connectionSub;
   var _disposed = false;
 
@@ -223,15 +376,25 @@ class ChatController extends ChangeNotifier {
     try {
       await _refreshMessages();
 
-      _incomingSub = _router.incomingFor(_contactId).listen(_handleIncomingRaw);
-      _incomingFileSub = _router.incomingFileFor(_contactId).listen(_handleIncomingFileBytes);
+      _receptionService.ensureListening(_contactId);
+      _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
       _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
-      final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-      unawaited(_tryPublishOutgoingHandshake(status));
+      // Eventos que passaram antes de esta conversa abrir já estão no serviço.
+      final known = _receptionService.sessionStateFor(_contactId);
+      if (known != null) {
+        _applySessionState(known.state, known.needsRehandshake, fromStream: true);
+      }
+      final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      // Só vale se nenhum evento chegou: um evento que passe durante o await é
+      // mais recente que esta leitura e não deve ser sobrescrito por ela.
+      if (!_session.streamed) {
+        _applySessionState(session.state, session.needsRehandshake, fromStream: false);
+      }
       await refreshTrustState();
+      await loadUnconfirmedOffers();
     } catch (e, stack) {
-      debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
           ? 'Aplicativo bloqueado. Desbloqueie para conversar.'
           : 'Falha ao inicializar transporte: $e';
@@ -239,9 +402,31 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  void _handleReceptionEvent(MessageReceptionEvent event) {
+    switch (event) {
+      case MessageReceivedEvent(:final message):
+        unawaited(loadUnconfirmedOffers());
+        if (message != null && message.messageId != null) {
+          _fetchIncrementalMessages();
+        } else {
+          _refreshMessages();
+        }
+      case TypingIndicatorEvent():
+        break;
+      case SessionStateChangedEvent(:final state, :final needsRehandshake):
+        _applySessionState(state, needsRehandshake, fromStream: true);
+      case FileReceivedEvent(:final fileId, :final path):
+        _receivedFilePaths[_hex(fileId)] = path;
+        _fetchIncrementalMessages();
+      case VoiceNoteReceivedEvent(:final fileId, :final internalBytes):
+        _voiceNoteAudio[_hex(fileId)] = internalBytes;
+        _fetchIncrementalMessages();
+    }
+  }
+
   /// Grava `body` como `pending` (eco otimista) e tenta enviar na hora, se a
   /// sessão já estiver pronta. Se não estiver, a mensagem fica `pending` até
-  /// o handshake terminar e o outbox drenar (`_flushPending`).
+  /// o handshake terminar e o `MessageReceptionService` drenar o outbox.
   Future<void> sendText(
     String body, {
     QuotedReply? replyTo,
@@ -256,6 +441,7 @@ class ChatController extends ChangeNotifier {
           ? jsonEncode({
               'v': 1,
               'type': 'text',
+              'id': _generateGlobalId(),
               'text': body,
               if (replyTo != null) 'reply': replyTo.toJson(),
               if (isViewOnce) 'viewOnce': true,
@@ -268,7 +454,7 @@ class ChatController extends ChangeNotifier {
       );
       await _refreshMessages();
       if (sealed.bytes != null) {
-        await _sendSealed(sealed.messageId, sealed.bytes!);
+        await _trySendSealed(sealed.messageId, sealed.bytes!);
       }
     } finally {
       _sending = false;
@@ -281,10 +467,16 @@ class ChatController extends ChangeNotifier {
     required int targetMessageId,
     required String emoji,
   }) async {
+    final target = _messages.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == targetMessageId,
+          orElse: () => null,
+        );
+    final targetId = target?.globalId ?? targetMessageId;
+
     final payload = jsonEncode({
       'v': 1,
       'type': 'reaction',
-      'targetId': targetMessageId,
+      'targetId': targetId,
       'emoji': emoji,
     });
 
@@ -294,7 +486,142 @@ class ChatController extends ChangeNotifier {
     );
     await _refreshMessages();
     if (sealed.bytes != null) {
-      await _sendSealed(sealed.messageId, sealed.bytes!);
+      await _trySendSealed(sealed.messageId, sealed.bytes!);
+    }
+  }
+
+  /// Inicia o envio de um arquivo genérico cujo caminho foi devolvido pelo
+  /// seletor de arquivos da plataforma. Falha alto via [fileError] em vez de
+  /// exception — mesma política de [stopRecordingAndSend]. Envios simultâneos
+  /// são ignorados silenciosamente (o botão na UI fica desabilitado enquanto
+  /// [isSendingFile] for `true`).
+  Future<void> sendFile(String filePath) async {
+    if (_sendingFile) return;
+    // Recusa antes de criar a linha: com a sessão fora do ar `startSendFile`
+    // falharia de qualquer jeito, só que depois de tocar no disco.
+    if (isSessionBroken) {
+      _fileError = sessionBrokenMessage;
+      notifyListeners();
+      return;
+    }
+
+    _sendingFile = true;
+    _fileError = null;
+    notifyListeners();
+    // Mantém o app fora do congelamento enquanto espera a conexão e envia: sem
+    // isso o sistema derruba os sockets assim que o app vai para segundo plano.
+    final lease = await _foregroundService.acquire();
+    int? startedMessageId;
+    try {
+      // A conexão vem antes de `startSendFile`: ele grava a mensagem como
+      // pendente, e sem par alcançável ela ficaria "Enviando…" sem nunca sair.
+      // Bloco próprio para o timeout não se confundir com falha depois de a
+      // mensagem existir, que precisa ser marcada como falha.
+      try {
+        await _router.awaitConnected(_contactId, timeout: _connectTimeout);
+      } on TimeoutException {
+        _fileError = 'Sem conexão com o contato. Tente enviar o arquivo de novo.';
+        return;
+      }
+      final started = await _core.startSendFile(
+        peerDeviceId: _contactId.deviceId,
+        filePath: filePath,
+        useLan: activeTransport == ActiveTransportType.lanDirect,
+      );
+      startedMessageId = started.messageId;
+      _receivedFilePaths[_hex(started.fileId)] = filePath;
+      _receptionService.cacheReceivedFilePath(started.fileId, filePath);
+      await _refreshMessages();
+      await _router.sendToContact(_contactId, started.sealedMetadata);
+      await _pumpOutgoingChunks(started.fileId);
+      await _core.markMessageSent(messageId: started.messageId);
+      await _refreshMessages();
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Falha ao enviar arquivo: $e\n$stack');
+      _fileError = await _sendFailureMessage('Não foi possível enviar o arquivo.');
+      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
+    } finally {
+      _sendingFile = false;
+      notifyListeners();
+      await lease.release();
+    }
+  }
+
+  /// Persiste a falha de um envio interrompido, para que a linha não volte a
+  /// "Enviando…" depois de reiniciar o app. Nunca lança: o erro que importa à
+  /// pessoa já está em [fileError].
+  Future<void> _markOutgoingFailed(int messageId) async {
+    try {
+      await _core.markMessageFailed(messageId: messageId);
+      await _refreshMessages();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] falha ao marcar envio como falho: $e');
+    }
+  }
+
+  static const _offerGoneMessage = 'Esta oferta de arquivo não está mais disponível.';
+
+  /// Recarrega do Rust as ofertas de arquivo deste contato que excederam o limite
+  /// de auto-aceite e aguardam confirmação do usuário (Issue #23).
+  Future<void> loadUnconfirmedOffers() async {
+    try {
+      final offers = await _core.unconfirmedFileOffers(peerDeviceId: _contactId.deviceId);
+      if (_disposed) return;
+      _unconfirmedOffers = offers;
+      _offersError = null;
+      notifyListeners();
+    } catch (_) {
+      if (_disposed) return;
+      // Mantém a última lista válida: sumir com ofertas já vistas por causa de
+      // uma falha de listagem é exatamente o sintoma que este erro evita.
+      _offersError = 'Não foi possível carregar as ofertas de arquivo.';
+      notifyListeners();
+    }
+  }
+
+  /// Aceita explicitamente uma oferta de arquivo pendente (Issue #23).
+  ///
+  /// Inicia a transferência receptora no Rust e o feedback periódico, que
+  /// acorda o emissor caso este já tenha esgotado o bloco enquanto aguardava a
+  /// confirmação. Falha alto via [fileError]; a oferta continua disponível
+  /// para nova tentativa, salvo se já tiver se perdido.
+  Future<void> acceptFileOffer(Uint8List fileId) async {
+    _fileError = null;
+    try {
+      await _core.acceptFileOffer(fileId: fileId);
+      await _receptionService.watchIncomingTransfer(_contactId, fileId);
+    } catch (e) {
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível aceitar o arquivo.';
+    } finally {
+      await loadUnconfirmedOffers();
+    }
+  }
+
+  /// Recusa explicitamente uma oferta de arquivo pendente (Issue #23) e avisa o
+  /// emissor com o `FILE_REJECT` que o Rust selou (§7.7).
+  ///
+  /// O aviso é melhor esforço: sem sessão o Rust devolve `null`, e uma falha do
+  /// transporte não desfaz a recusa nem vira [fileError] — a oferta já foi
+  /// descartada, e o emissor só deixa de saber.
+  Future<void> rejectFileOffer(Uint8List fileId) async {
+    _fileError = null;
+    Uint8List? sealedReject;
+    try {
+      sealedReject = await _core.rejectFileOffer(fileId: fileId);
+    } catch (e) {
+      _fileError = e == FfiError.offerNotFound
+          ? _offerGoneMessage
+          : 'Não foi possível recusar o arquivo.';
+    } finally {
+      await loadUnconfirmedOffers();
+    }
+    if (sealedReject == null) return;
+    try {
+      await _router.sendToContact(_contactId, sealedReject);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[ChatController] aviso de recusa não enviado: $e');
     }
   }
 
@@ -318,6 +645,11 @@ class ChatController extends ChangeNotifier {
   /// (armadilha do relatório da Fase 5).
   Future<void> startRecording() async {
     if (_recording || _sendingVoice) return;
+    if (isSessionBroken) {
+      _voiceError = sessionBrokenMessage;
+      notifyListeners();
+      return;
+    }
 
     final granted = await Permission.microphone.request();
     if (!granted.isGranted) {
@@ -351,9 +683,20 @@ class ChatController extends ChangeNotifier {
     final rawPath = await _recorder.stop();
     if (rawPath == null) return;
 
+    // A sessão pode ter caído durante a gravação.
+    if (isSessionBroken) {
+      _voiceError = sessionBrokenMessage;
+      unawaited(File(rawPath).delete().catchError((_) => File(rawPath)));
+      notifyListeners();
+      return;
+    }
+
     _sendingVoice = true;
     notifyListeners();
     final sanitizedPath = '$rawPath.viska-audio';
+    // Sem `awaitConnected` nem serviço em primeiro plano, de propósito: a nota
+    // é curta, gravada com o app aberto; sem conexão ela falha e é marcada.
+    int? startedMessageId;
     try {
       // Desmonta o Ogg que o gravador produziu — sanitização por subtração,
       // não filtro (Fase 5, F1, D16): o formato interno resultante não tem
@@ -365,14 +708,15 @@ class ChatController extends ChangeNotifier {
       final started = await _core.startSendAudio(
         peerDeviceId: _contactId.deviceId,
         audioPath: sanitizedPath,
-        useLan: false,
+        useLan: activeTransport == ActiveTransportType.lanDirect,
       );
+      startedMessageId = started.messageId;
 
-      // Cacheia o WAV (D18) antes de apagar o arquivo sanitizado — permite
+      // Cacheia o áudio interno antes de apagar o arquivo sanitizado — permite
       // tocar a própria nota enviada, sem round-trip pela rede.
       final internalBytes = await File(sanitizedPath).readAsBytes();
-      final wav = await _core.decodeAudioToWav(internalBytes: internalBytes);
-      _voiceNoteAudio[_hex(started.fileId)] = wav;
+      _voiceNoteAudio[_hex(started.fileId)] = internalBytes;
+      _receptionService.cacheVoiceNoteAudio(started.fileId, internalBytes);
       unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
 
       await _refreshMessages();
@@ -380,8 +724,10 @@ class ChatController extends ChangeNotifier {
       await _pumpOutgoingChunks(started.fileId);
       await _core.markMessageSent(messageId: started.messageId);
       await _refreshMessages();
-    } catch (_) {
-      _voiceError = 'Não foi possível enviar a nota de voz.';
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Falha ao enviar nota de voz: $e\n$stack');
+      _voiceError = await _sendFailureMessage('Não foi possível enviar a nota de voz.');
+      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
     } finally {
       _sendingVoice = false;
       notifyListeners();
@@ -389,7 +735,17 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _pumpOutgoingChunks(Uint8List fileId) async {
+    // O roteador esquece o transporte que falhou, então trocar de instância (ou
+    // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
+    // `FILE_FEEDBACK` que não vem mais por um socket morto.
+    final transport = _router.transportFor(_contactId);
+    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
+    // na checagem abaixo para sempre.
+    if (transport == null) throw const TransportUnavailableException();
     while (true) {
+      if (!identical(_router.transportFor(_contactId), transport)) {
+        throw const TransportUnavailableException();
+      }
       final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
       if (chunk == null) {
         final progress = await _core.transferProgress(fileId: fileId);
@@ -407,55 +763,12 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// Alimenta um pacote cru do canal `file` (D17: roteia sozinho por
-  /// `file_id`, em claro na frente do próprio pacote) — símbolo de arquivo
-  /// genérico ou pedaço de nota de voz. `null` é normal: pacote de uma
-  /// transferência que este `Core` não está rastreando (não é nosso, já
-  /// terminou, etc.) — mesma política de silêncio do resto da fronteira.
-  Future<void> _handleIncomingFileBytes(Uint8List wireBytes) async {
-    final ingested = await _core.ingestIncomingWireBytes(wireBytes: wireBytes);
-    if (ingested == null) return;
-    if (ingested.progress.isComplete) {
-      await _finishReceivingVoiceNote(ingested.fileId);
-    }
-  }
-
-  /// Fecha um recebimento de nota de voz completo: confirma ao emissor
-  /// (`FILE_COMPLETE` pelo canal `control`), decodifica para WAV (D18) e
-  /// cacheia — a partir daqui [isVoiceNoteReady] passa a `true` para essa
-  /// mensagem. Silencioso se `fileId` não for uma nota de voz que este
-  /// controlador está rastreando (ex.: um arquivo genérico, quando essa UI
-  /// existir) — `finishReceiveAudio` erra e o erro é engolido, mesma
-  /// política do resto da fronteira para transferência desconhecida.
-  Future<void> _finishReceivingVoiceNote(Uint8List fileId) async {
-    final dir = await getTemporaryDirectory();
-    final internalPath = '${dir.path}/nota-recebida-${_hex(fileId)}.viska-audio';
-    try {
-      final sealedComplete = await _core.finishReceiveAudio(
-        peerDeviceId: _contactId.deviceId,
-        fileId: fileId,
-        destinationPath: internalPath,
-      );
-      await _router.sendToContact(_contactId, sealedComplete);
-
-      final internalBytes = await File(internalPath).readAsBytes();
-      final wav = await _core.decodeAudioToWav(internalBytes: internalBytes);
-      _voiceNoteAudio[_hex(fileId)] = wav;
-      notifyListeners();
-    } catch (_) {
-      // Não era uma transferência de áudio nossa (ou já foi concluída por
-      // outro caminho) — nada a fazer.
-    } finally {
-      unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
-    }
-  }
-
   /// Toca uma nota de voz já pronta ([isVoiceNoteReady]) — remontagem em
   /// memória já aconteceu (D18); nada aqui grava em disco.
   Future<void> play(MessageDto message) async {
     final fileId = message.audioFileId;
     if (fileId == null) return;
-    final wav = _voiceNoteAudio[_hex(fileId)];
+    final wav = await voiceNoteWav(message);
     if (wav == null) return;
 
     await _player.playBytes(wav);
@@ -469,37 +782,6 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _handleIncomingRaw(Uint8List bytes) async {
-    final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-    final alreadyEstablished = status.state == SessionStateKind.established;
-
-    if (!alreadyEstablished) {
-      final response = await _core.feedHandshake(
-        peerDeviceId: _contactId.deviceId,
-        bytes: bytes,
-      );
-      if (response != null) {
-        await _router.sendToContact(_contactId, response);
-      }
-      await _refreshEstablishedStateAndFlushIfNeeded();
-      return;
-    }
-
-    final incoming = await _core.decryptIncoming(
-      peerDeviceId: _contactId.deviceId,
-      envelope: bytes,
-    );
-    // `isTyping`: indicador efêmero (`docs/protocol.md` §6.2), nunca
-    // persistido — não vale a pena atualizar a timeline por causa dele.
-    // Qualquer outro caso (mensagem de texto nova, ou `null` — AEAD falhou
-    // *ou* o envelope era `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE`,
-    // processado como efeito colateral dentro de `decryptIncoming`)
-    // atualiza a timeline: é assim que uma oferta de nota de voz nova
-    // aparece, sem *polling*.
-    if (incoming?.isTyping == true) return;
-    await _refreshMessages();
-  }
-
   void _handleConnectionEvent(TransportConnectionEvent event) {
     if (event.state == TransportConnectionState.failed) {
       _connectionError = event.reason;
@@ -510,53 +792,138 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _tryPublishOutgoingHandshake([SessionStatusDto? currentStatus]) async {
+
+  /// Abre uma sessão nova com o contato (`Core.resetSession`) e publica a
+  /// INIT se formos o iniciador. O reset é só local: o contato pode precisar
+  /// reconectar também, e o aviso do chat diz isso.
+  Future<void> reconnectSession() async {
+    if (_reconnecting) return;
+    _reconnecting = true;
+    _sessionError = null;
+    notifyListeners();
     try {
-      final status = currentStatus ?? await _core.ensureSession(peerDeviceId: _contactId.deviceId);
-      if (status.state == SessionStateKind.established) {
-        await _refreshEstablishedStateAndFlushIfNeeded();
-        return;
+      final status = await _core.resetSession(peerDeviceId: _contactId.deviceId);
+      final handshake = status.outgoingHandshake;
+      if (handshake != null) {
+        try {
+          await _router.sendToContact(_contactId, handshake);
+        } catch (e) {
+          // A sessão já foi reaberta; sem transporte, o serviço de recepção
+          // publica a INIT quando ele voltar.
+          if (kDebugMode) debugPrint('[ChatController] INIT da sessão nova não enviada: $e');
+        }
       }
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reconectar a sessão: $e\n$stack');
+      _sessionError = 'Não foi possível reconectar. Tente de novo.';
+    } finally {
+      _reconnecting = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
 
-      final outgoing = status.outgoingHandshake;
-      if (outgoing != null) {
-        // `P2PTransportRouter.sendToContact` espera o canal `control` abrir de
-        // verdade antes de mandar (ver `WebrtcTransport.send`, Fase 3 F3) —
-        // então isto não manda a INIT cedo demais, só fica pendurado até dar.
-        await _router.sendToContact(_contactId, outgoing);
+  /// A mensagem do erro de envio: se a causa é a sessão, o aviso específico
+  /// em vez do genérico, que só deixaria a pessoa tentando de novo.
+  Future<String> _sendFailureMessage(String generic) async {
+    if (isSessionBroken) return sessionBrokenMessage;
+    try {
+      final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
+      if (status != null &&
+          (status.state == SessionStateKind.failed || status.needsRehandshake)) {
+        return sessionBrokenMessage;
       }
+    } catch (_) {
+      // Sem como confirmar, vale a mensagem genérica.
+    }
+    return generic;
+  }
+
+  /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
+  /// volta à fila (`pending`) via `requeueMessage`, porque o Rust a deixou em
+  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia no próximo
+  /// pacote recebido ou ao reiniciar.
+  Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
+    try {
+      await _router.sendToContact(_contactId, bytes);
     } catch (e) {
-      debugPrint('[ChatController] Aviso: Falha ao enviar handshake inicial: $e');
+      if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem volta à fila: $e');
+      try {
+        await _core.requeueMessage(messageId: messageId);
+        await _refreshMessages();
+      } catch (e) {
+        // Fica `Sending` até a Core reabrir ou travar; só dá para registrar.
+        if (kDebugMode) debugPrint('[ChatController] falha ao devolver $messageId à fila: $e');
+      }
+      // O motivo do transporte (evento `failed`) é mais informativo: só
+      // preenche se ele ainda não chegou.
+      if (!_disposed) {
+        _connectionError ??= 'Não foi possível enviar a mensagem.';
+        notifyListeners();
+      }
+      return;
+    }
+    // Envio que passou prova que a conexão serve; um erro antigo deixaria a
+    // conversa offline até o próximo `connected`.
+    if (_connectionError != null && !_disposed) {
+      _connectionError = null;
+      notifyListeners();
+    }
+    try {
+      await _markSentAndRefresh(messageId);
+    } catch (e) {
+      // Os bytes já saíram: falha local ao marcar não é queda de conexão.
+      if (kDebugMode) debugPrint('[ChatController] falha ao marcar como enviada: $e');
     }
   }
 
-  Future<void> _refreshEstablishedStateAndFlushIfNeeded() async {
-    final status = await _core.sessionStatus(peerDeviceId: _contactId.deviceId);
-    final established = status?.state == SessionStateKind.established;
-    if (established && !_established) {
-      _established = true;
+  Future<void> _markSentAndRefresh(int messageId) async {
+    await _core.markMessageSent(messageId: messageId);
+    final idx = _messages.indexWhere((m) => m.id == messageId);
+    if (idx != -1) {
+      final old = _messages[idx];
+      _messages[idx] = MessageDto(
+        id: old.id,
+        globalId: old.globalId,
+        direction: old.direction,
+        kind: old.kind,
+        body: old.body,
+        audioFileId: old.audioFileId,
+        deliveryState: DeliveryStateDto.sent,
+        createdAtUnixSecs: old.createdAtUnixSecs,
+        isEphemeral: old.isEphemeral,
+        replyToId: old.replyToId,
+        viewOnce: old.viewOnce,
+        reactions: old.reactions,
+      );
       notifyListeners();
-      await _flushPending();
-    } else if (established != _established) {
-      _established = established;
-      notifyListeners();
+    } else {
+      await _fetchIncrementalMessages();
     }
   }
 
-  Future<void> _flushPending() async {
-    final sealed = await _core.flushPending(peerDeviceId: _contactId.deviceId);
-    for (final message in sealed) {
-      final bytes = message.bytes;
-      if (bytes != null) {
-        await _sendSealed(message.messageId, bytes);
+  Future<void> _fetchIncrementalMessages() async {
+    final lastId = _messages.isNotEmpty ? _messages.last.id : null;
+    if (lastId == null) {
+      await _refreshMessages();
+      return;
+    }
+    final newMessages = await _core.listMessagesPaginated(
+      peerDeviceId: _contactId.deviceId,
+      sinceId: lastId,
+    );
+    if (_disposed || newMessages.isEmpty) return;
+
+    for (final m in newMessages) {
+      _messages.add(m);
+      for (final emoji in m.reactions) {
+        final map = _reactions.putIfAbsent(m.id, () => <String, int>{});
+        map[emoji] = (map[emoji] ?? 0) + 1;
+      }
+      if (m.direction == MessageDirectionDto.incoming && !m.viewOnce) {
+        _core.markMessageRead(messageId: m.id).catchError((_) {});
       }
     }
-  }
-
-  Future<void> _sendSealed(int messageId, Uint8List bytes) async {
-    await _router.sendToContact(_contactId, bytes);
-    await _core.markMessageSent(messageId: messageId);
-    await _refreshMessages();
+    notifyListeners();
   }
 
   Future<void> _refreshMessages() async {
@@ -566,7 +933,11 @@ class ChatController extends ChangeNotifier {
     _aggregateReactions();
     for (final m in loaded) {
       if (m.direction == MessageDirectionDto.incoming) {
-        _core.markMessageRead(messageId: m.id).catchError((_) {});
+        // Mensagens de visualização única só são marcadas como lidas quando o usuário
+        // explicitamente as abrir na tela (U-04), para não destruir a chave antes da leitura.
+        if (!m.viewOnce) {
+          _core.markMessageRead(messageId: m.id).catchError((_) {});
+        }
       }
     }
     notifyListeners();
@@ -576,19 +947,39 @@ class ChatController extends ChangeNotifier {
     _reactions.clear();
     _userReactions.clear();
 
+    // 1. Reações carregadas diretamente da tabela message_reactions no banco (via Rust)
+    for (final message in _messages) {
+      for (final emoji in message.reactions) {
+        final map = _reactions.putIfAbsent(message.id, () => <String, int>{});
+        map[emoji] = (map[emoji] ?? 0) + 1;
+      }
+    }
+
+    // 2. Compatibilidade com mensagens legadas de comando de reação
     for (final message in _messages) {
       if (message.kind != MessageKindDto.text) continue;
       final parsed = ParsedMessageContent.parse(message.body);
-      if (parsed.isReaction && parsed.targetReactionId != null && parsed.reactionEmoji != null) {
-        final targetId = parsed.targetReactionId!;
+      if (parsed.isReaction && parsed.reactionEmoji != null) {
         final emoji = parsed.reactionEmoji!;
+        int? targetLocalId = parsed.targetReactionId;
+        if (targetLocalId == null && parsed.targetReactionGlobalId != null) {
+          final target = _messages.cast<MessageDto?>().firstWhere(
+                (m) => m?.globalId == parsed.targetReactionGlobalId,
+                orElse: () => null,
+              );
+          targetLocalId = target?.id;
+        }
 
-        final map = _reactions.putIfAbsent(targetId, () => <String, int>{});
-        map[emoji] = (map[emoji] ?? 0) + 1;
+        if (targetLocalId != null) {
+          final map = _reactions.putIfAbsent(targetLocalId, () => <String, int>{});
+          if (!(map.containsKey(emoji) && map[emoji]! > 0)) {
+            map[emoji] = (map[emoji] ?? 0) + 1;
+          }
 
-        if (message.direction == MessageDirectionDto.outgoing) {
-          final userSet = _userReactions.putIfAbsent(targetId, () => <String>{});
-          userSet.add(emoji);
+          if (message.direction == MessageDirectionDto.outgoing) {
+            final userSet = _userReactions.putIfAbsent(targetLocalId, () => <String>{});
+            userSet.add(emoji);
+          }
         }
       }
     }
@@ -597,11 +988,11 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    unawaited(_incomingSub?.cancel());
-    unawaited(_incomingFileSub?.cancel());
+    unawaited(_receptionSub?.cancel());
     unawaited(_connectionSub?.cancel());
     unawaited(_recorder.dispose());
     unawaited(_player.dispose());
+    if (_ownsReceptionService) unawaited(_receptionService.dispose());
     super.dispose();
   }
 }
@@ -609,23 +1000,36 @@ class ChatController extends ChangeNotifier {
 String _hex(Uint8List bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
+String _generateGlobalId() {
+  final rng = Random.secure();
+  final bytes = Uint8List(16);
+  for (var i = 0; i < 16; i++) {
+    bytes[i] = rng.nextInt(256);
+  }
+  return _hex(bytes);
+}
+
 /// Conteúdo estruturado de mensagem persistida, suportando texto puro,
 /// respostas citadas, reações com emojis e mensagens de visualização única.
 class ParsedMessageContent {
   const ParsedMessageContent({
     required this.text,
+    this.id,
     this.reply,
     this.isViewOnce = false,
     this.isReaction = false,
     this.targetReactionId,
+    this.targetReactionGlobalId,
     this.reactionEmoji,
   });
 
   final String text;
+  final String? id;
   final QuotedReply? reply;
   final bool isViewOnce;
   final bool isReaction;
   final int? targetReactionId;
+  final String? targetReactionGlobalId;
   final String? reactionEmoji;
 
   static ParsedMessageContent parse(String rawBody) {
@@ -640,21 +1044,27 @@ class ParsedMessageContent {
 
       final type = decoded['type'] as String?;
       if (type == 'reaction') {
+        final rawTarget = decoded['targetId'];
+        final targetInt = rawTarget is int ? rawTarget : int.tryParse(rawTarget?.toString() ?? '');
+        final targetStr = rawTarget is String ? rawTarget : rawTarget?.toString();
         return ParsedMessageContent(
           text: '',
           isReaction: true,
-          targetReactionId: decoded['targetId'] as int?,
+          targetReactionId: targetInt,
+          targetReactionGlobalId: targetStr,
           reactionEmoji: decoded['emoji'] as String?,
         );
       }
 
       if (type == 'text') {
         final text = decoded['text'] as String? ?? '';
+        final id = decoded['id'] as String?;
         final replyMap = decoded['reply'] as Map<String, dynamic>?;
         final reply = replyMap != null ? QuotedReply.fromJson(replyMap) : null;
         final viewOnce = decoded['viewOnce'] as bool? ?? false;
         return ParsedMessageContent(
           text: text,
+          id: id,
           reply: reply,
           isViewOnce: viewOnce,
         );

@@ -9,11 +9,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::TransferHandle;
-use crate::ffi::types::{ContactDto, SafetyNumberDto};
+use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
+use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
+use crate::session_events::SessionEvents;
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
 use viska_proto::crypto::safety_number::SafetyNumber;
@@ -45,11 +46,39 @@ pub struct Core {
     /// persistidas em si (`store::transfers` guarda só o necessário para
     /// retomar dentro da mesma execução, ver `file::transfer`).
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// Destinatário dos eventos de estado de sessão e o último estado entregue
+    /// por contato. Ordem de travas: `sessions` antes de `session_events`,
+    /// sempre — quem publica lê a sessão e emite sob as duas, para que o
+    /// último evento entregue seja sempre o estado mais recente.
+    pub(super) session_events: Mutex<SessionEvents>,
+    /// Suítes acordadas para upgrade em memória (§6.2, D24), nunca persistidas.
+    pub(super) agreed_upgrades: Mutex<HashMap<[u8; 16], u8>>,
+    /// Ofertas de arquivo recebidas com tamanho acima do limite de auto-aceite,
+    /// aguardando confirmação do usuário (Issue #23, U-08).
+    pub(super) unconfirmed_offers: Mutex<HashMap<[u8; 16], UnconfirmedOffer>>,
+    /// Quando cada oferta de arquivo enviada saiu (segundos Unix) e ainda não
+    /// teve resposta. Só em RAM, como a própria transferência (U-03).
+    pub(super) unanswered_offers: Mutex<HashMap<[u8; 16], i64>>,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
     /// Diretório de dados do app para reabertura de banco e apagamento.
     pub(super) app_dir: PathBuf,
+}
+
+/// Acerta as linhas de saída que dependiam de estado só em memória.
+///
+/// Sem handle ativo o envio de arquivo não retoma, e a linha não pode
+/// continuar "Enviando…". Já o texto em `Sending` perdeu a pista de se os bytes
+/// saíram: ele vira `Unknown`, e só a pessoa o reenvia. Devolvê-lo à fila
+/// recifraria uma mensagem que o par talvez já tenha, que é a duplicata da #67.
+/// (`reset_session` age diferente, de propósito: a sessão que selou o texto
+/// morreu, então o texto volta à fila e é recifrado na sessão nova.)
+/// Falhar as transferências primeiro é defesa em profundidade: a marcação só
+/// toca texto, mas assim nenhuma linha de arquivo parada em `Sending` escapa.
+fn reset_inflight_state(store: &Store) {
+    let _ = store.fail_pending_transfers();
+    let _ = store.mark_sending_messages_unknown();
 }
 
 impl Core {
@@ -62,33 +91,64 @@ impl Core {
         let identity = store.load_or_create_identity()?;
 
         let staging_dir = dir.join(STAGING_DIR_NAME);
-        // Varre `.staging` órfão de uma execução anterior (crash, força
-        // bruta do processo) — nunca apaga o de uma transferência que o
-        // banco ainda considera ativa (armadilha da Fase 4: "`.staging`
-        // sobrevive a crash e vaza espaço em disco").
-        let active_ids: std::collections::HashSet<[u8; 16]> =
-            store.list_active_file_transfer_ids()?.into_iter().collect();
-        viska_proto::file::staging::sweep_orphaned(&staging_dir, &active_ids)?;
+        // Na abertura a frio ou recuperação de crash, transferências sem handle
+        // ativo em memória são tratadas como abortadas (U-03). Destrói os segredos
+        // no banco e remove os arquivos de staging correspondentes.
+        let active_ids = store.list_active_file_transfer_ids()?;
+        for id in &active_ids {
+            let _ = store.delete_file_transfer(id);
+        }
+        reset_inflight_state(&store);
+        let surviving = std::collections::HashSet::new();
+        viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
 
         Ok(Core {
             identity: RwLock::new(identity),
             store,
             sessions: Mutex::new(HashMap::new()),
+            session_events: Mutex::new(SessionEvents::default()),
             transfers: Mutex::new(HashMap::new()),
+            agreed_upgrades: Mutex::new(HashMap::new()),
+            unconfirmed_offers: Mutex::new(HashMap::new()),
+            unanswered_offers: Mutex::new(HashMap::new()),
             staging_dir,
             app_dir: dir.to_path_buf(),
         })
     }
 
     /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-    /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+    /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
     /// limpa a chave mestra nativa injetada.
-    pub fn lock(&self) -> Result<(), FfiError> {
+    ///
+    /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+    /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+    pub fn lock(&self) -> Result<Vec<SealedNoticeDto>, FfiError> {
+        let notices = self.seal_lock_notices();
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
-        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
+        // O Dart não pode seguir achando que há sessão estabelecida.
+        self.publish_all_sessions();
+        self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?.clear();
+        {
+            let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
+            for file_id in transfers.keys() {
+                let _ = self.store.delete_file_transfer(file_id);
+            }
+            transfers.clear();
+        }
+        // As transferências acima foram abortadas: o mesmo vale para as linhas.
+        reset_inflight_state(&self.store);
+        if let Ok(active_ids) = self.store.list_active_file_transfer_ids() {
+            for id in &active_ids {
+                let _ = self.store.delete_file_transfer(id);
+            }
+        }
+        let surviving = std::collections::HashSet::new();
+        let _ = viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving);
+
         self.store.close()?;
         keyring::clear_injected_master_secret();
-        Ok(())
+        Ok(notices)
     }
 
     /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
@@ -97,6 +157,20 @@ impl Core {
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
         self.store
             .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
+
+        // Qualquer transferência sem handle em memória é tratada como abortada (U-03),
+        // limpando registros órfãos e arquivos .staging.
+        let active_ids = self.store.list_active_file_transfer_ids()?;
+        let transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
+        let mut surviving = std::collections::HashSet::new();
+        for id in active_ids {
+            if !transfers.contains_key(&id) {
+                let _ = self.store.delete_file_transfer(&id);
+            } else {
+                surviving.insert(id);
+            }
+        }
+        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving)?;
         Ok(())
     }
 
@@ -114,7 +188,7 @@ impl Core {
     }
 
     /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-    /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+    /// remoção física dos arquivos do banco SQLite e limpeza dos diretórios staging e received.
     pub fn emergency_erase(&self) -> Result<(), FfiError> {
         let _ = self.lock();
         keyring::delete_master_secret(&self.app_dir)?;
@@ -124,6 +198,9 @@ impl Core {
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
         let _ = std::fs::remove_dir_all(&self.staging_dir);
         let _ = std::fs::create_dir_all(&self.staging_dir);
+        let received_dir = self.app_dir.join("received");
+        let _ = std::fs::remove_dir_all(&received_dir);
+        let _ = std::fs::create_dir_all(&received_dir);
         Ok(())
     }
 
@@ -177,10 +254,37 @@ impl Core {
         self.ensure_not_locked()?;
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
         let candidate = pairing::decode_qr(&payload, &id.public())?;
+        let suite_id = *payload.first().ok_or(FfiError::QrMalformed)?;
         let paired_at = viska_proto::util::time::unix_seconds() as i64;
-        self.store.insert_contact(&candidate, paired_at, nickname.as_deref())?;
+        self.store.insert_contact_with_suite(&candidate, paired_at, nickname.as_deref(), suite_id)?;
 
         Ok(ContactDto::from_identity(&candidate, paired_at, nickname, false))
+    }
+
+    /// Re-pareamento presencial com um contato existente (§10, D24):
+    /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
+    pub fn repair_from_qr(&self, payload: Vec<u8>) -> Result<ContactDto, FfiError> {
+        self.ensure_not_locked()?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let candidate = pairing::decode_qr(&payload, &id.public())?;
+        let suite_id = *payload.first().ok_or(FfiError::QrMalformed)?;
+        self.store.update_contact_keys(&candidate, suite_id)?;
+
+        // Invalida sessões e propostas de upgrade em memória para este contato,
+        // garantindo que a próxima abertura de sessão use as chaves e suíte novas (§10, D24).
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(&candidate.device_id);
+        }
+        self.publish_session(&candidate.device_id);
+        if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
+            upgrades.remove(&candidate.device_id);
+        }
+
+        let (contact, paired_at, nickname, is_verified) = self
+            .store
+            .find_contact(&candidate.device_id)?
+            .ok_or(FfiError::ContactNotFound)?;
+        Ok(ContactDto::from_identity(&contact, paired_at, nickname, is_verified))
     }
 
     /// Todos os contatos já pareados.
@@ -285,6 +389,28 @@ impl Core {
         Ok(())
     }
 
+    /// Consulta o teto de tamanho de arquivo em bytes para aceitação automática.
+    /// Retorna `DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT` se não configurado.
+    pub fn auto_accept_file_size_limit(&self) -> Result<u64, FfiError> {
+        self.ensure_not_locked()?;
+        if let Some(val_str) = self.store.get_config(crate::ffi::transfer::CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT)? {
+            if let Ok(limit) = val_str.trim().parse::<u64>() {
+                return Ok(limit);
+            }
+        }
+        Ok(crate::ffi::transfer::DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT)
+    }
+
+    /// Define o teto de tamanho de arquivo em bytes para aceitação automática.
+    pub fn set_auto_accept_file_size_limit(&self, limit_bytes: u64) -> Result<(), FfiError> {
+        self.ensure_not_locked()?;
+        self.store.set_config(
+            crate::ffi::transfer::CONFIG_KEY_AUTO_ACCEPT_FILE_SIZE_LIMIT,
+            &limit_bytes.to_string(),
+        )?;
+        Ok(())
+    }
+
     /// Altera o apelido local de um contato já pareado.
     pub fn set_contact_nickname(&self, contact_device_id: Vec<u8>, nickname: String) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
@@ -324,6 +450,19 @@ impl Core {
         Ok(())
     }
 
+    /// Adiciona uma reação emoji a uma mensagem persistida buscando pelo identificador global (Fase 9).
+    pub fn add_reaction_by_global_id(
+        &self,
+        contact_device_id: [u8; 16],
+        target_global_id: String,
+        emoji: String,
+    ) -> Result<bool, FfiError> {
+        self.ensure_not_locked()?;
+        let now = viska_proto::util::time::unix_seconds() as i64;
+        let matched = self.store.add_reaction_by_target(&target_global_id, &contact_device_id, &emoji, now)?;
+        Ok(matched.is_some())
+    }
+
     /// Exporta backup cifrado com frase mnemônica de 24 palavras (BIP-39).
     pub fn export_encrypted_backup(&self, dest_path: String) -> Result<String, FfiError> {
         self.ensure_not_locked()?;
@@ -332,25 +471,26 @@ impl Core {
         let db_bytes = std::fs::read(&db_path).map_err(|_| FfiError::Internal)?;
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
 
-        let mut bundle = Vec::with_capacity(32 + db_bytes.len());
+        let mut bundle = Zeroizing::new(Vec::with_capacity(32 + db_bytes.len()));
         bundle.extend_from_slice(master_secret.as_bytes());
         bundle.extend_from_slice(&db_bytes);
 
         let mnemonic = viska_proto::backup::export_backup_to_file(&bundle, Path::new(&dest_path))
             .map_err(|_| FfiError::Internal)?;
-        bundle.zeroize();
         Ok(mnemonic)
     }
 
     /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
     pub fn restore_encrypted_backup(&self, src_path: String, mnemonic: String) -> Result<(), FfiError> {
         self.ensure_not_locked()?;
-        let mut bundle = viska_proto::backup::restore_backup_from_file(Path::new(&src_path), &mnemonic)
-            .map_err(|_| FfiError::FileCorrupted)?;
+        let bundle = Zeroizing::new(
+            viska_proto::backup::restore_backup_from_file(Path::new(&src_path), &mnemonic)
+                .map_err(|_| FfiError::FileCorrupted)?,
+        );
         if bundle.len() < 32 {
             return Err(FfiError::FileCorrupted);
         }
-        let mut restored_master_secret = [0u8; 32];
+        let mut restored_master_secret = Zeroizing::new([0u8; 32]);
         restored_master_secret.copy_from_slice(&bundle[..32]);
         let db_bytes = &bundle[32..];
 
@@ -369,19 +509,21 @@ impl Core {
                 .mode(0o600)
                 .open(&master_key_path)
                 .map_err(|_| FfiError::Internal)?;
-            file.write_all(&restored_master_secret).map_err(|_| FfiError::Internal)?;
+            file.write_all(restored_master_secret.as_slice()).map_err(|_| FfiError::Internal)?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&master_key_path, &restored_master_secret).map_err(|_| FfiError::Internal)?;
+            std::fs::write(&master_key_path, restored_master_secret.as_slice()).map_err(|_| FfiError::Internal)?;
         }
-        restored_master_secret.zeroize();
+        // Zera já, antes das operações de arquivo seguintes, em vez de esperar o fim do escopo.
+        drop(restored_master_secret);
 
         let db_path = self.app_dir.join(DB_FILE_NAME);
         let write_res = std::fs::write(&db_path, db_bytes);
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-wal"));
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
-        bundle.zeroize();
+        // Precisa vir antes do `?` abaixo e do `unlock()`: o bundle tem seed e chave mestra.
+        drop(bundle);
         write_res.map_err(|_| FfiError::Internal)?;
 
         self.unlock()?;
@@ -390,17 +532,11 @@ impl Core {
             *id_guard = new_id;
         }
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
+        // A identidade mudou: o Dart não pode seguir achando que há sessão.
+        self.publish_all_sessions();
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         Ok(())
     }
-
-    /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
-    pub fn configure_duress_pin(&self, duress_pin: String, action_mode: u8) -> Result<(), FfiError> {
-        self.ensure_not_locked()?;
-        self.store.configure_duress_pin(&duress_pin, action_mode)?;
-        Ok(())
-    }
-
 }
 
 impl std::fmt::Debug for Core {
@@ -578,11 +714,49 @@ mod tests {
         let db_path = dir.path().join("viska.sqlite3");
         assert!(db_path.exists());
 
+        let received_dir = dir.path().join("received");
+        std::fs::create_dir_all(&received_dir).unwrap();
+        let test_file = received_dir.join("viska-recv-123.bin");
+        std::fs::write(&test_file, b"secret content").unwrap();
+        assert!(test_file.exists());
+
         core.emergency_erase().unwrap();
 
         assert!(core.is_locked());
         assert!(!db_path.exists());
+        assert!(!test_file.exists());
         assert_eq!(core.list_contacts(), Err(FfiError::Locked));
+    }
+
+    #[test]
+    fn restoring_a_backup_announces_that_sessions_are_gone() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+        let core_c = open_core(&dir_c);
+        let backup_path = dir_a.path().join("backup.viskasafe");
+        let mnemonic = core_a
+            .export_encrypted_backup(backup_path.to_str().unwrap().to_string())
+            .unwrap();
+        let contact = core_c.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        core_c.ensure_session(contact.device_id.clone()).unwrap();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<crate::ffi::types::SessionStateEventDto>>> =
+            Default::default();
+        let sink_seen = std::sync::Arc::clone(&seen);
+        core_c
+            .set_session_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+
+        core_c
+            .restore_encrypted_backup(backup_path.to_str().unwrap().to_string(), mnemonic)
+            .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen.last().unwrap().state, None);
     }
 
     #[test]
@@ -675,7 +849,7 @@ mod tests {
             signing: fake_public.signing,
             dh: fake_public.dh,
         };
-        core_a.store.insert_contact(&fake_contact_with_same_id, 2000, Some("Bob")).unwrap();
+        core_a.store.update_contact_keys(&fake_contact_with_same_id, 2).unwrap();
 
         // Agora is_verified foi revogado para false e is_key_changed deve detectar true!
         assert!(!core_a.is_contact_verified(contact.device_id.clone()).unwrap());
@@ -688,16 +862,9 @@ mod tests {
     }
 
     #[test]
-    fn reactions_and_duress_pin() {
+    fn reactions_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let core = open_core(&dir);
-
-        // Testa configuração de duress PIN
-        core.configure_duress_pin("9999".to_string(), 1).unwrap();
-        let (is_enabled, duress_pin, action_mode) = core.store.get_decoy_vault_config().unwrap().unwrap();
-        assert!(is_enabled);
-        assert_eq!(duress_pin.as_deref(), Some("9999"));
-        assert_eq!(action_mode, 1);
 
         // Insere contato e mensagem para testar reação
         let dir_b = tempfile::tempdir().unwrap();
@@ -716,5 +883,142 @@ mod tests {
         core.add_reaction(dev_id, msg_id, "❤️".to_string()).unwrap();
         let reactions = core.store.get_reactions(msg_id).unwrap();
         assert_eq!(reactions, vec!["❤️".to_string()]);
+    }
+
+    #[test]
+    fn pair_from_qr_rejects_new_keys_for_existing_device_id() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        // Pareamento inicial legítimo de Bob no dispositivo de Alice
+        let bob_payload = core_b.my_qr_payload();
+        let bob_contact = core_a.pair_from_qr(bob_payload, Some("Bob".to_string())).unwrap();
+        let original_signing = bob_contact.signing_pubkey.clone();
+        let original_dh = bob_contact.dh_pubkey.clone();
+
+        // Atacante tenta re-parear com o mesmo device_id de Bob, mas com chaves geradas por outro nó
+        let bob_dev_id: [u8; 16] = bob_contact.device_id.clone().try_into().unwrap();
+        let attacker_identity = viska_proto::crypto::identity::LocalIdentity::from_parts(
+            bob_dev_id,
+            [0x42; 32],
+            [0x24; 32],
+        );
+        let forged_payload = viska_proto::crypto::pairing::encode_qr(&attacker_identity);
+
+        // Alice tenta parear com o payload forjado com novas chaves para o mesmo device_id
+        let err = core_a
+            .pair_from_qr(forged_payload.to_vec(), Some("Atacante".to_string()))
+            .unwrap_err();
+        assert_eq!(err, FfiError::ContactKeyMismatch);
+
+        // Garante que as chaves antigas de Bob foram mantidas intactas no banco
+        let contacts = core_a.list_contacts().unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].device_id, bob_contact.device_id);
+        assert_eq!(contacts[0].signing_pubkey, original_signing);
+        assert_eq!(contacts[0].dh_pubkey, original_dh);
+        assert_eq!(contacts[0].nickname.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn repair_from_qr_end_to_end_upgrades_suite_evicts_stale_session_and_preserves_history() {
+        use viska_proto::crypto::suite::{set_suite_retired, set_test_suite_v2_enabled, Suite};
+        use viska_proto::crypto::pairing::encode_qr_with_suite;
+        use viska_proto::crypto::identity::LocalIdentity;
+
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let core_a = open_core(&dir_a);
+        let core_b = open_core(&dir_b);
+
+        // Pareamento inicial legítimo na Suíte 1
+        let bob_payload = core_b.my_qr_payload();
+        let alice_payload = core_a.my_qr_payload();
+        let bob_contact = core_a.pair_from_qr(bob_payload, Some("Amigo Bob".to_string())).unwrap();
+        let alice_contact = core_b.pair_from_qr(alice_payload, Some("Alice".to_string())).unwrap();
+
+        let bob_dev_id = bob_contact.device_id.clone();
+        let alice_dev_id = alice_contact.device_id.clone();
+
+        // Alice verifica Bob presencialmente
+        core_a.verify_contact(bob_dev_id.clone(), true).unwrap();
+        assert!(core_a.is_contact_verified(bob_dev_id.clone()).unwrap());
+
+        // Estabelece sessão e troca mensagens na Suíte 1
+        let status_a = core_a.ensure_session(bob_dev_id.clone()).unwrap();
+        let status_b = core_b.ensure_session(alice_dev_id.clone()).unwrap();
+        let (initiator_core, initiator_peer, responder_core, responder_peer, init_bytes) =
+            match (status_a.outgoing_handshake, status_b.outgoing_handshake) {
+                (Some(init), None) => (&core_a, bob_dev_id.clone(), &core_b, alice_dev_id.clone(), init),
+                (None, Some(init)) => (&core_b, alice_dev_id.clone(), &core_a, bob_dev_id.clone(), init),
+                other => panic!("exatamente um dos dois deveria ser iniciador: {other:?}"),
+            };
+        let resp_bytes = responder_core.feed_handshake(responder_peer.clone(), init_bytes).unwrap().unwrap();
+        initiator_core.feed_handshake(initiator_peer.clone(), resp_bytes).unwrap();
+
+        // Envia mensagem antes da aposentadoria (o iniciador do ratchet possui sending_chain pronta imediatamente)
+        let sealed_before = initiator_core.seal_outgoing_text(initiator_peer.clone(), "msg pre-reparo".to_string()).unwrap().bytes.unwrap();
+        responder_core.decrypt_incoming(responder_peer.clone(), sealed_before).unwrap();
+
+        let msgs_before = core_a.list_messages(bob_dev_id.clone()).unwrap();
+        assert_eq!(msgs_before.len(), 1);
+
+        // Agora a Suíte 1 é declarada aposentada no ecossistema
+        set_suite_retired(1, true);
+        set_test_suite_v2_enabled(true);
+
+        // Bob gera novas chaves e suíte 2 mantendo o mesmo device_id
+        let bob_dev_bytes: [u8; 16] = bob_dev_id.clone().try_into().unwrap();
+        let bob_v2_id = LocalIdentity::from_parts(bob_dev_bytes, [0x33; 32], [0x44; 32]);
+        let bob_v2_payload = encode_qr_with_suite(&bob_v2_id, Suite::TestV2);
+
+        // Alice re-pareia Bob presencialmente com repair_from_qr
+        let repaired = core_a.repair_from_qr(bob_v2_payload.to_vec()).unwrap();
+        assert_eq!(repaired.device_id, bob_dev_id);
+        assert_eq!(repaired.nickname.as_deref(), Some("Amigo Bob"), "apelido deve ser preservado");
+        assert!(!repaired.is_verified, "is_verified deve ser resetado");
+        assert!(!core_a.is_contact_verified(bob_dev_id.clone()).unwrap());
+        assert!(core_a.is_key_changed(bob_dev_id.clone()).unwrap(), "mudança de chave deve ser detectada");
+
+        // Histórico de mensagens anteriores de Alice permanece intacto
+        let msgs_preserved = core_a.list_messages(bob_dev_id.clone()).unwrap();
+        assert_eq!(msgs_preserved.len(), 1);
+        assert_eq!(msgs_preserved[0].body, "msg pre-reparo");
+
+        // Alice abre sessão com Bob: como repair_from_qr removeu a sessão velha da RAM,
+        // uma sessão nova é criada usando a Suíte 2 recém-gravada!
+        // Criamos um novo Core B2 para Bob com a nova identidade v2
+        let dir_b2 = tempfile::tempdir().unwrap();
+        let core_b2 = open_core(&dir_b2);
+        // Atualiza a identidade em B2 para bob_v2_id
+        *core_b2.identity.write().unwrap() = bob_v2_id;
+        // B2 pareia com Alice na suíte 2
+        let alice_v2_payload = encode_qr_with_suite(&core_a.identity.read().unwrap(), Suite::TestV2);
+        core_b2.pair_from_qr(alice_v2_payload.to_vec(), Some("Alice".to_string())).unwrap();
+
+        let status_v2_a = core_a.ensure_session(bob_dev_id.clone()).unwrap();
+        let status_v2_b = core_b2.ensure_session(alice_dev_id.clone()).unwrap();
+        let (init_v2_core, init_v2_peer, resp_v2_core, resp_v2_peer, init_v2_bytes) =
+            match (status_v2_a.outgoing_handshake, status_v2_b.outgoing_handshake) {
+                (Some(init), None) => (&core_a, bob_dev_id.clone(), &core_b2, alice_dev_id.clone(), init),
+                (None, Some(init)) => (&core_b2, alice_dev_id.clone(), &core_a, bob_dev_id.clone(), init),
+                other => panic!("exatamente um dos dois deveria ser iniciador: {other:?}"),
+            };
+        assert_eq!(init_v2_bytes[0], 2, "INIT deve ser emitida na Suíte 2");
+
+        let resp_v2_bytes = resp_v2_core.feed_handshake(resp_v2_peer.clone(), init_v2_bytes).unwrap().unwrap();
+        assert_eq!(resp_v2_bytes[0], 2, "RESP deve ser emitida na Suíte 2");
+        init_v2_core.feed_handshake(init_v2_peer.clone(), resp_v2_bytes).unwrap();
+
+        // Troca mensagem com sucesso na Suíte 2 (iniciador envia primeiro pacote com envio estabelecido)
+        let sealed_v2 = init_v2_core.seal_outgoing_text(init_v2_peer.clone(), "ola na suite 2".to_string()).unwrap().bytes.unwrap();
+        let incoming_v2 = resp_v2_core.decrypt_incoming(resp_v2_peer.clone(), sealed_v2).unwrap().unwrap();
+        assert_eq!(incoming_v2.body, "ola na suite 2");
+
+        // Limpeza
+        set_suite_retired(1, false);
+        set_test_suite_v2_enabled(false);
     }
 }

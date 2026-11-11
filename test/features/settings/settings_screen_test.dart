@@ -3,14 +3,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/settings/settings_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
+import 'package:viska/src/rust/ffi/types.dart';
 
 class _FakeCore implements Core {
   var lockCalls = 0;
   var emergencyEraseCalls = 0;
 
   @override
-  Future<void> lock() async {
+  Future<List<SealedNoticeDto>> lock() async {
     lockCalls++;
+    return const [];
   }
 
   @override
@@ -119,6 +121,8 @@ void main() {
 
     // Abre diálogo de emergência
     await tester.scrollUntilVisible(find.text('Apagamento de emergência'), 100);
+    await tester.ensureVisible(find.text('Apagamento de emergência'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Apagamento de emergência'));
     await tester.pumpAndSettle();
 

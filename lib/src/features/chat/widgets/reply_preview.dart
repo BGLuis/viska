@@ -5,26 +5,33 @@ import 'package:viska/src/theme/dark_tech_theme.dart';
 class QuotedReply {
   const QuotedReply({
     required this.id,
+    this.globalId,
     required this.sender,
     required this.snippet,
     this.isVoice = false,
   });
 
   final int id;
+  final String? globalId;
   final String sender;
   final String snippet;
   final bool isVoice;
 
   Map<String, dynamic> toJson() => {
         'id': id,
+        if (globalId != null) 'globalId': globalId,
         'sender': sender,
         'snippet': snippet,
         'isVoice': isVoice,
       };
 
   factory QuotedReply.fromJson(Map<String, dynamic> json) {
+    final rawId = json['id'];
+    final id = rawId is int ? rawId : int.tryParse(rawId?.toString() ?? '') ?? 0;
+    final globalId = json['globalId'] as String? ?? (rawId is String ? rawId : null);
     return QuotedReply(
-      id: json['id'] as int? ?? 0,
+      id: id,
+      globalId: globalId,
       sender: json['sender'] as String? ?? '',
       snippet: json['snippet'] as String? ?? '',
       isVoice: json['isVoice'] as bool? ?? false,

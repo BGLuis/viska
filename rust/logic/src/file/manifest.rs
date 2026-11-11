@@ -33,6 +33,11 @@ pub const MERKLE_ROOT_LEN: usize = 32;
 /// comentário, por pedido explícito do relatório da Fase 4.
 pub const MAX_BLOCK_SYMBOLS: u16 = 1024;
 
+/// `symbol_size` na LAN (D6, D23). O RaptorQ (RFC 6330) codifica o tamanho do
+/// símbolo em 16 bits, então o bucket de 65536 do socket local não cabe: 65535
+/// é o maior símbolo possível.
+pub const LAN_SYMBOL_SIZE: u16 = u16::MAX;
+
 const _: () = assert!(MAX_BLOCK_SYMBOLS as u32 <= 56_403);
 
 /// Teto de sanidade para `source_blocks`, independente da consistência
@@ -40,12 +45,13 @@ const _: () = assert!(MAX_BLOCK_SYMBOLS as u32 <= 56_403);
 /// manifesto malicioso com `file_size` astronômico (mas ainda consistente)
 /// faria `ReceiveTransfer::start` alocar um `Vec<bool>` de gigabytes (um
 /// `bool` por bloco) só para registrar o progresso, antes de qualquer
-/// símbolo chegar. Não há aceitar/recusar oferta ainda (Fase 4): qualquer
-/// contato pareado pode mandar um `FILE_METADATA`, então este teto é a
-/// única defesa contra esse vetor. 65.536 blocos, no maior tamanho de
-/// bloco possível (1024 símbolos × 65536 B, D6), já cobre 4 TB — bem acima
-/// de qualquer transferência real neste app; o `Vec<bool>` correspondente
-/// nunca passa de 64 KB.
+/// símbolo chegar. Embora a camada FFI (`ffi/transfer.rs`) retenha ofertas
+/// acima do limite configurável para aprovação manual do usuário (U-08),
+/// este teto de decodificação CBOR continua sendo a defesa estrutural contra
+/// alocações desproporcionais de vetores no início do recebimento. 65.536
+/// blocos, no maior tamanho de bloco possível (1024 símbolos × 65536 B, D6),
+/// já cobre 4 TB — bem acima de qualquer transferência real neste app; o
+/// `Vec<bool>` correspondente nunca passa de 64 KB.
 pub const MAX_SOURCE_BLOCKS: u32 = 65_536;
 
 /// Único valor de `mime` que já trafegou ou trafegará no fio — o tipo real
@@ -70,7 +76,7 @@ pub struct Manifest {
     pub file_id: [u8; FILE_ID_LEN],
     /// Tamanho do arquivo em claro, em bytes.
     pub file_size: u64,
-    /// 16384 no DataChannel WebRTC, 65536 na LAN — um dos dois buckets de
+    /// 16384 no DataChannel WebRTC, 65535 na LAN ([`LAN_SYMBOL_SIZE`]) — o maior bucket de
     /// `wire::transport::Transport`.
     pub symbol_size: u16,
     /// Quantidade de source blocks RaptorQ em que o arquivo é particionado.
@@ -187,9 +193,8 @@ impl Manifest {
         }
 
         let symbol_size_u64 = self.symbol_size as u64;
-        let valid_symbol_size = [Transport::DataChannel, Transport::LocalSocket]
-            .into_iter()
-            .any(|t| t.max_bucket() as u64 == symbol_size_u64);
+        let valid_symbol_size = symbol_size_u64 == Transport::DataChannel.max_bucket() as u64
+            || symbol_size_u64 == LAN_SYMBOL_SIZE as u64;
         if !valid_symbol_size {
             return Err(Error::Malformed(
                 "symbol_size não corresponde a nenhum bucket de transporte conhecido",

@@ -13,6 +13,7 @@ import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
+import 'lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -68,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1982818848;
+  int get rustContentHash => 1995392573;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -80,11 +81,30 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<void> crateFfiCoreCoreAcceptFileOffer({
+    required Core that,
+    required List<int> fileId,
+  });
+
   Future<void> crateFfiCoreCoreAddReaction({
     required Core that,
     required U8Array16 contactDeviceId,
     required PlatformInt64 targetMsgId,
     required String emoji,
+  });
+
+  Future<bool> crateFfiCoreCoreAddReactionByGlobalId({
+    required Core that,
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  });
+
+  Future<BigInt> crateFfiCoreCoreAutoAcceptFileSizeLimit({required Core that});
+
+  Future<Uint8List?> crateFfiCoreCoreBuildControlSuites({
+    required Core that,
+    required List<int> peerDeviceId,
   });
 
   Future<void> crateFfiCoreCoreCancelTransfer({
@@ -95,12 +115,6 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateFfiCoreCoreComputeSasCode({
     required Core that,
     required List<int> peerPayload,
-  });
-
-  Future<void> crateFfiCoreCoreConfigureDuressPin({
-    required Core that,
-    required String duressPin,
-    required int actionMode,
   });
 
   Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
@@ -135,6 +149,12 @@ abstract class RustLibApi extends BaseApi {
     required Core that,
     required List<int> peerDeviceId,
     required List<int> bytes,
+  });
+
+  Future<Uint8List> crateFfiCoreCoreFileFeedback({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
   });
 
   Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
@@ -183,6 +203,10 @@ abstract class RustLibApi extends BaseApi {
 
   Future<bool> crateFfiCoreCoreIsLocked({required Core that});
 
+  Future<List<Uint8List>> crateFfiCoreCoreListActiveFileTransferIds({
+    required Core that,
+  });
+
   Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that});
 
   Future<List<MessageDto>> crateFfiCoreCoreListMessages({
@@ -190,7 +214,24 @@ abstract class RustLibApi extends BaseApi {
     required List<int> peerDeviceId,
   });
 
-  Future<void> crateFfiCoreCoreLock({required Core that});
+  Future<List<MessageDto>> crateFfiCoreCoreListMessagesPaginated({
+    required Core that,
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  });
+
+  Future<List<SealedNoticeDto>> crateFfiCoreCoreLock({required Core that});
+
+  Future<void> crateFfiCoreCoreMarkMessageDelivered({
+    required Core that,
+    required PlatformInt64 messageId,
+  });
+
+  Future<void> crateFfiCoreCoreMarkMessageFailed({
+    required Core that,
+    required PlatformInt64 messageId,
+  });
 
   Future<void> crateFfiCoreCoreMarkMessageRead({
     required Core that,
@@ -242,6 +283,31 @@ abstract class RustLibApi extends BaseApi {
     required List<int> peerDeviceId,
   });
 
+  Future<Uint8List?> crateFfiCoreCoreRejectFileOffer({
+    required Core that,
+    required List<int> fileId,
+  });
+
+  Future<ContactDto> crateFfiCoreCoreRepairFromQr({
+    required Core that,
+    required List<int> payload,
+  });
+
+  Future<void> crateFfiCoreCoreRequeueMessage({
+    required Core that,
+    required PlatformInt64 messageId,
+  });
+
+  Future<void> crateFfiCoreCoreResendUnknownMessage({
+    required Core that,
+    required PlatformInt64 messageId,
+  });
+
+  Future<SessionStatusDto> crateFfiCoreCoreResetSession({
+    required Core that,
+    required List<int> peerDeviceId,
+  });
+
   Future<void> crateFfiCoreCoreRestoreEncryptedBackup({
     required Core that,
     required String srcPath,
@@ -259,6 +325,12 @@ abstract class RustLibApi extends BaseApi {
     required String destinationPath,
   });
 
+  Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingReceipt({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String targetId,
+  });
+
   Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
     required Core that,
     required List<int> peerDeviceId,
@@ -274,6 +346,11 @@ abstract class RustLibApi extends BaseApi {
   Future<SessionStatusDto?> crateFfiCoreCoreSessionStatus({
     required Core that,
     required List<int> peerDeviceId,
+  });
+
+  Future<void> crateFfiCoreCoreSetAutoAcceptFileSizeLimit({
+    required Core that,
+    required BigInt limitBytes,
   });
 
   Future<void> crateFfiCoreCoreSetConfig({
@@ -318,11 +395,20 @@ abstract class RustLibApi extends BaseApi {
     required bool useLan,
   });
 
+  Stream<SessionStateEventDto> crateFfiCoreCoreSubscribeSessionEvents({
+    required Core that,
+  });
+
   Future<int> crateFfiCoreCoreSweepExpiredMessages({required Core that});
 
   Future<TransferProgressDto?> crateFfiCoreCoreTransferProgress({
     required Core that,
     required List<int> fileId,
+  });
+
+  Future<List<FileOfferDto>> crateFfiCoreCoreUnconfirmedFileOffers({
+    required Core that,
+    required List<int> peerDeviceId,
   });
 
   Future<void> crateFfiCoreCoreUnlock({required Core that});
@@ -358,6 +444,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
+  Future<void> crateFfiCoreCoreAcceptFileOffer({
+    required Core that,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreAcceptFileOfferConstMeta,
+        argValues: [that, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreAcceptFileOfferConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_accept_file_offer",
+        argNames: ["that", "fileId"],
+      );
+
+  @override
   Future<void> crateFfiCoreCoreAddReaction({
     required Core that,
     required U8Array16 contactDeviceId,
@@ -378,7 +502,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 2,
             port: port_,
           );
         },
@@ -400,6 +524,120 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<bool> crateFfiCoreCoreAddReactionByGlobalId({
+    required Core that,
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_u_8_array_16(contactDeviceId, serializer);
+          sse_encode_String(targetGlobalId, serializer);
+          sse_encode_String(emoji, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreAddReactionByGlobalIdConstMeta,
+        argValues: [that, contactDeviceId, targetGlobalId, emoji],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreAddReactionByGlobalIdConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_add_reaction_by_global_id",
+        argNames: ["that", "contactDeviceId", "targetGlobalId", "emoji"],
+      );
+
+  @override
+  Future<BigInt> crateFfiCoreCoreAutoAcceptFileSizeLimit({required Core that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_64,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreAutoAcceptFileSizeLimitConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreAutoAcceptFileSizeLimitConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_auto_accept_file_size_limit",
+        argNames: ["that"],
+      );
+
+  @override
+  Future<Uint8List?> crateFfiCoreCoreBuildControlSuites({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreBuildControlSuitesConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreBuildControlSuitesConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_build_control_suites",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
   Future<void> crateFfiCoreCoreCancelTransfer({
     required Core that,
     required List<int> fileId,
@@ -416,7 +654,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 6,
             port: port_,
           );
         },
@@ -454,7 +692,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 7,
             port: port_,
           );
         },
@@ -476,46 +714,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateFfiCoreCoreConfigureDuressPin({
-    required Core that,
-    required String duressPin,
-    required int actionMode,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
-            that,
-            serializer,
-          );
-          sse_encode_String(duressPin, serializer);
-          sse_encode_u_8(actionMode, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
-          decodeErrorData: sse_decode_ffi_error,
-        ),
-        constMeta: kCrateFfiCoreCoreConfigureDuressPinConstMeta,
-        argValues: [that, duressPin, actionMode],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateFfiCoreCoreConfigureDuressPinConstMeta =>
-      const TaskConstMeta(
-        debugName: "Core_configure_duress_pin",
-        argNames: ["that", "duressPin", "actionMode"],
-      );
-
-  @override
   Future<Uint8List> crateFfiCoreCoreDecodeAudioToWav({
     required Core that,
     required List<int> internalBytes,
@@ -532,7 +730,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 8,
             port: port_,
           );
         },
@@ -572,7 +770,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 9,
             port: port_,
           );
         },
@@ -610,7 +808,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 10,
             port: port_,
           );
         },
@@ -644,7 +842,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 11,
             port: port_,
           );
         },
@@ -682,7 +880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 12,
             port: port_,
           );
         },
@@ -720,7 +918,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 13,
             port: port_,
           );
         },
@@ -760,7 +958,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 14,
             port: port_,
           );
         },
@@ -779,6 +977,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "Core_feed_handshake",
         argNames: ["that", "peerDeviceId", "bytes"],
+      );
+
+  @override
+  Future<Uint8List> crateFfiCoreCoreFileFeedback({
+    required Core that,
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreFileFeedbackConstMeta,
+        argValues: [that, peerDeviceId, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreFileFeedbackConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_file_feedback",
+        argNames: ["that", "peerDeviceId", "fileId"],
       );
 
   @override
@@ -802,7 +1040,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 16,
             port: port_,
           );
         },
@@ -844,7 +1082,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 17,
             port: port_,
           );
         },
@@ -882,7 +1120,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 18,
             port: port_,
           );
         },
@@ -920,7 +1158,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 19,
             port: port_,
           );
         },
@@ -957,7 +1195,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 20,
             port: port_,
           );
         },
@@ -995,7 +1233,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 21,
             port: port_,
           );
         },
@@ -1033,7 +1271,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 22,
             port: port_,
           );
         },
@@ -1071,7 +1309,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 23,
             port: port_,
           );
         },
@@ -1105,7 +1343,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1124,6 +1362,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "Core_is_locked", argNames: ["that"]);
 
   @override
+  Future<List<Uint8List>> crateFfiCoreCoreListActiveFileTransferIds({
+    required Core that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 25,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreListActiveFileTransferIdsConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreListActiveFileTransferIdsConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_list_active_file_transfer_ids",
+        argNames: ["that"],
+      );
+
+  @override
   Future<List<ContactDto>> crateFfiCoreCoreListContacts({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -1136,7 +1410,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1171,7 +1445,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1193,7 +1467,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<void> crateFfiCoreCoreLock({required Core that}) {
+  Future<List<MessageDto>> crateFfiCoreCoreListMessagesPaginated({
+    required Core that,
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_opt_box_autoadd_i_64(sinceId, serializer);
+          sse_encode_opt_box_autoadd_usize(limit, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_message_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreListMessagesPaginatedConstMeta,
+        argValues: [that, peerDeviceId, sinceId, limit],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreListMessagesPaginatedConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_list_messages_paginated",
+        argNames: ["that", "peerDeviceId", "sinceId", "limit"],
+      );
+
+  @override
+  Future<List<SealedNoticeDto>> crateFfiCoreCoreLock({required Core that}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -1205,12 +1521,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 29,
             port: port_,
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_list_sealed_notice_dto,
           decodeErrorData: sse_decode_ffi_error,
         ),
         constMeta: kCrateFfiCoreCoreLockConstMeta,
@@ -1222,6 +1538,82 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateFfiCoreCoreLockConstMeta =>
       const TaskConstMeta(debugName: "Core_lock", argNames: ["that"]);
+
+  @override
+  Future<void> crateFfiCoreCoreMarkMessageDelivered({
+    required Core that,
+    required PlatformInt64 messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 30,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreMarkMessageDeliveredConstMeta,
+        argValues: [that, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreMarkMessageDeliveredConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_mark_message_delivered",
+        argNames: ["that", "messageId"],
+      );
+
+  @override
+  Future<void> crateFfiCoreCoreMarkMessageFailed({
+    required Core that,
+    required PlatformInt64 messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 31,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreMarkMessageFailedConstMeta,
+        argValues: [that, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreMarkMessageFailedConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_mark_message_failed",
+        argNames: ["that", "messageId"],
+      );
 
   @override
   Future<void> crateFfiCoreCoreMarkMessageRead({
@@ -1240,7 +1632,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1278,7 +1670,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1316,7 +1708,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1350,7 +1742,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1381,7 +1773,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1412,7 +1804,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 37,
             port: port_,
           );
         },
@@ -1447,7 +1839,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1478,7 +1870,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1516,7 +1908,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 40,
             port: port_,
           );
         },
@@ -1556,7 +1948,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 41,
             port: port_,
           );
         },
@@ -1593,7 +1985,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1631,7 +2023,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1649,6 +2041,196 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateFfiCoreCorePendingFileOffersConstMeta =>
       const TaskConstMeta(
         debugName: "Core_pending_file_offers",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
+  Future<Uint8List?> crateFfiCoreCoreRejectFileOffer({
+    required Core that,
+    required List<int> fileId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(fileId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 44,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreRejectFileOfferConstMeta,
+        argValues: [that, fileId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreRejectFileOfferConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_reject_file_offer",
+        argNames: ["that", "fileId"],
+      );
+
+  @override
+  Future<ContactDto> crateFfiCoreCoreRepairFromQr({
+    required Core that,
+    required List<int> payload,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(payload, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 45,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_contact_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreRepairFromQrConstMeta,
+        argValues: [that, payload],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreRepairFromQrConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_repair_from_qr",
+        argNames: ["that", "payload"],
+      );
+
+  @override
+  Future<void> crateFfiCoreCoreRequeueMessage({
+    required Core that,
+    required PlatformInt64 messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 46,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreRequeueMessageConstMeta,
+        argValues: [that, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreRequeueMessageConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_requeue_message",
+        argNames: ["that", "messageId"],
+      );
+
+  @override
+  Future<void> crateFfiCoreCoreResendUnknownMessage({
+    required Core that,
+    required PlatformInt64 messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 47,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreResendUnknownMessageConstMeta,
+        argValues: [that, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreResendUnknownMessageConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_resend_unknown_message",
+        argNames: ["that", "messageId"],
+      );
+
+  @override
+  Future<SessionStatusDto> crateFfiCoreCoreResetSession({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 48,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_session_status_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreResetSessionConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreResetSessionConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_reset_session",
         argNames: ["that", "peerDeviceId"],
       );
 
@@ -1671,7 +2253,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 49,
             port: port_,
           );
         },
@@ -1709,7 +2291,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 50,
             port: port_,
           );
         },
@@ -1749,7 +2331,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 51,
             port: port_,
           );
         },
@@ -1771,6 +2353,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingReceipt({
+    required Core that,
+    required List<int> peerDeviceId,
+    required String targetId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          sse_encode_String(targetId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 52,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_sealed_message_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreSealOutgoingReceiptConstMeta,
+        argValues: [that, peerDeviceId, targetId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreSealOutgoingReceiptConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_seal_outgoing_receipt",
+        argNames: ["that", "peerDeviceId", "targetId"],
+      );
+
+  @override
   Future<SealedMessageDto> crateFfiCoreCoreSealOutgoingText({
     required Core that,
     required List<int> peerDeviceId,
@@ -1789,7 +2411,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 53,
             port: port_,
           );
         },
@@ -1829,7 +2451,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 54,
             port: port_,
           );
         },
@@ -1867,7 +2489,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 55,
             port: port_,
           );
         },
@@ -1889,6 +2511,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateFfiCoreCoreSetAutoAcceptFileSizeLimit({
+    required Core that,
+    required BigInt limitBytes,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_u_64(limitBytes, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 56,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreSetAutoAcceptFileSizeLimitConstMeta,
+        argValues: [that, limitBytes],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreSetAutoAcceptFileSizeLimitConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_set_auto_accept_file_size_limit",
+        argNames: ["that", "limitBytes"],
+      );
+
+  @override
   Future<void> crateFfiCoreCoreSetConfig({
     required Core that,
     required String key,
@@ -1907,7 +2567,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 57,
             port: port_,
           );
         },
@@ -1946,7 +2606,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 58,
             port: port_,
           );
         },
@@ -1986,7 +2646,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 59,
             port: port_,
           );
         },
@@ -2024,7 +2684,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 60,
             port: port_,
           );
         },
@@ -2062,7 +2722,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 61,
             port: port_,
           );
         },
@@ -2104,7 +2764,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 62,
             port: port_,
           );
         },
@@ -2146,7 +2806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 63,
             port: port_,
           );
         },
@@ -2168,6 +2828,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Stream<SessionStateEventDto> crateFfiCoreCoreSubscribeSessionEvents({
+    required Core that,
+  }) {
+    final sink = RustStreamSink<SessionStateEventDto>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+              that,
+              serializer,
+            );
+            sse_encode_StreamSink_session_state_event_dto_Sse(sink, serializer);
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 64,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_ffi_error,
+          ),
+          constMeta: kCrateFfiCoreCoreSubscribeSessionEventsConstMeta,
+          argValues: [that, sink],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreSubscribeSessionEventsConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_subscribe_session_events",
+        argNames: ["that", "sink"],
+      );
+
+  @override
   Future<int> crateFfiCoreCoreSweepExpiredMessages({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -2180,7 +2881,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 49,
+            funcId: 65,
             port: port_,
           );
         },
@@ -2218,7 +2919,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 66,
             port: port_,
           );
         },
@@ -2240,6 +2941,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<List<FileOfferDto>> crateFfiCoreCoreUnconfirmedFileOffers({
+    required Core that,
+    required List<int> peerDeviceId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+            that,
+            serializer,
+          );
+          sse_encode_list_prim_u_8_loose(peerDeviceId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 67,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_file_offer_dto,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiCoreCoreUnconfirmedFileOffersConstMeta,
+        argValues: [that, peerDeviceId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreUnconfirmedFileOffersConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_unconfirmed_file_offers",
+        argNames: ["that", "peerDeviceId"],
+      );
+
+  @override
   Future<void> crateFfiCoreCoreUnlock({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -2252,7 +2991,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 51,
+            funcId: 68,
             port: port_,
           );
         },
@@ -2289,7 +3028,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 52,
+            funcId: 69,
             port: port_,
           );
         },
@@ -2323,7 +3062,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 53,
+            funcId: 70,
             port: port_,
           );
         },
@@ -2358,7 +3097,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 54,
+            funcId: 71,
             port: port_,
           );
         },
@@ -2388,7 +3127,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 55,
+            funcId: 72,
             port: port_,
           );
         },
@@ -2415,6 +3154,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore;
 
   @protected
+  AnyhowException dco_decode_AnyhowException(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return AnyhowException(raw as String);
+  }
+
+  @protected
   Core
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     dynamic raw,
@@ -2439,6 +3184,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return CoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
+  }
+
+  @protected
+  RustStreamSink<SessionStateEventDto>
+  dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
   }
 
   @protected
@@ -2478,6 +3230,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_session_state_kind(raw);
+  }
+
+  @protected
   SessionStatusDto dco_decode_box_autoadd_session_status_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_session_status_dto(raw);
@@ -2489,6 +3247,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_transfer_progress_dto(raw);
+  }
+
+  @protected
+  BigInt dco_decode_box_autoadd_usize(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_usize(raw);
   }
 
   @protected
@@ -2517,11 +3281,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DiscoveryBeaconsDto dco_decode_discovery_beacons_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return DiscoveryBeaconsDto(
       advertiseBeacon: dco_decode_list_prim_u_8_strict(arr[0]),
       scanBeacons: dco_decode_list_list_prim_u_8_strict(arr[1]),
+      dialPreamble: dco_decode_list_prim_u_8_strict(arr[2]),
+      listenPreambles: dco_decode_list_list_prim_u_8_strict(arr[3]),
     );
   }
 
@@ -2631,6 +3397,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_sealed_notice_dto).toList();
+  }
+
+  @protected
   MessageDirectionDto dco_decode_message_direction_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return MessageDirectionDto.values[raw as int];
@@ -2640,20 +3412,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto dco_decode_message_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return MessageDto(
       id: dco_decode_i_64(arr[0]),
-      direction: dco_decode_message_direction_dto(arr[1]),
-      kind: dco_decode_message_kind_dto(arr[2]),
-      body: dco_decode_String(arr[3]),
-      audioFileId: dco_decode_opt_list_prim_u_8_strict(arr[4]),
-      deliveryState: dco_decode_delivery_state_dto(arr[5]),
-      createdAtUnixSecs: dco_decode_i_64(arr[6]),
-      isEphemeral: dco_decode_bool(arr[7]),
-      replyToId: dco_decode_opt_box_autoadd_i_64(arr[8]),
-      viewOnce: dco_decode_bool(arr[9]),
-      reactions: dco_decode_list_String(arr[10]),
+      globalId: dco_decode_opt_String(arr[1]),
+      direction: dco_decode_message_direction_dto(arr[2]),
+      kind: dco_decode_message_kind_dto(arr[3]),
+      body: dco_decode_String(arr[4]),
+      audioFileId: dco_decode_opt_list_prim_u_8_strict(arr[5]),
+      deliveryState: dco_decode_delivery_state_dto(arr[6]),
+      createdAtUnixSecs: dco_decode_i_64(arr[7]),
+      isEphemeral: dco_decode_bool(arr[8]),
+      replyToId: dco_decode_opt_box_autoadd_i_64(arr[9]),
+      viewOnce: dco_decode_bool(arr[10]),
+      reactions: dco_decode_list_String(arr[11]),
     );
   }
 
@@ -2698,6 +3471,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SessionStateKind? dco_decode_opt_box_autoadd_session_state_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_session_state_kind(raw);
+  }
+
+  @protected
   SessionStatusDto? dco_decode_opt_box_autoadd_session_status_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_session_status_dto(raw);
@@ -2711,6 +3490,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_autoadd_transfer_progress_dto(raw);
+  }
+
+  @protected
+  BigInt? dco_decode_opt_box_autoadd_usize(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_usize(raw);
   }
 
   @protected
@@ -2758,6 +3543,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SealedNoticeDto dco_decode_sealed_notice_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return SealedNoticeDto(
+      peerDeviceId: dco_decode_list_prim_u_8_strict(arr[0]),
+      bytes: dco_decode_list_prim_u_8_strict(arr[1]),
+    );
+  }
+
+  @protected
   SendAudioStartedDto dco_decode_send_audio_started_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2774,11 +3571,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SendFileStartedDto dco_decode_send_file_started_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
     return SendFileStartedDto(
       fileId: dco_decode_list_prim_u_8_strict(arr[0]),
       sealedMetadata: dco_decode_list_prim_u_8_strict(arr[1]),
+      messageId: dco_decode_i_64(arr[2]),
+    );
+  }
+
+  @protected
+  SessionStateEventDto dco_decode_session_state_event_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return SessionStateEventDto(
+      peerDeviceId: dco_decode_list_prim_u_8_strict(arr[0]),
+      state: dco_decode_opt_box_autoadd_session_state_kind(arr[1]),
+      needsRehandshake: dco_decode_bool(arr[2]),
     );
   }
 
@@ -2864,6 +3675,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_String(deserializer);
+    return AnyhowException(inner);
+  }
+
+  @protected
   Core
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     SseDeserializer deserializer,
@@ -2897,6 +3715,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
+  }
+
+  @protected
+  RustStreamSink<SessionStateEventDto>
+  sse_decode_StreamSink_session_state_event_dto_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
   }
 
   @protected
@@ -2941,6 +3768,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SessionStateKind sse_decode_box_autoadd_session_state_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_session_state_kind(deserializer));
+  }
+
+  @protected
   SessionStatusDto sse_decode_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   ) {
@@ -2954,6 +3789,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_transfer_progress_dto(deserializer));
+  }
+
+  @protected
+  BigInt sse_decode_box_autoadd_usize(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_usize(deserializer));
   }
 
   @protected
@@ -2989,9 +3830,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_advertiseBeacon = sse_decode_list_prim_u_8_strict(deserializer);
     var var_scanBeacons = sse_decode_list_list_prim_u_8_strict(deserializer);
+    var var_dialPreamble = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_listenPreambles = sse_decode_list_list_prim_u_8_strict(
+      deserializer,
+    );
     return DiscoveryBeaconsDto(
       advertiseBeacon: var_advertiseBeacon,
       scanBeacons: var_scanBeacons,
+      dialPreamble: var_dialPreamble,
+      listenPreambles: var_listenPreambles,
     );
   }
 
@@ -3145,6 +3992,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <SealedNoticeDto>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_sealed_notice_dto(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   MessageDirectionDto sse_decode_message_direction_dto(
     SseDeserializer deserializer,
   ) {
@@ -3157,6 +4018,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto sse_decode_message_dto(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_id = sse_decode_i_64(deserializer);
+    var var_globalId = sse_decode_opt_String(deserializer);
     var var_direction = sse_decode_message_direction_dto(deserializer);
     var var_kind = sse_decode_message_kind_dto(deserializer);
     var var_body = sse_decode_String(deserializer);
@@ -3169,6 +4031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_reactions = sse_decode_list_String(deserializer);
     return MessageDto(
       id: var_id,
+      globalId: var_globalId,
       direction: var_direction,
       kind: var_kind,
       body: var_body,
@@ -3251,6 +4114,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SessionStateKind? sse_decode_opt_box_autoadd_session_state_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_session_state_kind(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   SessionStatusDto? sse_decode_opt_box_autoadd_session_status_dto(
     SseDeserializer deserializer,
   ) {
@@ -3271,6 +4147,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_transfer_progress_dto(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BigInt? sse_decode_opt_box_autoadd_usize(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_usize(deserializer));
     } else {
       return null;
     }
@@ -3315,6 +4202,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SealedNoticeDto sse_decode_sealed_notice_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_peerDeviceId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+    return SealedNoticeDto(peerDeviceId: var_peerDeviceId, bytes: var_bytes);
+  }
+
+  @protected
   SendAudioStartedDto sse_decode_send_audio_started_dto(
     SseDeserializer deserializer,
   ) {
@@ -3336,9 +4231,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
     var var_sealedMetadata = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_messageId = sse_decode_i_64(deserializer);
     return SendFileStartedDto(
       fileId: var_fileId,
       sealedMetadata: var_sealedMetadata,
+      messageId: var_messageId,
+    );
+  }
+
+  @protected
+  SessionStateEventDto sse_decode_session_state_event_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_peerDeviceId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_state = sse_decode_opt_box_autoadd_session_state_kind(deserializer);
+    var var_needsRehandshake = sse_decode_bool(deserializer);
+    return SessionStateEventDto(
+      peerDeviceId: var_peerDeviceId,
+      state: var_state,
+      needsRehandshake: var_needsRehandshake,
     );
   }
 
@@ -3431,6 +4343,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_AnyhowException(
+    AnyhowException self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.message, serializer);
+  }
+
+  @protected
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
     Core self,
@@ -3465,6 +4386,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as CoreImpl).frbInternalSseEncode(move: null),
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_StreamSink_session_state_event_dto_Sse(
+    RustStreamSink<SessionStateEventDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_session_state_event_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
       serializer,
     );
   }
@@ -3518,6 +4456,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_session_state_kind(
+    SessionStateKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_session_state_kind(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_session_status_dto(
     SessionStatusDto self,
     SseSerializer serializer,
@@ -3533,6 +4480,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_transfer_progress_dto(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_usize(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_usize(self, serializer);
   }
 
   @protected
@@ -3563,6 +4516,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.advertiseBeacon, serializer);
     sse_encode_list_list_prim_u_8_strict(self.scanBeacons, serializer);
+    sse_encode_list_prim_u_8_strict(self.dialPreamble, serializer);
+    sse_encode_list_list_prim_u_8_strict(self.listenPreambles, serializer);
   }
 
   @protected
@@ -3705,6 +4660,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_sealed_notice_dto(
+    List<SealedNoticeDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_sealed_notice_dto(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_message_direction_dto(
     MessageDirectionDto self,
     SseSerializer serializer,
@@ -3717,6 +4684,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_message_dto(MessageDto self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self.id, serializer);
+    sse_encode_opt_String(self.globalId, serializer);
     sse_encode_message_direction_dto(self.direction, serializer);
     sse_encode_message_kind_dto(self.kind, serializer);
     sse_encode_String(self.body, serializer);
@@ -3801,6 +4769,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_session_state_kind(
+    SessionStateKind? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_session_state_kind(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_session_status_dto(
     SessionStatusDto? self,
     SseSerializer serializer,
@@ -3823,6 +4804,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_transfer_progress_dto(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_usize(
+    BigInt? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_usize(self, serializer);
     }
   }
 
@@ -3870,6 +4864,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_sealed_notice_dto(
+    SealedNoticeDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.peerDeviceId, serializer);
+    sse_encode_list_prim_u_8_strict(self.bytes, serializer);
+  }
+
+  @protected
   void sse_encode_send_audio_started_dto(
     SendAudioStartedDto self,
     SseSerializer serializer,
@@ -3888,6 +4892,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(self.fileId, serializer);
     sse_encode_list_prim_u_8_strict(self.sealedMetadata, serializer);
+    sse_encode_i_64(self.messageId, serializer);
+  }
+
+  @protected
+  void sse_encode_session_state_event_dto(
+    SessionStateEventDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.peerDeviceId, serializer);
+    sse_encode_opt_box_autoadd_session_state_kind(self.state, serializer);
+    sse_encode_bool(self.needsRehandshake, serializer);
   }
 
   @protected
@@ -3987,6 +5003,14 @@ class CoreImpl extends RustOpaque implements Core {
         RustLib.instance.api.rust_arc_decrement_strong_count_CorePtr,
   );
 
+  /// Aceita manualmente uma oferta de arquivo retida por exceder o limite
+  /// de auto-aceite. Cria o registro em `file_transfers`, inicializa o
+  /// `ReceiveTransfer` em `.staging` e passa a aceitar os pacotes do arquivo.
+  Future<void> acceptFileOffer({required List<int> fileId}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreAcceptFileOffer(that: this, fileId: fileId);
+
   /// Adiciona uma reação emoji a uma mensagem persistida (Fase 9).
   Future<void> addReaction({
     required U8Array16 contactDeviceId,
@@ -3998,6 +5022,30 @@ class CoreImpl extends RustOpaque implements Core {
     targetMsgId: targetMsgId,
     emoji: emoji,
   );
+
+  /// Adiciona uma reação emoji a uma mensagem persistida buscando pelo identificador global (Fase 9).
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  }) => RustLib.instance.api.crateFfiCoreCoreAddReactionByGlobalId(
+    that: this,
+    contactDeviceId: contactDeviceId,
+    targetGlobalId: targetGlobalId,
+    emoji: emoji,
+  );
+
+  /// Consulta o teto de tamanho de arquivo em bytes para aceitação automática.
+  /// Retorna `DEFAULT_AUTO_ACCEPT_FILE_SIZE_LIMIT` se não configurado.
+  Future<BigInt> autoAcceptFileSizeLimit() =>
+      RustLib.instance.api.crateFfiCoreCoreAutoAcceptFileSizeLimit(that: this);
+
+  /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId}) =>
+      RustLib.instance.api.crateFfiCoreCoreBuildControlSuites(
+        that: this,
+        peerDeviceId: peerDeviceId,
+      );
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`. Do lado receptor, também apaga o
@@ -4016,16 +5064,6 @@ class CoreImpl extends RustOpaque implements Core {
       .instance
       .api
       .crateFfiCoreCoreComputeSasCode(that: this, peerPayload: peerPayload);
-
-  /// Configura PIN de coação e modo de ação para o cofre falso (Fase 9).
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
-  }) => RustLib.instance.api.crateFfiCoreCoreConfigureDuressPin(
-    that: this,
-    duressPin: duressPin,
-    actionMode: actionMode,
-  );
 
   /// Decodifica o formato interno devolvido por
   /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
@@ -4068,9 +5106,10 @@ class CoreImpl extends RustOpaque implements Core {
     envelope: envelope,
   );
 
-  /// `BeaconID` para anunciar agora (época corrente) e os três aceitáveis
-  /// para procurar (épocas anterior/atual/seguinte) — `docs/protocol.md`
-  /// §9.1. Os dois lados calculam o mesmo valor, sem distinção de direção.
+  /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
+  /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
+  /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
+  /// `docs/protocol.md` §9.1 e §9.3. Direcional (a2b/b2a), evitando ligar os pares (S-10).
   Future<DiscoveryBeaconsDto> discoveryBeacons({
     required List<int> peerDeviceId,
   }) => RustLib.instance.api.crateFfiCoreCoreDiscoveryBeacons(
@@ -4079,7 +5118,7 @@ class CoreImpl extends RustOpaque implements Core {
   );
 
   /// Apagamento de emergência (D13 / F2): crypto-shredding da chave mestra,
-  /// remoção física dos arquivos do banco SQLite e limpeza do diretório staging.
+  /// remoção física dos arquivos do banco SQLite e limpeza dos diretórios staging e received.
   Future<void> emergencyErase() =>
       RustLib.instance.api.crateFfiCoreCoreEmergencyErase(that: this);
 
@@ -4121,6 +5160,18 @@ class CoreImpl extends RustOpaque implements Core {
     that: this,
     peerDeviceId: peerDeviceId,
     bytes: bytes,
+  );
+
+  /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
+  /// indicado, refletindo o progresso atual do `ReceiveTransfer` (U-02).
+  /// Devolve o payload selado pronto para envio pelo canal de controle.
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) => RustLib.instance.api.crateFfiCoreCoreFileFeedback(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    fileId: fileId,
   );
 
   /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
@@ -4211,6 +5262,10 @@ class CoreImpl extends RustOpaque implements Core {
   Future<bool> isLocked() =>
       RustLib.instance.api.crateFfiCoreCoreIsLocked(that: this);
 
+  /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
+  Future<List<Uint8List>> listActiveFileTransferIds() => RustLib.instance.api
+      .crateFfiCoreCoreListActiveFileTransferIds(that: this);
+
   /// Todos os contatos já pareados.
   Future<List<ContactDto>> listContacts() =>
       RustLib.instance.api.crateFfiCoreCoreListContacts(that: this);
@@ -4223,10 +5278,41 @@ class CoreImpl extends RustOpaque implements Core {
         peerDeviceId: peerDeviceId,
       );
 
+  /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) => RustLib.instance.api.crateFfiCoreCoreListMessagesPaginated(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    sinceId: sinceId,
+    limit: limit,
+  );
+
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-  /// memória, aborta transferências ativas, fecha a conexão do SQLCipher e
+  /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
   /// limpa a chave mestra nativa injetada.
-  Future<void> lock() => RustLib.instance.api.crateFfiCoreCoreLock(that: this);
+  ///
+  /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
+  /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
+  Future<List<SealedNoticeDto>> lock() =>
+      RustLib.instance.api.crateFfiCoreCoreLock(that: this);
+
+  /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+  Future<void> markMessageDelivered({required PlatformInt64 messageId}) =>
+      RustLib.instance.api.crateFfiCoreCoreMarkMessageDelivered(
+        that: this,
+        messageId: messageId,
+      );
+
+  /// Marca uma mensagem de saída como falha — chamar quando o envio de um
+  /// arquivo é interrompido por queda do transporte. Só afeta mensagens
+  /// ainda `pending`.
+  Future<void> markMessageFailed({required PlatformInt64 messageId}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreMarkMessageFailed(that: this, messageId: messageId);
 
   /// Marca uma mensagem como lida, disparando o temporizador de expiração.
   Future<void> markMessageRead({required PlatformInt64 messageId}) => RustLib
@@ -4253,9 +5339,8 @@ class CoreImpl extends RustOpaque implements Core {
         beacon: beacon,
       );
 
-  /// `device_id` desta identidade local — dado já público (trocado no QR,
-  /// vai para o preâmbulo de toda conexão TCP local que discarmos, Fase 6
-  /// F1). Só existe nesta fronteira porque nada em `ffi::core` precisava
+  /// `device_id` desta identidade local — dado já público (trocado no QR).
+  /// Só existe nesta fronteira porque nada em `ffi::core` precisava
   /// dele até a descoberta local.
   Future<Uint8List> myDeviceId() =>
       RustLib.instance.api.crateFfiCoreCoreMyDeviceId(that: this);
@@ -4283,10 +5368,9 @@ class CoreImpl extends RustOpaque implements Core {
 
   /// Decifra um payload de sinalização recebido do broker.
   ///
-  /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-  /// inválida — sem distinguir a causa, mesma política de
-  /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-  /// confiável.
+  /// Valida o AAD contra a direção do par e a janela de épocas aceitáveis
+  /// (anterior, atual e seguinte). Se o broker refletir nossa própria mensagem
+  /// ou retransmitir épocas antigas, a abertura falha e devolve `Ok(None)` (S-12).
   Future<Uint8List?> openSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> sealed,
@@ -4325,6 +5409,64 @@ class CoreImpl extends RustOpaque implements Core {
     peerDeviceId: peerDeviceId,
   );
 
+  /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
+  /// a oferta e zera o material de chave sem criar registro em banco ou
+  /// arquivo em staging.
+  ///
+  /// Devolve o `FILE_REJECT` já selado para o Dart enviar (§7.7), ou `None`
+  /// se não há sessão estabelecida agora. A recusa local vale de qualquer
+  /// jeito: o aviso é melhor esforço e nada é guardado em disco para
+  /// reenviá-lo, para não contrariar a retenção volátil da §7.6.
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreRejectFileOffer(that: this, fileId: fileId);
+
+  /// Re-pareamento presencial com um contato existente (§10, D24):
+  /// atualiza as chaves criptográficas e a suíte, mantendo histórico de mensagens e apelido.
+  Future<ContactDto> repairFromQr({required List<int> payload}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreRepairFromQr(that: this, payload: payload);
+
+  /// Devolve à fila uma mensagem que foi cifrada mas não chegou a sair
+  /// (`sendToContact` falhou), para a próxima drenagem tentá-la de novo.
+  /// Só afeta mensagens `sending`.
+  Future<void> requeueMessage({required PlatformInt64 messageId}) => RustLib
+      .instance
+      .api
+      .crateFfiCoreCoreRequeueMessage(that: this, messageId: messageId);
+
+  /// Devolve à fila um texto `Unknown` (não se sabe se chegou ao par), por
+  /// pedido explícito da pessoa. Mantém a linha e o `global_id`; o chamador
+  /// drena a fila em seguida. Só afeta mensagens `unknown`.
+  Future<void> resendUnknownMessage({required PlatformInt64 messageId}) =>
+      RustLib.instance.api.crateFfiCoreCoreResendUnknownMessage(
+        that: this,
+        messageId: messageId,
+      );
+
+  /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
+  /// uma nova com o mesmo contato — o que `ensure_session` nunca faz.
+  ///
+  /// Só age quando a sessão realmente não serve: com ela `Established` sã ou
+  /// em handshake, devolve o status atual sem tocar em nada, para um toque
+  /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
+  ///
+  /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
+  /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
+  /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+  ///
+  /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
+  /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
+  /// andamento com este contato são cancelados e marcados como falha, porque
+  /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) =>
+      RustLib.instance.api.crateFfiCoreCoreResetSession(
+        that: this,
+        peerDeviceId: peerDeviceId,
+      );
+
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
@@ -4357,13 +5499,26 @@ class CoreImpl extends RustOpaque implements Core {
     destinationPath: destinationPath,
   );
 
+  /// Cifra e empacota um recibo de entrega (MSG_RECEIPT) confirmando o recebimento de uma mensagem.
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
+  }) => RustLib.instance.api.crateFfiCoreCoreSealOutgoingReceipt(
+    that: this,
+    peerDeviceId: peerDeviceId,
+    targetId: targetId,
+  );
+
   /// Cifra `body` como `MSG_TEXT` e persiste como `pending` antes de
   /// qualquer tentativa de envio — eco otimista: a UI mostra a mensagem
   /// mesmo que o transporte esteja indisponível no momento da chamada.
   ///
   /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
-  /// `Established`: a mensagem já está persistida, e `flush_pending` a
-  /// entrega assim que a sessão ficar pronta.
+  /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
+  /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
+  /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+  /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
+  /// enviá-los deve chamar `requeue_message`.
   Future<SealedMessageDto> sealOutgoingText({
     required List<int> peerDeviceId,
     required String body,
@@ -4375,6 +5530,8 @@ class CoreImpl extends RustOpaque implements Core {
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já
   /// serializado) para publicar — sempre exatamente 1024 B.
+  ///
+  /// O AAD amarra o payload à direção deste lado e à época atual (S-12).
   Future<Uint8List> sealSignalingPayload({
     required List<int> peerDeviceId,
     required List<int> payloadBytes,
@@ -4390,6 +5547,13 @@ class CoreImpl extends RustOpaque implements Core {
       RustLib.instance.api.crateFfiCoreCoreSessionStatus(
         that: this,
         peerDeviceId: peerDeviceId,
+      );
+
+  /// Define o teto de tamanho de arquivo em bytes para aceitação automática.
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes}) =>
+      RustLib.instance.api.crateFfiCoreCoreSetAutoAcceptFileSizeLimit(
+        that: this,
+        limitBytes: limitBytes,
       );
 
   /// Define chave de configuração arbitrária.
@@ -4460,7 +5624,7 @@ class CoreImpl extends RustOpaque implements Core {
   /// Merkle (§7.2) — não tem como evitar essa leitura, o manifesto
   /// precisa da raiz completa antes do primeiro símbolo sair.
   ///
-  /// `use_lan` escolhe `symbol_size`: 65536 (LocalSocket) ou 16384
+  /// `use_lan` escolhe `symbol_size`: 65535 (LAN, `LAN_SYMBOL_SIZE`) ou 16384
   /// (DataChannel) — a mesma distinção de `wire::transport::Transport`.
   /// `block_symbols` é sempre o teto de D6 (1024).
   Future<SendFileStartedDto> startSendFile({
@@ -4474,6 +5638,13 @@ class CoreImpl extends RustOpaque implements Core {
     useLan: useLan,
   );
 
+  /// Passa a receber os eventos de mudança de estado das sessões, a partir
+  /// do estado atual de cada uma (replay): um evento emitido antes da
+  /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
+  /// a anterior.
+  Stream<SessionStateEventDto> subscribeSessionEvents() =>
+      RustLib.instance.api.crateFfiCoreCoreSubscribeSessionEvents(that: this);
+
   /// Varre e destrói chaves de mensagens efêmeras expiradas.
   Future<int> sweepExpiredMessages() =>
       RustLib.instance.api.crateFfiCoreCoreSweepExpiredMessages(that: this);
@@ -4485,6 +5656,15 @@ class CoreImpl extends RustOpaque implements Core {
         that: this,
         fileId: fileId,
       );
+
+  /// Lista as ofertas de arquivo pendentes de confirmação do usuário para
+  /// o contato especificado (Issue #23, U-08).
+  Future<List<FileOfferDto>> unconfirmedFileOffers({
+    required List<int> peerDeviceId,
+  }) => RustLib.instance.api.crateFfiCoreCoreUnconfirmedFileOffers(
+    that: this,
+    peerDeviceId: peerDeviceId,
+  );
 
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
   /// mestre e reabre a conexão do SQLCipher.

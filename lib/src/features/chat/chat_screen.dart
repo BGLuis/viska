@@ -3,12 +3,19 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
+import '../../common_widgets/chat/file_offer_card.dart';
+import '../../common_widgets/feedback/viska_banner.dart';
+import '../../common_widgets/identity/transport_pill.dart';
+import '../../transport/message_reception_service.dart';
 import '../../transport/p2p_transport.dart';
 import '../../transport/p2p_transport_router.dart';
+import '../../transport/transfer_foreground_service.dart';
+import '../lock/lock_controller.dart';
 import '../pairing/widgets/safety_number_qr_dialog.dart';
 import '../pairing/widgets/safety_number_view.dart';
 import 'chat_controller.dart';
@@ -16,6 +23,7 @@ import 'widgets/audio_waveform_player.dart';
 import 'widgets/reaction_picker.dart';
 import 'widgets/reply_preview.dart';
 import 'widgets/swipe_to_reply.dart';
+import 'widgets/unconfirmed_delivery_action.dart';
 
 /// Tela de chat segura 1:1 com criptografia híbrida pós-quântica,
 /// tema Dark-Tech Editorial, waveform interativo, swipe-to-reply,
@@ -26,12 +34,14 @@ class ChatScreen extends StatefulWidget {
     required this.core,
     required this.router,
     required this.contactId,
+    this.receptionService,
     this.contactLabel,
   });
 
   final Core core;
   final P2PTransportRouter router;
   final ContactId contactId;
+  final MessageReceptionService? receptionService;
   final String? contactLabel;
 
   @override
@@ -54,8 +64,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // Gestos avançados do microfone (trava de gravação e cancelamento)
   bool _isMicLocked = false;
-  double _micDragAccumulatedX = 0.0;
-  double _micDragAccumulatedY = 0.0;
   Timer? _recordTimer;
   int _recordSeconds = 0;
   bool _isOpeningSafetyNumber = false;
@@ -68,12 +76,13 @@ class _ChatScreenState extends State<ChatScreen> {
         core: widget.core,
         router: widget.router,
         contactId: widget.contactId,
+        receptionService: widget.receptionService,
       );
       _controller = controller;
       controller.addListener(_onControllerChanged);
       controller.initialize();
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao instanciar ChatController: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao instanciar ChatController: $e\n$stack');
     }
     _loadEphemeralTtl();
   }
@@ -170,7 +179,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       await _controller?.refreshTrustState();
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao abrir Safety Number Dialog: $e\n$stack');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -194,7 +203,7 @@ class _ChatScreenState extends State<ChatScreen> {
         contactDeviceId: widget.contactId.deviceId,
       );
     } catch (e, stack) {
-      debugPrint('[ChatScreen] Erro ao calcular Safety Number para detalhes: $e\n$stack');
+      if (kDebugMode) debugPrint('[ChatScreen] Erro ao calcular Safety Number para detalhes: $e\n$stack');
     }
     if (!mounted) return;
 
@@ -407,6 +416,47 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Abre o seletor nativo de arquivos da plataforma e envia o arquivo
+  /// selecionado pelo canal `file` do transporte P2P, sem passar pela UI de
+  /// texto. Sem filtro de tipo — o protocolo aceita qualquer arquivo.
+  Future<void> _handlePickAndSendFile() async {
+    // O seletor é outra atividade: o app vai para segundo plano e, sem o
+    // serviço em primeiro plano, o Android congela o processo e derruba os
+    // sockets. O guard evita ainda que essa ida ao segundo plano bloqueie o app.
+    final lease = await TransferForegroundService.shared.acquire();
+    final FilePickerResult? result;
+    try {
+      result = await LockController.guardTransient(
+        () => FilePicker.platform.pickFiles(allowMultiple: false),
+      );
+    } finally {
+      await lease.release();
+    }
+    if (result == null || result.files.single.path == null) return;
+    final file = result.files.single;
+
+    // Issue #23: Arquivos > 100 MB exigem confirmação explícita via FileOfferCard
+    if (file.size > 100 * 1024 * 1024) {
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
+          child: FileOfferCard(
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            onReject: () => Navigator.pop(ctx, false),
+            onAccept: () => Navigator.pop(ctx, true),
+          ),
+        ),
+      );
+      if (proceed != true) return;
+    }
+
+    await _controller?.sendFile(file.path!);
+  }
+
   Future<void> _handleSend() async {
     final text = _textController.text.trim();
     if (text.isEmpty) return;
@@ -434,6 +484,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _replyingTo = QuotedReply(
         id: message.id,
+        globalId: message.globalId,
         sender: senderName,
         snippet: snippet,
         isVoice: isVoice,
@@ -471,12 +522,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _startRecordingGesture() async {
     final c = _controller;
     if (c == null) return;
-    _micDragAccumulatedX = 0;
-    _micDragAccumulatedY = 0;
     _isMicLocked = false;
     await c.startRecording();
     if (c.isRecording) {
       _startRecordTimer();
+      setState(() {}); // redesenha para exibir _buildRecordingBar
     }
   }
 
@@ -502,21 +552,21 @@ class _ChatScreenState extends State<ChatScreen> {
     await _controller?.stopRecordingAndSend();
   }
 
-  void _onMicDragUpdate(DragUpdateDetails details) {
+  void _onMicDragUpdate(double totalDx, double totalDy) {
     final c = _controller;
     if (c == null || !c.isRecording || _isMicLocked) return;
 
-    _micDragAccumulatedX += details.delta.dx;
-    _micDragAccumulatedY += details.delta.dy;
+    // totalDx/totalDy já são deslocamentos acumulados desde o início do gesto
+    // (offsetFromOrigin), então não somamos — comparamos diretamente.
 
     // Deslizar para a esquerda (<= -60px) cancela a gravação
-    if (_micDragAccumulatedX <= -60) {
+    if (totalDx <= -60) {
       _cancelRecordingGesture();
       return;
     }
 
     // Deslizar para cima (<= -50px) trava a gravação em modo mãos livres
-    if (_micDragAccumulatedY <= -50) {
+    if (totalDy <= -50) {
       HapticFeedback.mediumImpact();
       setState(() => _isMicLocked = true);
     }
@@ -643,42 +693,39 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           if (controller.isKeyChanged)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
                 key: const Key('key_change_banner'),
-                onTap: _showSafetyNumberDialog,
-                child: Container(
-                  width: double.infinity,
-                  color: DarkTechTheme.alert.withValues(alpha: 0.25),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  child: const Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '⚠️ Atenção: As chaves criptográficas deste contato mudaram. Toque para re-verificar o número de segurança antes de enviar mensagens.',
-                          style: TextStyle(
-                            color: DarkTechTheme.alert,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      SizedBox(width: 8),
-                      Icon(Icons.chevron_right, color: DarkTechTheme.alert, size: 20),
-                    ],
-                  ),
-                ),
+                tone: ViskaBannerTone.danger,
+                title: 'CHAVES MODIFICADAS (POSSÍVEL INTERCEPTAÇÃO)',
+                message: 'As chaves criptográficas deste contato mudaram. Toque para re-verificar o número de segurança antes de enviar mensagens.',
+                actionLabel: 'VERIFICAR',
+                onActionPressed: _showSafetyNumberDialog,
+              ),
+            ),
+          if (controller.isSessionBroken)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
+                key: const Key('session_failed_banner'),
+                tone: ViskaBannerTone.danger,
+                title: controller.sessionBannerTitle,
+                message: controller.sessionBannerMessage,
+                actionLabel: controller.isReconnecting ? 'RECONECTANDO…' : 'RECONECTAR',
+                onActionPressed:
+                    controller.isReconnecting ? null : () => controller.reconnectSession(),
               ),
             ),
           if (controller.connectionError != null)
-            Container(
-              width: double.infinity,
-              color: DarkTechTheme.alert.withValues(alpha: 0.2),
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                controller.connectionError!,
-                style: const TextStyle(color: DarkTechTheme.alert),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: ViskaBanner(
+                tone: ViskaBannerTone.warning,
+                title: 'SESSÃO INTERROMPIDA',
+                message: controller.connectionError!,
+                actionLabel: 'RECONECTAR',
+                onActionPressed: () => controller.initialize(),
               ),
             ),
           if (controller.voiceError != null)
@@ -689,6 +736,38 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Text(
                 controller.voiceError!,
                 style: const TextStyle(color: DarkTechTheme.alert),
+              ),
+            ),
+          if (controller.fileError != null)
+            Container(
+              key: const Key('file_error_banner'),
+              width: double.infinity,
+              color: DarkTechTheme.alert.withValues(alpha: 0.2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Text(
+                controller.fileError!,
+                style: const TextStyle(color: DarkTechTheme.alert),
+              ),
+            ),
+          if (controller.offersError != null)
+            Container(
+              key: const Key('offers_error_banner'),
+              width: double.infinity,
+              color: DarkTechTheme.alert.withValues(alpha: 0.2),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      controller.offersError!,
+                      style: const TextStyle(color: DarkTechTheme.alert),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: controller.loadUnconfirmedOffers,
+                    child: const Text('Tentar de novo'),
+                  ),
+                ],
               ),
             ),
           Expanded(
@@ -724,6 +803,25 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
           ),
 
+          // Ofertas de arquivo que excederam o limite de auto-aceite (Issue #23)
+          if (controller.unconfirmedOffers.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final offer in controller.unconfirmedOffers)
+                    FileOfferCard(
+                      key: ValueKey(offer.fileId),
+                      fileName: offer.name,
+                      fileSizeBytes: offer.fileSize.toInt(),
+                      onReject: () => controller.rejectFileOffer(offer.fileId),
+                      onAccept: () => controller.acceptFileOffer(offer.fileId),
+                    ),
+                ],
+              ),
+            ),
+
           // Pré-visualização de resposta citada
           if (_replyingTo != null)
             ReplyPreview(
@@ -749,6 +847,15 @@ class _ChatScreenState extends State<ChatScreen> {
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
       child: Row(
         children: [
+          // Botão de clipe de papel — abre o seletor nativo de arquivos
+          IconButton(
+            key: const Key('attach_file_button'),
+            tooltip: 'Enviar arquivo',
+            icon: const Icon(Icons.attach_file_rounded),
+            color: DarkTechTheme.primary,
+            onPressed: controller.isSendingFile ? null : _handlePickAndSendFile,
+          ),
+
           // Alternador de Visualização Única (View-Once)
           IconButton(
             tooltip: _isViewOnce ? 'Visualização única ativa' : 'Ativar visualização única',
@@ -804,10 +911,10 @@ class _ChatScreenState extends State<ChatScreen> {
           GestureDetector(
             onLongPressStart: (_) => _startRecordingGesture(),
             onLongPressMoveUpdate: (details) {
-              _onMicDragUpdate(DragUpdateDetails(
-                delta: details.offsetFromOrigin,
-                globalPosition: details.globalPosition,
-              ));
+              _onMicDragUpdate(
+                details.offsetFromOrigin.dx,
+                details.offsetFromOrigin.dy,
+              );
             },
             onLongPressEnd: _onMicDragEnd,
             child: IconButton.filled(
@@ -900,31 +1007,49 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   String _statusLabel(ChatController controller) {
+    if (controller.isSessionBroken) return 'Sessão interrompida';
     if (controller.connectionError != null) return 'Falha na conexão';
     return controller.isEstablished ? 'Conectado (P2P Pós-Quântico)' : 'Conectando…';
   }
 
   Widget _buildTransportPill(ChatController controller) {
     final transport = controller.activeTransport;
+    final TransportType pillType;
+    if (transport.label.contains('Wi-Fi') || transport.label.contains('LAN')) {
+      pillType = TransportType.lan;
+    } else if (transport.label.contains('Proximidade') || transport.label.contains('BLE')) {
+      pillType = TransportType.proximity;
+    } else if (transport.label.contains('WebRTC') || transport.label.contains('Internet')) {
+      pillType = TransportType.webrtc;
+    } else if (transport.label.contains('Conectando')) {
+      pillType = TransportType.connecting;
+    } else {
+      pillType = TransportType.offline;
+    }
+
     return Container(
       key: const Key('transport_indicator_pill'),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: DarkTechTheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: DarkTechTheme.divider,
-          width: 0.8,
-        ),
+      child: TransportPill(
+        type: pillType,
+        customLabel: transport.label,
       ),
-      child: Text(
-        transport.label,
-        style: const TextStyle(
-          fontSize: 10.5,
-          color: DarkTechTheme.textSecondary,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
+    );
+  }
+}
+
+/// Exibe a forma de onda da nota de voz adiando a decodificação do áudio WAV
+/// estritamente para o momento do play, preservando o cache de 1 entrada do
+/// controlador e evitando a alocação de PCM na renderização das bolhas.
+class _VoiceNoteWaveform extends StatelessWidget {
+  const _VoiceNoteWaveform({required this.controller, required this.message});
+
+  final ChatController controller;
+  final MessageDto message;
+
+  @override
+  Widget build(BuildContext context) {
+    return AudioWaveformPlayer(
+      loadAudioBytes: () => controller.voiceNoteWav(message),
     );
   }
 }
@@ -944,6 +1069,7 @@ class _MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final outgoing = message.direction == MessageDirectionDto.outgoing;
     final parsed = ParsedMessageContent.parse(message.body);
+    final isViewOnce = message.viewOnce || parsed.isViewOnce;
     final reactions = controller.reactionsFor(message.id);
     final userReactions = controller.userReactionsFor(message.id);
 
@@ -982,10 +1108,12 @@ class _MessageBubble extends StatelessWidget {
               if (parsed.reply != null)
                 QuotedMessageBubbleView(reply: parsed.reply!),
 
-              // Mensagem de voz com AudioWaveformPlayer OU texto
+              // Mensagem de voz com AudioWaveformPlayer OU arquivo OU texto
               if (message.kind == MessageKindDto.voiceNote)
                 _buildVoiceNoteContent(context)
-              else if (parsed.isViewOnce)
+              else if (message.kind == MessageKindDto.file)
+                _buildFileContent(context)
+              else if (isViewOnce)
                 _buildViewOnceContent(context, parsed.text)
               else
                 Text(
@@ -1000,7 +1128,7 @@ class _MessageBubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (parsed.isViewOnce) ...[
+                  if (isViewOnce) ...[
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                       decoration: BoxDecoration(
@@ -1027,7 +1155,12 @@ class _MessageBubble extends StatelessWidget {
                     const Icon(Icons.timer_outlined, size: 12, color: DarkTechTheme.secondary),
                     const SizedBox(width: 4),
                   ],
-                  if (outgoing)
+                  if (outgoing && message.deliveryState == DeliveryStateDto.unknown)
+                    UnconfirmedDeliveryAction(
+                      label: _deliveryLabel(message.deliveryState),
+                      onResend: () => controller.resendUnknown(message.id),
+                    )
+                  else if (outgoing)
                     Text(
                       _deliveryLabel(message.deliveryState),
                       style: const TextStyle(
@@ -1084,9 +1217,71 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
-    final audioBytes = controller.getVoiceNoteAudio(message);
-    return AudioWaveformPlayer(
-      audioBytes: audioBytes,
+    return _VoiceNoteWaveform(controller: controller, message: message);
+  }
+
+  /// Renderiza um balão de arquivo genérico. Outgoing é sempre exibido como
+  /// "enviado" — quem mandou já tem o arquivo. Incoming mostra progresso até
+  /// [ChatController.isFileReady] ser `true`.
+  Widget _buildFileContent(BuildContext context) {
+    final isOutgoing = message.direction == MessageDirectionDto.outgoing;
+    final isReady = isOutgoing || controller.isFileReady(message);
+
+    if (!isReady) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: DarkTechTheme.scaffoldBackground.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: DarkTechTheme.primary,
+              ),
+            ),
+            SizedBox(width: 10),
+            Text(
+              'Recebendo arquivo…',
+              style: TextStyle(fontSize: 12.5, color: DarkTechTheme.textSecondary),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Exibe o nome do arquivo a partir do corpo da mensagem (persistido pelo
+    // Rust como o nome original) ou um fallback genérico.
+    final label = message.body.isNotEmpty ? message.body : 'arquivo';
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.insert_drive_file_rounded, color: DarkTechTheme.primary, size: 22),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              color: DarkTechTheme.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (isOutgoing) ...const [
+          SizedBox(width: 8),
+          Text(
+            'Enviado',
+            style: TextStyle(fontSize: 10.5, color: DarkTechTheme.textMuted),
+          ),
+        ],
+      ],
     );
   }
 
@@ -1215,6 +1410,8 @@ class _MessageBubble extends StatelessWidget {
   String _deliveryLabel(DeliveryStateDto state) {
     switch (state) {
       case DeliveryStateDto.pending:
+        return 'Na fila';
+      case DeliveryStateDto.sending:
         return 'Enviando…';
       case DeliveryStateDto.sent:
         return 'Enviada';
@@ -1222,6 +1419,12 @@ class _MessageBubble extends StatelessWidget {
         return 'Entregue';
       case DeliveryStateDto.failed:
         return 'Falhou';
+      case DeliveryStateDto.unknown:
+        return 'Não confirmada';
+      case DeliveryStateDto.rejected:
+        return 'Recusada';
+      case DeliveryStateDto.expired:
+        return 'Sem resposta';
     }
   }
 }

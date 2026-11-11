@@ -52,10 +52,9 @@ class NsdLanDiscovery implements LanDiscovery {
 
     void listener(nsd.Service service, nsd.ServiceStatus status) {
       if (status != nsd.ServiceStatus.found) return;
-      debugPrint(
-        '[NSD] serviço encontrado: name=${service.name} '
-        'host=${service.host} addresses=${service.addresses} port=${service.port}',
-      );
+      if (kDebugMode) {
+        debugPrint('[NSD] serviço encontrado: name=${service.name} host=${service.host} addresses=${service.addresses} port=${service.port}'); // kDebugMode
+      }
       final name = service.name;
       final port = service.port;
       final addresses = service.addresses;
@@ -63,10 +62,10 @@ class NsdLanDiscovery implements LanDiscovery {
           ? addresses.first.address
           : service.host;
       if (name == null || port == null || host == null) {
-        debugPrint('[NSD] serviço ignorado (name/port/host null): name=$name port=$port host=$host');
+        if (kDebugMode) debugPrint('[NSD] serviço ignorado (name/port/host null): name=$name port=$port host=$host');
         return;
       }
-      debugPrint('[NSD] LanPeer emitido: host=$host port=$port name=$name');
+      if (kDebugMode) debugPrint('[NSD] LanPeer emitido: host=$host port=$port name=$name');
       _discoveredController.add(LanPeer(instanceName: name, host: host, port: port));
     }
 

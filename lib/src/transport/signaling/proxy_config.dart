@@ -9,6 +9,7 @@ class ProxyConfig {
     this.port = 9050,
     this.username,
     this.password,
+    this.disableWebrtc = false,
   });
 
   /// Se o proxy está ativo para sinalização.
@@ -26,6 +27,9 @@ class ProxyConfig {
   /// Senha para autenticação SOCKS5 (opcional).
   final String? password;
 
+  /// Se o WebRTC deve ser desligado quando o proxy estiver ativo para evitar exposição de IP real via STUN/ICE.
+  final bool disableWebrtc;
+
   ProxyConfig copyWith({
     bool? enabled,
     String? host,
@@ -33,6 +37,7 @@ class ProxyConfig {
     String? username,
     String? password,
     bool clearAuth = false,
+    bool? disableWebrtc,
   }) {
     return ProxyConfig(
       enabled: enabled ?? this.enabled,
@@ -40,6 +45,7 @@ class ProxyConfig {
       port: port ?? this.port,
       username: clearAuth ? null : (username ?? this.username),
       password: clearAuth ? null : (password ?? this.password),
+      disableWebrtc: disableWebrtc ?? this.disableWebrtc,
     );
   }
 
@@ -49,6 +55,7 @@ class ProxyConfig {
         'port': port,
         if (username != null && username!.isNotEmpty) 'username': username,
         if (password != null && password!.isNotEmpty) 'password': password,
+        'disableWebrtc': disableWebrtc,
       };
 
   factory ProxyConfig.fromJson(Map<String, dynamic> json) {
@@ -58,6 +65,7 @@ class ProxyConfig {
       port: (json['port'] as num?)?.toInt() ?? 9050,
       username: json['username'] as String?,
       password: json['password'] as String?,
+      disableWebrtc: json['disableWebrtc'] as bool? ?? false,
     );
   }
 
@@ -66,6 +74,7 @@ class ProxyConfig {
     enabled: true,
     host: '127.0.0.1',
     port: 9050,
+    disableWebrtc: false,
   );
 
   @override
@@ -77,7 +86,8 @@ class ProxyConfig {
           host == other.host &&
           port == other.port &&
           username == other.username &&
-          password == other.password;
+          password == other.password &&
+          disableWebrtc == other.disableWebrtc;
 
   @override
   int get hashCode =>
@@ -85,7 +95,8 @@ class ProxyConfig {
       host.hashCode ^
       port.hashCode ^
       username.hashCode ^
-      password.hashCode;
+      password.hashCode ^
+      disableWebrtc.hashCode;
 }
 
 /// Armazenamento em memória e disco para preferências de proxy de rede.

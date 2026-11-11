@@ -53,30 +53,41 @@ impl Core {
 
     /// Cifra um payload de sinalização (SDP ou candidato ICE já
     /// serializado) para publicar — sempre exatamente 1024 B.
+    ///
+    /// O AAD amarra o payload à direção deste lado e à época atual (S-12).
     pub fn seal_signaling_payload(
         &self,
         peer_device_id: Vec<u8>,
         payload_bytes: Vec<u8>,
     ) -> Result<Vec<u8>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
-        let (_, k_sig) = self.signaling_key_for(&device_id)?;
-        Ok(payload::seal(&k_sig, &payload_bytes)?)
+        let (peer, k_sig) = self.signaling_key_for(&device_id)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let my_direction = topic::direction(&id.public(), &peer);
+        let epoch = viska_proto::util::time::current_epoch();
+        Ok(payload::seal(&k_sig, my_direction, epoch, &payload_bytes)?)
     }
 
     /// Decifra um payload de sinalização recebido do broker.
     ///
-    /// `Ok(None)` cobre qualquer falha — comprimento errado, tag do AEAD
-    /// inválida — sem distinguir a causa, mesma política de
-    /// `Session::decrypt_incoming` para não abrir oráculo a um broker não
-    /// confiável.
+    /// Valida o AAD contra a direção do par e a janela de épocas aceitáveis
+    /// (anterior, atual e seguinte). Se o broker refletir nossa própria mensagem
+    /// ou retransmitir épocas antigas, a abertura falha e devolve `Ok(None)` (S-12).
     pub fn open_signaling_payload(
         &self,
         peer_device_id: Vec<u8>,
         sealed: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
-        let (_, k_sig) = self.signaling_key_for(&device_id)?;
-        Ok(payload::open(&k_sig, &sealed).ok())
+        let (peer, k_sig) = self.signaling_key_for(&device_id)?;
+        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+        let peer_direction = topic::direction(&id.public(), &peer).flip();
+        for epoch in viska_proto::util::time::epoch_window() {
+            if let Ok(opened) = payload::open(&k_sig, peer_direction, epoch, &sealed) {
+                return Ok(Some(opened));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -159,5 +170,19 @@ mod tests {
 
         let opened = core_b.open_signaling_payload(device_id_a, sealed).unwrap();
         assert_eq!(opened, None);
+    }
+
+    #[test]
+    fn reflected_payload_is_discarded_as_none() {
+        let (_dir_a, core_a, _device_id_a, _dir_b, _core_b, device_id_b) = paired();
+
+        // A envia para B
+        let sealed = core_a
+            .seal_signaling_payload(device_id_b.clone(), b"oferta sdp de teste".to_vec())
+            .unwrap();
+
+        // Broker reflete o payload de A de volta para o próprio A no tópico onde A escuta B
+        let reflected = core_a.open_signaling_payload(device_id_b, sealed).unwrap();
+        assert_eq!(reflected, None, "payload refletido com direção trocada não deve abrir");
     }
 }

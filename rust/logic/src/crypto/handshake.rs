@@ -26,7 +26,8 @@ use crate::crypto::kdf;
 use crate::crypto::kem::{
     self, Kem, KemCiphertext, KemPublicKey, KemSecretKey, KemSharedSecret, MlKem768,
 };
-use crate::{Error, Result, PROTOCOL_VERSION};
+use crate::crypto::Suite;
+use crate::{Error, Result};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Deslocamento da versão do protocolo, comum às duas mensagens.
@@ -76,6 +77,7 @@ struct HandshakeMaterial([u8; MATERIAL_LEN]);
 /// diferentes, mesmo que os DH e o KEM tenham corrido normalmente.
 #[allow(clippy::too_many_arguments)]
 fn build_transcript(
+    suite: Suite,
     ik_dh_i: &DhPublic,
     ik_dh_r: &DhPublic,
     ek_i: &DhPublic,
@@ -86,7 +88,7 @@ fn build_transcript(
     let mut out = [0u8; TRANSCRIPT_LEN];
     let mut at = 0;
 
-    out[at] = PROTOCOL_VERSION;
+    out[at] = suite.id();
     at += 1;
     out[at..at + dh::KEY_LEN].copy_from_slice(ik_dh_i.as_bytes());
     at += dh::KEY_LEN;
@@ -132,11 +134,28 @@ fn derive_root(
     kdf::derive(kdf::context::HANDSHAKE, &material.0)
 }
 
-/// Valida comprimento, versão e tipo de uma mensagem de handshake recebida.
+/// Valida suite_id, comprimento e tipo de uma mensagem de handshake recebida.
 ///
 /// Sem downgrade negociado, como em `pairing::decode_qr`: uma versão que este
 /// binário não conhece é rejeitada, nunca aceita "no modo antigo".
-fn validate_header(msg: &[u8], expected_len: usize, expected_type: u8) -> Result<()> {
+/// O byte 0 é lido como identificador de suíte (`Suite::from_id`) e só então
+/// o comprimento esperado para aquela suíte é checado.
+fn validate_header(msg: &[u8], is_init: bool) -> Result<Suite> {
+    let version = *msg.first().ok_or_else(|| Error::BadLength {
+        expected: if is_init {
+            Suite::V1.init_len()
+        } else {
+            Suite::V1.resp_len()
+        },
+        actual: 0,
+    })?;
+
+    let suite = Suite::from_id(version)?;
+    let expected_len = if is_init {
+        suite.init_len()
+    } else {
+        suite.resp_len()
+    };
     if msg.len() != expected_len {
         return Err(Error::BadLength {
             expected: expected_len,
@@ -144,16 +163,16 @@ fn validate_header(msg: &[u8], expected_len: usize, expected_type: u8) -> Result
         });
     }
 
-    let version = msg[VERSION_AT];
-    if version != PROTOCOL_VERSION {
-        return Err(Error::UnsupportedVersion(version));
-    }
-
+    let expected_type = if is_init {
+        MSG_TYPE_INIT
+    } else {
+        MSG_TYPE_RESP
+    };
     if msg[MSG_TYPE_AT] != expected_type {
         return Err(Error::Malformed("tipo de mensagem de handshake inesperado"));
     }
 
-    Ok(())
+    Ok(suite)
 }
 
 /// O que o handshake entrega para o ratchet (§5, implementado à parte).
@@ -198,6 +217,7 @@ pub struct HandshakeOutcome {
 pub struct Initiator {
     /// `IK_dh` pública do par, já conhecida do pareamento.
     peer_dh: DhPublic,
+    suite: Suite,
     ek_secret: DhSecret,
     ek_public: DhPublic,
     kem_secret: KemSecretKey,
@@ -205,27 +225,31 @@ pub struct Initiator {
 }
 
 impl Initiator {
-    /// Inicia o handshake e produz a mensagem INIT (§4.1).
-    ///
-    /// Quem chama decide o papel de antemão comparando `IK_dh` com
-    /// `PublicIdentity::is_before` — esta função não reafirma a checagem
-    /// porque a segurança do protocolo não depende dela (ver o comentário de
-    /// módulo): ela só existe para evitar round-trip extra em handshake
-    /// simultâneo, não para impedir ataque nenhum.
+    /// Inicia o handshake na suíte padrão V1 e produz a mensagem INIT (§4.1).
     pub fn start(local: &LocalIdentity, peer: &PublicIdentity) -> Result<(Self, [u8; INIT_LEN])> {
+        Self::start_with_suite(local, peer, Suite::V1)
+    }
+
+    /// Inicia o handshake em uma suíte específica e produz a mensagem INIT (§4.1).
+    pub fn start_with_suite(
+        local: &LocalIdentity,
+        peer: &PublicIdentity,
+        suite: Suite,
+    ) -> Result<(Self, [u8; INIT_LEN])> {
         let _ = local;
         let ek_secret = DhSecret::generate()?;
         let ek_public = ek_secret.public();
         let kem_pair = MlKem768::generate()?;
 
         let mut init = [0u8; INIT_LEN];
-        init[VERSION_AT] = PROTOCOL_VERSION;
+        init[VERSION_AT] = suite.id();
         init[MSG_TYPE_AT] = MSG_TYPE_INIT;
         init[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(ek_public.as_bytes());
         init[KEM_MATERIAL_AT..].copy_from_slice(kem_pair.public.as_bytes());
 
         let state = Self {
             peer_dh: peer.dh,
+            suite,
             ek_secret,
             ek_public,
             kem_secret: kem_pair.secret,
@@ -243,7 +267,10 @@ impl Initiator {
     /// dele não bate com o nosso, e as duas raízes simplesmente divergem, sem
     /// que nenhum erro explícito seja necessário nem possível (D1, §4.4).
     pub fn finish(self, local: &LocalIdentity, resp: &[u8]) -> Result<HandshakeOutcome> {
-        validate_header(resp, RESP_LEN, MSG_TYPE_RESP)?;
+        let resp_suite = validate_header(resp, false)?;
+        if resp_suite != self.suite {
+            return Err(Error::UnsupportedVersion(resp_suite.id()));
+        }
 
         let ek_r = DhPublic::from_slice(&resp[EK_AT..EK_AT + dh::KEY_LEN])?;
         let kem_ct = KemCiphertext::from_slice(&resp[KEM_MATERIAL_AT..])?;
@@ -258,6 +285,7 @@ impl Initiator {
 
         let ik_dh_i = local.dh().public();
         let transcript = build_transcript(
+            self.suite,
             &ik_dh_i,
             &self.peer_dh,
             &self.ek_public,
@@ -280,6 +308,7 @@ impl core::fmt::Debug for Initiator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Initiator")
             .field("peer_dh", &self.peer_dh)
+            .field("suite", &self.suite)
             .field("ek_public", &self.ek_public)
             .field("ek_secret", &"<redigida>")
             .field("kem_secret", &"<redigida>")
@@ -297,7 +326,7 @@ pub fn respond(
     peer: &PublicIdentity,
     init: &[u8],
 ) -> Result<(HandshakeOutcome, [u8; RESP_LEN])> {
-    validate_header(init, INIT_LEN, MSG_TYPE_INIT)?;
+    let suite = validate_header(init, true)?;
 
     let ek_i = DhPublic::from_slice(&init[EK_AT..EK_AT + dh::KEY_LEN])?;
     let kem_ek_i = KemPublicKey::from_slice(&init[KEM_MATERIAL_AT..])?;
@@ -315,11 +344,11 @@ pub fn respond(
     let dh3 = ek_secret.agree(&ek_i)?;
 
     let ik_dh_r = local.dh().public();
-    let transcript = build_transcript(&peer.dh, &ik_dh_r, &ek_i, &ek_r, &kem_ek_i, &kem_ct);
+    let transcript = build_transcript(suite, &peer.dh, &ik_dh_r, &ek_i, &ek_r, &kem_ek_i, &kem_ct);
     let root = derive_root(&dh1, &dh2, &dh3, &ss_kem, &transcript);
 
     let mut resp = [0u8; RESP_LEN];
-    resp[VERSION_AT] = PROTOCOL_VERSION;
+    resp[VERSION_AT] = suite.id();
     resp[MSG_TYPE_AT] = MSG_TYPE_RESP;
     resp[EK_AT..EK_AT + dh::KEY_LEN].copy_from_slice(ek_r.as_bytes());
     resp[KEM_MATERIAL_AT..].copy_from_slice(kem_ct.as_bytes());
@@ -354,12 +383,14 @@ mod tests {
     fn clone_initiator(original: &Initiator) -> Initiator {
         Initiator {
             peer_dh: original.peer_dh,
+            suite: original.suite,
             ek_secret: DhSecret::from_bytes(original.ek_secret.to_bytes()),
             ek_public: original.ek_public,
             kem_secret: original.kem_secret.clone(),
             kem_public: original.kem_public.clone(),
         }
     }
+
 
     #[test]
     fn full_handshake_produces_same_root_on_both_sides() {
@@ -555,4 +586,45 @@ mod tests {
             Err(Error::LowOrderPoint)
         ));
     }
+
+    #[test]
+    fn rejects_unsupported_version_before_length_validation() {
+        let (alice, bob) = pair();
+        // Byte 0 é 0x02 (suíte desconhecida) e comprimento é 100 (!= 1218)
+        let short_init = vec![0x02; 100];
+        assert!(matches!(
+            respond(&bob, &alice.public(), &short_init),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+
+        // Byte 0 é 0x02 e comprimento é 1500 (!= 1218)
+        let long_init = vec![0x02; 1500];
+        assert!(matches!(
+            respond(&bob, &alice.public(), &long_init),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+
+        // Mesma garantia na RESP recebida pelo finish
+        let (initiator, _) = Initiator::start(&alice, &bob.public()).unwrap();
+        let short_resp = vec![0x02; 50];
+        assert!(matches!(
+            initiator.finish(&alice, &short_resp),
+            Err(Error::UnsupportedVersion(0x02))
+        ));
+    }
+
+    #[test]
+    fn suite_v1_wire_bytes_match_frozen_format() {
+        let (alice, bob) = pair();
+        let (_, init) = Initiator::start(&alice, &bob.public()).unwrap();
+        assert_eq!(init[VERSION_AT], Suite::V1.id());
+        assert_eq!(init[MSG_TYPE_AT], MSG_TYPE_INIT);
+        assert_eq!(init.len(), Suite::V1.init_len());
+
+        let (_, resp) = respond(&bob, &alice.public(), &init).unwrap();
+        assert_eq!(resp[VERSION_AT], Suite::V1.id());
+        assert_eq!(resp[MSG_TYPE_AT], MSG_TYPE_RESP);
+        assert_eq!(resp.len(), Suite::V1.resp_len());
+    }
 }
+

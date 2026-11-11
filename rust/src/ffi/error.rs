@@ -44,6 +44,13 @@ pub enum FfiError {
     AeadFailure,
     /// Formato inválido ou corrompido.
     Malformed,
+    /// Um contato com o mesmo `device_id` já existe mas com chaves criptográficas
+    /// diferentes. Requer confirmação explícita para evitar substituição de identidade.
+    ContactKeyMismatch,
+    /// A suíte criptográfica do contato foi desativada e requer re-pareamento presencial.
+    SuiteRetired,
+    /// Oferta de arquivo retida não encontrada ou já limpa por auto-lock/cancelamento (U-08).
+    OfferNotFound,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }
@@ -56,11 +63,13 @@ impl From<viska_proto::Error> for FfiError {
             | Error::UnsupportedVersion(_)
             | Error::Malformed(_)
             | Error::InvalidPublicKey(_) => FfiError::QrMalformed,
+            Error::SuiteRetired(_) => FfiError::SuiteRetired,
             Error::BadSignature => FfiError::QrBadSignature,
             Error::SelfPairing => FfiError::SelfPairing,
             Error::LowOrderPoint => FfiError::ForgedKey,
             Error::Store => FfiError::StoreFailure,
             Error::ContactNotFound => FfiError::ContactNotFound,
+            Error::ContactKeyMismatch => FfiError::ContactKeyMismatch,
             Error::NeedsRehandshake => FfiError::SessionExpired,
             Error::MerkleMismatch => FfiError::FileCorrupted,
             Error::Locked => FfiError::Locked,
@@ -120,6 +129,10 @@ mod tests {
             FfiError::ContactNotFound
         );
         assert_eq!(
+            FfiError::from(Error::ContactKeyMismatch),
+            FfiError::ContactKeyMismatch
+        );
+        assert_eq!(
             FfiError::from(Error::NeedsRehandshake),
             FfiError::SessionExpired
         );
@@ -128,6 +141,7 @@ mod tests {
             FfiError::FileCorrupted
         );
         assert_eq!(FfiError::from(Error::Locked), FfiError::Locked);
+        assert_eq!(FfiError::from(Error::SuiteRetired(1)), FfiError::SuiteRetired);
 
         for err in [
             Error::AeadFailure,

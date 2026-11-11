@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -53,26 +53,51 @@ class ContactDto {
 /// `store::messages::DeliveryState`. `Delivered`/`Failed` ainda não são
 /// produzidos por nenhum código desta fase (reservados para quando
 /// `MSG_RECEIPT` e relato de falha de transporte existirem).
-enum DeliveryStateDto { pending, sent, delivered, failed }
+enum DeliveryStateDto {
+  pending,
+  sent,
+  delivered,
+  failed,
+  sending,
+  rejected,
+  expired,
 
-/// `BeaconID`s de descoberta local para um contato — `docs/protocol.md` §9.1.
-/// Os dois lados calculam o mesmo `advertise_beacon`, ao contrário dos
-/// tópicos de sinalização (que têm direção).
+  /// Texto cujos bytes saíram do Rust sem que se saiba se chegaram (a Core
+  /// abriu ou foi trancada com ele em `Sending`). Nunca é reenviado sozinho;
+  /// ver `Core::resend_unknown_message`.
+  unknown,
+}
+
+/// `BeaconID`s e identificadores de preâmbulo TCP de descoberta local para um contato —
+/// `docs/protocol.md` §9.1 e §9.3. Direcionais (`a2b`/`b2a`), como os tópicos de sinalização.
 class DiscoveryBeaconsDto {
-  /// Beacon para anunciar agora — só a época corrente.
+  /// Beacon para anunciar agora — só a época corrente, nossa direção.
   final Uint8List advertiseBeacon;
 
   /// Os três beacons aceitáveis para procurar — épocas
-  /// anterior/atual/seguinte.
+  /// anterior/atual/seguinte, na direção do par.
   final List<Uint8List> scanBeacons;
+
+  /// Preâmbulo TCP para discar agora — época corrente, nossa direção.
+  final Uint8List dialPreamble;
+
+  /// Os três preâmbulos TCP aceitáveis para receber — épocas
+  /// anterior/atual/seguinte, direção do par.
+  final List<Uint8List> listenPreambles;
 
   const DiscoveryBeaconsDto({
     required this.advertiseBeacon,
     required this.scanBeacons,
+    required this.dialPreamble,
+    required this.listenPreambles,
   });
 
   @override
-  int get hashCode => advertiseBeacon.hashCode ^ scanBeacons.hashCode;
+  int get hashCode =>
+      advertiseBeacon.hashCode ^
+      scanBeacons.hashCode ^
+      dialPreamble.hashCode ^
+      listenPreambles.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -80,7 +105,9 @@ class DiscoveryBeaconsDto {
       other is DiscoveryBeaconsDto &&
           runtimeType == other.runtimeType &&
           advertiseBeacon == other.advertiseBeacon &&
-          scanBeacons == other.scanBeacons;
+          scanBeacons == other.scanBeacons &&
+          dialPreamble == other.dialPreamble &&
+          listenPreambles == other.listenPreambles;
 }
 
 /// Uma oferta de arquivo recebida, pronta para a UI perguntar "aceitar?" —
@@ -176,6 +203,7 @@ enum MessageDirectionDto { outgoing, incoming }
 /// usuário, não escolha técnica deste código).
 class MessageDto {
   final PlatformInt64 id;
+  final String? globalId;
   final MessageDirectionDto direction;
   final MessageKindDto kind;
 
@@ -196,6 +224,7 @@ class MessageDto {
 
   const MessageDto({
     required this.id,
+    this.globalId,
     required this.direction,
     required this.kind,
     required this.body,
@@ -211,6 +240,7 @@ class MessageDto {
   @override
   int get hashCode =>
       id.hashCode ^
+      globalId.hashCode ^
       direction.hashCode ^
       kind.hashCode ^
       body.hashCode ^
@@ -228,6 +258,7 @@ class MessageDto {
       other is MessageDto &&
           runtimeType == other.runtimeType &&
           id == other.id &&
+          globalId == other.globalId &&
           direction == other.direction &&
           kind == other.kind &&
           body == other.body &&
@@ -241,11 +272,12 @@ class MessageDto {
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
-/// Fase 5. Espelha os dois valores de `packet_type` que hoje entram em
-/// `messages` (`MSG_TEXT`/`AUDIO_CHUNK`); qualquer outro `packet_type`
-/// nunca é persistido nesta tabela (`store::messages::reject_typing` e o
-/// resto do desenho da Fase 3).
-enum MessageKindDto { text, voiceNote }
+/// Fase 5. Espelha os tipos de pacote que entram em `messages` (`MSG_TEXT`/
+/// `AUDIO_CHUNK`/`FILE_METADATA` — arquivo genérico adicionado na Fase 4
+/// para timeline unificada); qualquer outro `packet_type` nunca é persistido
+/// nesta tabela (`store::messages::reject_typing` e o resto do desenho da
+/// Fase 3).
+enum MessageKindDto { text, voiceNote, file }
 
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
@@ -296,6 +328,26 @@ class SealedMessageDto {
           bytes == other.bytes;
 }
 
+/// Pacote já selado que o Dart precisa enviar a um contato depois que a Core
+/// foi trancada, quando a sessão que o selou já não existe mais.
+class SealedNoticeDto {
+  final Uint8List peerDeviceId;
+  final Uint8List bytes;
+
+  const SealedNoticeDto({required this.peerDeviceId, required this.bytes});
+
+  @override
+  int get hashCode => peerDeviceId.hashCode ^ bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SealedNoticeDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          bytes == other.bytes;
+}
+
 /// Como [`SendFileStartedDto`], para `Core::start_send_audio` — carrega
 /// também o `message_id` da linha `Pending` já inserida na timeline única
 /// (Fase 5), para quem chama poder marcá-la `Sent` depois
@@ -326,6 +378,10 @@ class SendAudioStartedDto {
 }
 
 /// Uma transferência de envio recém-iniciada — `Core::start_send_file`.
+/// Carrega o `message_id` da linha `Pending` já inserida na timeline
+/// (para exibição imediata no chat enquanto os chunks são enviados), para
+/// quem chama poder marcá-la `Sent` depois (`Core::mark_message_sent`) —
+/// mesmo padrão de `SendAudioStartedDto`.
 class SendFileStartedDto {
   /// Identifica a transferência nas chamadas seguintes
   /// (`next_outgoing_wire_chunk`, `transfer_progress`).
@@ -334,13 +390,18 @@ class SendFileStartedDto {
   /// Corpo do `FILE_METADATA` já selado — mandar pelo canal `control`.
   final Uint8List sealedMetadata;
 
+  /// `id` na tabela `messages` — usado depois em `Core::mark_message_sent`.
+  final PlatformInt64 messageId;
+
   const SendFileStartedDto({
     required this.fileId,
     required this.sealedMetadata,
+    required this.messageId,
   });
 
   @override
-  int get hashCode => fileId.hashCode ^ sealedMetadata.hashCode;
+  int get hashCode =>
+      fileId.hashCode ^ sealedMetadata.hashCode ^ messageId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -348,7 +409,39 @@ class SendFileStartedDto {
       other is SendFileStartedDto &&
           runtimeType == other.runtimeType &&
           fileId == other.fileId &&
-          sealedMetadata == other.sealedMetadata;
+          sealedMetadata == other.sealedMetadata &&
+          messageId == other.messageId;
+}
+
+/// Mudança de estado de uma sessão, empurrada pelo stream de
+/// `Core::subscribe_session_events`. Só dado público: o mesmo que
+/// `Core::session_status` já devolve.
+class SessionStateEventDto {
+  final Uint8List peerDeviceId;
+
+  /// `None` quando a sessão deixou de existir (bloqueio do cofre,
+  /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
+  final SessionStateKind? state;
+  final bool needsRehandshake;
+
+  const SessionStateEventDto({
+    required this.peerDeviceId,
+    this.state,
+    required this.needsRehandshake,
+  });
+
+  @override
+  int get hashCode =>
+      peerDeviceId.hashCode ^ state.hashCode ^ needsRehandshake.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SessionStateEventDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          state == other.state &&
+          needsRehandshake == other.needsRehandshake;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de
@@ -361,7 +454,8 @@ enum SessionStateKind {
   /// Pronta para cifrar/decifrar mensagens.
   established,
 
-  /// Precisa de uma sessão nova (`Core::ensure_session` de novo).
+  /// Precisa de uma sessão nova: `Core::reset_session` (`ensure_session`
+  /// devolve a sessão falha como está, nunca a reabre).
   failed,
 }
 

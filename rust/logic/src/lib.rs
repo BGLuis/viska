@@ -24,14 +24,17 @@ pub mod store;
 pub mod util;
 pub mod wire;
 
-/// Versão do protocolo de fio implementada por este crate.
-pub const PROTOCOL_VERSION: u8 = 0x01;
+/// Versão legada / ID da primeira suíte criptográfica (Suite::V1).
+pub const PROTOCOL_VERSION: u8 = crypto::Suite::V1.id();
 
 /// Erro unificado do núcleo.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("versão de protocolo não suportada: {0:#04x}")]
     UnsupportedVersion(u8),
+
+    #[error("suíte criptográfica desativada: {0:#04x}; re-pareamento presencial obrigatório")]
+    SuiteRetired(u8),
 
     #[error("payload malformado: {0}")]
     Malformed(&'static str),
@@ -80,6 +83,9 @@ pub enum Error {
 
     #[error("contato não encontrado")]
     ContactNotFound,
+
+    #[error("o contato já existe mas possui chaves criptográficas diferentes")]
+    ContactKeyMismatch,
 
     #[error("núcleo ou banco de dados trancado")]
     Locked,

@@ -32,6 +32,22 @@ class ContactId {
       ).join()})';
 }
 
+/// Lançada por [P2PTransport.send]/[P2PTransport.sendFile] quando a conexão
+/// já caiu e o envelope **não** foi entregue ao par. Quem chama deve tratar o
+/// envio como não feito (a mensagem segue pendente), nunca como enviado.
+///
+/// Só os transportes que detectam a queda por conta própria (hoje
+/// `LanTransport`) a lançam; os demais repassam o erro da camada de baixo, e
+/// por isso os chamadores capturam qualquer exceção, não só esta.
+class TransportUnavailableException implements Exception {
+  const TransportUnavailableException([this.message = 'transporte indisponível']);
+
+  final String message;
+
+  @override
+  String toString() => 'TransportUnavailableException: $message';
+}
+
 /// Um transporte P2P com um único contato — Fase 3, F5.
 ///
 /// `WebrtcP2PTransport` é a única implementação nesta fase; a Fase 6 (rádios

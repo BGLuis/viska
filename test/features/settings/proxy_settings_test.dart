@@ -37,6 +37,7 @@ void main() {
       expect(cfg.port, 9050);
       expect(cfg.username, isNull);
       expect(cfg.password, isNull);
+      expect(cfg.disableWebrtc, isFalse);
     });
 
     test('orbotDefault is enabled on 127.0.0.1:9050', () {
@@ -44,6 +45,7 @@ void main() {
       expect(cfg.enabled, isTrue);
       expect(cfg.host, '127.0.0.1');
       expect(cfg.port, 9050);
+      expect(cfg.disableWebrtc, isFalse);
     });
 
     test('round-trip JSON serialization preserves all fields', () {
@@ -53,6 +55,7 @@ void main() {
         port: 1080,
         username: 'alice',
         password: 'secretpassword',
+        disableWebrtc: true,
       );
 
       final json = original.toJson();
@@ -63,12 +66,13 @@ void main() {
       expect(restored.port, 1080);
       expect(restored.username, 'alice');
       expect(restored.password, 'secretpassword');
+      expect(restored.disableWebrtc, isTrue);
       expect(restored, equals(original));
     });
   });
 
   group('ProxySettingsScreen Widget Tests', () {
-    testWidgets('renders all fields and toggles SOCKS5 proxy', (tester) async {
+    testWidgets('renders all fields, verifies banner, and toggles SOCKS5 proxy and disableWebRTC', (tester) async {
       final core = _FakeCore();
 
       await tester.pumpWidget(
@@ -81,17 +85,38 @@ void main() {
       expect(find.text('Rede e Proxy SOCKS5 (Tor)'), findsOneWidget);
       expect(find.text('Ativar Proxy SOCKS5 para Sinalização'), findsOneWidget);
 
-      // Switch inicia desativado
+      // Garante que o banner não promete ocultar IP de forma enganosa
+      expect(find.textContaining('oculta seu endereço IP'), findsNothing);
+      expect(
+        find.textContaining('protege só a conexão com o servidor de sinalização'),
+        findsOneWidget,
+      );
+
+      // Switch principal inicia desativado e o switch de WebRTC não é exibido
       expect(find.byType(Switch), findsOneWidget);
       final switchWidget = tester.widget<Switch>(find.byType(Switch));
       expect(switchWidget.value, isFalse);
+      expect(find.text('Desativar WebRTC (Evitar exposição de IP direto)'), findsNothing);
 
-      // Toca no switch
+      // Toca no switch principal para ativar proxy
       await tester.tap(find.byType(Switch));
       await tester.pumpAndSettle();
 
-      final updatedSwitch = tester.widget<Switch>(find.byType(Switch));
+      // Agora há dois switches
+      expect(find.byType(Switch), findsNWidgets(2));
+      final updatedSwitch = tester.widget<Switch>(find.byType(Switch).first);
       expect(updatedSwitch.value, isTrue);
+      expect(find.text('Desativar WebRTC (Evitar exposição de IP direto)'), findsOneWidget);
+
+      final webrtcSwitch = tester.widget<Switch>(find.byType(Switch).last);
+      expect(webrtcSwitch.value, isFalse);
+
+      // Ativa desativação de WebRTC
+      await tester.tap(find.byType(Switch).last);
+      await tester.pumpAndSettle();
+
+      final updatedWebrtcSwitch = tester.widget<Switch>(find.byType(Switch).last);
+      expect(updatedWebrtcSwitch.value, isTrue);
     });
 
     testWidgets('preset button configures Orbot default values', (tester) async {
@@ -123,6 +148,9 @@ void main() {
     });
 
     testWidgets('saving persists proxy configuration in store and core database', (tester) async {
+      tester.view.physicalSize = const Size(2400, 3600);
+      addTearDown(tester.view.resetPhysicalSize);
+
       final core = _FakeCore();
 
       await tester.pumpWidget(
@@ -132,8 +160,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Ativa proxy
-      await tester.tap(find.byType(Switch));
+      // Ativa proxy (primeiro switch)
+      await tester.tap(find.byType(Switch).first);
+      await tester.pumpAndSettle();
+
+      // Ativa toggle de desativar WebRTC (segundo switch)
+      await tester.tap(find.byType(Switch).last);
       await tester.pumpAndSettle();
 
       // Preenche dados customizados
@@ -149,6 +181,7 @@ void main() {
       // Verifica se salvou na memória / store
       final current = ProxyConfigStore.current;
       expect(current.enabled, isTrue);
+      expect(current.disableWebrtc, isTrue);
       expect(current.host, '192.168.1.100');
       expect(current.port, 9150);
       expect(current.username, 'proxyuser');
@@ -158,8 +191,11 @@ void main() {
       expect(savedInCore, isNotNull);
       final json = jsonDecode(savedInCore!) as Map<String, dynamic>;
       expect(json['enabled'], isTrue);
+      expect(json['disableWebrtc'], isTrue);
       expect(json['host'], '192.168.1.100');
       expect(json['port'], 9150);
     });
   });
 }
+
+

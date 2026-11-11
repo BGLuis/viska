@@ -16,8 +16,17 @@ class _FakeP2PTransport implements P2PTransport {
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
+  Object? connectError;
+
+  /// Segura `connect()` para simular um transporte que ainda não voltou.
+  Completer<void>? connectGate;
+
   @override
-  Future<void> connect() async => connectCalls++;
+  Future<void> connect() async {
+    connectCalls++;
+    if (connectError != null) throw connectError!;
+    await connectGate?.future;
+  }
 
   @override
   Future<void> send(Uint8List envelope) async => sendCalls.add(envelope);
@@ -38,6 +47,7 @@ class _FakeP2PTransport implements P2PTransport {
   Future<void> close() async => closeCalls++;
 
   void emitIncoming(Uint8List bytes) => _incoming.add(bytes);
+  void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
   void emitIncomingFile(Uint8List bytes) => _incomingFile.add(bytes);
 }
 
@@ -45,15 +55,18 @@ void main() {
   group('P2PTransportRouter', () {
     late Map<ContactId, _FakeP2PTransport> created;
     late P2PTransportRouter router;
+    Object? nextConnectError;
 
     setUp(() {
       created = {};
+      nextConnectError = null;
       router = P2PTransportRouter(
         // `Core` nunca é usado de verdade nestes testes — o router só o
         // repassa para a fábrica, que aqui ignora e devolve um dublê.
         core: _UnusedCore(),
         transportFactory: (core, contactId) {
-          final transport = _FakeP2PTransport();
+          final transport = _FakeP2PTransport()..connectError = nextConnectError;
+          nextConnectError = null;
           created[contactId] = transport;
           return transport;
         },
@@ -143,6 +156,34 @@ void main() {
       expect(created[contact], isNot(same(first)), reason: 'deveria ser um transporte novo');
     });
 
+    test('a transport whose connect failed is forgotten - next send tries a new one', () async {
+      final contact = ContactId([1, 2, 3]);
+      nextConnectError = StateError('Nenhum transporte candidato conseguiu conectar');
+
+      await expectLater(router.sendToContact(contact, Uint8List.fromList([1])), throwsStateError);
+      final failed = created[contact]!;
+      expect(failed.closeCalls, 1);
+
+      await router.sendToContact(contact, Uint8List.fromList([2]));
+      expect(created[contact], isNot(same(failed)));
+      expect(created[contact]!.sendCalls.single, [2]);
+    });
+
+    test('a transport that reports failure after connecting is forgotten', () async {
+      final contact = ContactId([4, 5, 6]);
+      await router.sendToContact(contact, Uint8List.fromList([1]));
+      final first = created[contact]!;
+
+      first.emitConnectionEvent(
+        const TransportConnectionEvent(TransportConnectionState.failed, reason: 'ICE timeout'),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(router.transportFor(contact), isNull);
+      await router.sendToContact(contact, Uint8List.fromList([2]));
+      expect(created[contact], isNot(same(first)));
+    });
+
     test('closeContact on contact without transport does not error', () async {
       await router.closeContact(ContactId([0, 0, 0]));
     });
@@ -157,6 +198,50 @@ void main() {
 
       expect(created[alice]!.closeCalls, 1);
       expect(created[bob]!.closeCalls, 1);
+    });
+
+    group('awaitConnected', () {
+      final contact = ContactId([7]);
+
+      test('returns once the transport connects', () async {
+        final gate = Completer<void>();
+        var gated = false;
+        router = P2PTransportRouter(
+          core: _UnusedCore(),
+          transportFactory: (_, id) {
+            final transport = _FakeP2PTransport()..connectGate = gate;
+            created[id] = transport;
+            gated = true;
+            return transport;
+          },
+        );
+
+        final waiting = router.awaitConnected(contact, timeout: const Duration(seconds: 5));
+        gate.complete();
+        await waiting;
+
+        expect(gated, isTrue);
+      });
+
+      test('retries with a fresh transport after a failure', () async {
+        nextConnectError = StateError('sem rota');
+
+        await router.awaitConnected(contact, timeout: const Duration(seconds: 10));
+
+        expect(created[contact]!.connectError, isNull, reason: 'o segundo transporte é o que conectou');
+      });
+
+      test('times out when the transport never connects', () async {
+        router = P2PTransportRouter(
+          core: _UnusedCore(),
+          transportFactory: (_, _) => _FakeP2PTransport()..connectGate = Completer<void>(),
+        );
+
+        await expectLater(
+          router.awaitConnected(contact, timeout: const Duration(milliseconds: 50)),
+          throwsA(isA<TimeoutException>()),
+        );
+      });
     });
   });
 }

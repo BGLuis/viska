@@ -28,6 +28,9 @@ typedef FrameFn = Future<Uint8List> Function({required List<int> envelope});
 /// [FrameFn].
 typedef ExtractFrameFn = Future<(Uint8List?, Uint8List)> Function({required List<int> buffer});
 
+/// Par de conexões TCP `control`/`file` de um mesmo anúncio.
+typedef LanConnectionPair = (LanConnection, LanConnection);
+
 /// [P2PTransport] concreto sobre mDNS/DNS-SD (descoberta) + socket TCP
 /// (dados) na mesma LAN — Fase 6, F1.
 ///
@@ -49,7 +52,9 @@ class LanTransport implements P2PTransport, TransportReadiness {
     FrameFn? frame,
     ExtractFrameFn? extractFrame,
     ListNetworkInterfacesFn? listNetworkInterfaces,
-  })  : _core = core,
+    Duration dialTimeout = const Duration(seconds: 2),
+  })  : _dialTimeout = dialTimeout,
+        _core = core,
         _contactId = contactId,
         _listener = listener,
         _discovery = discovery,
@@ -68,6 +73,11 @@ class LanTransport implements P2PTransport, TransportReadiness {
   final FrameFn _frame;
   final ExtractFrameFn _extractFrame;
   final ListNetworkInterfacesFn _listNetworkInterfaces;
+
+  /// Limite de cada discagem. Um registro mDNS velho pode apontar para um IP
+  /// que sumiu da rede: sem limite, `Socket.connect` pendura até o timeout do
+  /// SO e o anúncio atual do mesmo par chegaria com ninguém para tentá-lo.
+  final Duration _dialTimeout;
 
   /// Otimista até a primeira checagem terminar — nunca queremos pular um
   /// candidato só porque a checagem de interfaces de rede ainda não voltou.
@@ -97,6 +107,22 @@ class LanTransport implements P2PTransport, TransportReadiness {
   bool _connectStarted = false;
   bool _closed = false;
 
+  /// A conexão caiu (par fechou, erro de socket ou escrita falhou). Os dois
+  /// canais morrem juntos: um transporte com só metade dos sockets não serve
+  /// ao protocolo, e o roteador o esquece ao ver `failed`.
+  bool _dead = false;
+
+  /// Preâmbulo sob o qual `connect` registrou a espera no [LanListener] — é
+  /// diferente do `device_id` do contato, e `close` precisa cancelar pela
+  /// mesma chave, senão a espera sobrevive e é entregue ao transporte seguinte.
+  Uint8List? _waitPreamble;
+
+  /// Resultado da busca ativa em andamento, para `close` poder encerrá-la: o
+  /// `timeout` de `SelectingP2PTransport` não cancela o `connect`, e é o
+  /// `close` dele que impede o loop de seguir escutando mDNS depois do
+  /// fallback para o próximo candidato.
+  Completer<LanConnectionPair?>? _activeResult;
+
   @override
   Stream<Uint8List> get incoming => _incomingController.stream;
 
@@ -106,14 +132,65 @@ class LanTransport implements P2PTransport, TransportReadiness {
   @override
   Stream<TransportConnectionEvent> get connectionEvents => _connectionEventsController.stream;
 
+  /// Cauda de escritas por canal. `Socket.flush` lança `StateError` se já houver
+  /// outro `flush` pendente no mesmo socket, e há vários produtores
+  /// independentes no canal de controle (chat, acks, handshake): sem
+  /// serializar, uma conexão saudável seria derrubada como falsa queda.
+  Future<void> _controlTail = Future<void>.value();
+  Future<void> _fileTail = Future<void>.value();
+
   @override
-  Future<void> send(Uint8List envelope) async {
-    _control!.add(await _frame(envelope: envelope));
+  Future<void> send(Uint8List envelope) {
+    final result = _controlTail.then((_) => _write(_control, envelope));
+    _controlTail = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
   }
 
   @override
-  Future<void> sendFile(Uint8List bytes) async {
-    _file!.add(await _frame(envelope: bytes));
+  Future<void> sendFile(Uint8List bytes) {
+    final result = _fileTail.then((_) => _write(_file, bytes));
+    _fileTail = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  /// Recusar com erro (em vez de aceitar e perder) é o que impede o chamador
+  /// de marcar como enviada uma mensagem que nunca saiu: `add` sozinho retorna
+  /// antes do I/O, então só o `flush` revela a escrita que falhou.
+  Future<void> _write(LanConnection? connection, Uint8List bytes) async {
+    if (_dead || _closed || connection == null) {
+      throw TransportUnavailableException();
+    }
+    final framed = await _frame(envelope: bytes);
+    // A queda pode ter ocorrido durante o enquadramento (FFI assíncrona).
+    if (_dead || _closed) throw TransportUnavailableException();
+    try {
+      connection.add(framed);
+      await connection.flush();
+    } catch (e) {
+      if (kDebugMode) debugPrint('[LanTransport] escrita falhou: ${e.runtimeType}');
+      _fail('falha ao escrever no socket local');
+      throw TransportUnavailableException();
+    }
+  }
+
+  void _destroySockets() {
+    try {
+      _control?.destroy();
+      _file?.destroy();
+    } catch (_) {}
+  }
+
+  /// Idempotente e silenciosa após `close`: a queda causada por nós mesmos não
+  /// é falha.
+  void _fail(String reason) {
+    if (_dead || _closed) return;
+    _dead = true;
+    _destroySockets();
+    if (!_connectionEventsController.isClosed) {
+      _connectionEventsController.add(
+        TransportConnectionEvent(TransportConnectionState.failed, reason: reason),
+      );
+    }
   }
 
   @override
@@ -131,21 +208,18 @@ class LanTransport implements P2PTransport, TransportReadiness {
       await MulticastLock.acquire();
       try {
         final beacons = await _core.discoveryBeacons(peerDeviceId: _contactId.deviceId);
-        final myDeviceId = await _core.myDeviceId();
         final port = await _listener.ensureListening();
 
         final status = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
         final weAreActive = status.outgoingHandshake != null;
-        debugPrint(
-          '[LanTransport] connect(): porta=$port weAreActive=$weAreActive '
-          'peer=${_hex(_contactId.deviceId)}',
-        );
+        if (kDebugMode) debugPrint('[LanTransport] connect(): porta=$port weAreActive=$weAreActive peer=${_hex(_contactId.deviceId)}');
 
         if (weAreActive) {
-          final peer = await _findPeer(beacons.scanBeacons);
-          debugPrint('[LanTransport] peer encontrado via mDNS: $peer');
-          _control = await _dial(peer, LanChannel.control, myDeviceId);
-          _file = await _dial(peer, LanChannel.file, myDeviceId);
+          final dialPreamble = Uint8List.fromList(beacons.dialPreamble);
+          final pair = await _connectActive(beacons.scanBeacons, dialPreamble);
+          if (pair == null) return; // `close` encerrou a busca
+          _control = pair.$1;
+          _file = pair.$2;
         } else {
           if (!_policy.shouldAdvertise(_contactId)) {
             // Sem anúncio, o lado ativo nunca vai nos achar por mDNS — falha
@@ -157,15 +231,37 @@ class LanTransport implements P2PTransport, TransportReadiness {
           }
           final instanceName = toHexInstanceName(beacons.advertiseBeacon);
           await _discovery.advertise(instanceName: instanceName, port: port);
-          debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
-          _control = await _listener.waitForConnection(
-            deviceId: _contactId.deviceId,
-            channel: LanChannel.control,
-          );
-          _file = await _listener.waitForConnection(
-            deviceId: _contactId.deviceId,
-            channel: LanChannel.file,
-          );
+          if (kDebugMode) debugPrint('[LanTransport] mDNS anunciado: $instanceName :$port — aguardando TCP...');
+          // `close` pode ter rodado durante o `advertise` (lento no mDNS real),
+          // quando ainda não havia espera a cancelar: registrar agora deixaria
+          // uma espera órfã para o próximo transporte do contato.
+          if (_closed) return;
+          final listenPreambles = beacons.listenPreambles.map(Uint8List.fromList).toList();
+          final alternatives = listenPreambles.length > 1 ? listenPreambles.sublist(1) : null;
+          _waitPreamble = listenPreambles.first;
+          try {
+            _control = await _listener.waitForConnection(
+              deviceId: listenPreambles.first,
+              channel: LanChannel.control,
+              alternativeIdentifiers: alternatives,
+            );
+            // Mesma janela entre as duas esperas: `close` já cancelou a do canal
+            // `file` (ainda inexistente), então não registrar a dele.
+            if (_closed) {
+              _control!.destroy();
+              return;
+            }
+            _file = await _listener.waitForConnection(
+              deviceId: listenPreambles.first,
+              channel: LanChannel.file,
+              alternativeIdentifiers: alternatives,
+            );
+          } finally {
+            // Esperas resolvidas (ou falhas): a chave deixa de ser nossa. Um
+            // `close` tardio não pode cancelar a espera de um transporte mais
+            // novo do mesmo contato que reutilizou o preâmbulo.
+            _waitPreamble = null;
+          }
         }
       } finally {
         // Sockets TCP já abertos (sucesso) ou primeira exceção (falha) —
@@ -173,14 +269,22 @@ class LanTransport implements P2PTransport, TransportReadiness {
         await MulticastLock.release();
       }
 
+      if (_closed) {
+        // `close` correu enquanto esperávamos: os controladores já estão
+        // fechados e a conexão não tem dono — descarta em vez de vazar.
+        _control?.destroy();
+        _file?.destroy();
+        return;
+      }
+
       _pump(_control!, _incomingController);
       _pump(_file!, _incomingFileController);
-      debugPrint('[LanTransport] conexão TCP estabelecida com ${_hex(_contactId.deviceId)}');
+      if (kDebugMode) debugPrint('[LanTransport] conexão TCP estabelecida com ${_hex(_contactId.deviceId)}');
       _connectionEventsController.add(
         const TransportConnectionEvent(TransportConnectionState.connected),
       );
     } catch (e) {
-      debugPrint('[LanTransport] FALHA em connect(): $e');
+      if (kDebugMode) debugPrint('[LanTransport] FALHA em connect(): $e');
       if (!_connectionEventsController.isClosed) {
         _connectionEventsController.add(
           TransportConnectionEvent(TransportConnectionState.failed, reason: e.toString()),
@@ -193,24 +297,82 @@ class LanTransport implements P2PTransport, TransportReadiness {
   }
 
 
-  /// Procura, entre os peers anunciados na LAN agora, o primeiro cujo nome
-  /// de instância bate com algum dos beacons da janela de três épocas.
-  Future<LanPeer> _findPeer(List<Uint8List> scanBeacons) async {
+  /// Disca o par assim que um anúncio cujo nome de instância bate com algum
+  /// beacon da janela de três épocas aparece, e continua escutando até algum
+  /// anúncio render um par `control`+`file` completo ou o transporte fechar.
+  ///
+  /// O nome da instância deriva do beacon, não da porta: o registro de uma
+  /// execução anterior do app tem o mesmo nome e uma porta morta, e o NSD
+  /// pode entregá-lo antes do atual. Por isso uma recusa não encerra a busca.
+  ///
+  /// Os dials são concorrentes, no máximo um por porta: o mesmo serviço pode
+  /// vir por mais de um endereço (IPv4/IPv6) ou ser reemitido, e dois dials
+  /// no mesmo listener passivo deixariam um `control` órfão lá. Porta que já
+  /// falhou também não é tentada de novo. Devolve `null` se `close` encerrou.
+  Future<LanConnectionPair?> _connectActive(
+    List<Uint8List> scanBeacons,
+    Uint8List dialPreamble,
+  ) async {
+    if (_closed) return null;
     final wanted = scanBeacons.map(toHexInstanceName).toSet();
+    final result = Completer<LanConnectionPair?>();
+    _activeResult = result;
+    final triedPorts = <int>{};
+
     await _discovery.startBrowsing();
+    // Uma única assinatura durante toda a busca: o stream é broadcast e um
+    // anúncio emitido enquanto um dial está em andamento se perderia.
+    final subscription = _discovery.discovered.listen((peer) {
+      if (_closed || result.isCompleted) return;
+      if (!wanted.contains(peer.instanceName)) return;
+      // A chave é só a porta, de propósito: o mesmo serviço chega por mais de
+      // um endereço e dois dials no mesmo listener deixariam `control` órfão.
+      // O custo é não tentar outro host da mesma porta que falhou.
+      if (!triedPorts.add(peer.port)) return;
+      unawaited(_tryPeer(peer, dialPreamble, result));
+    });
     try {
-      return await _discovery.discovered.firstWhere((peer) => wanted.contains(peer.instanceName));
+      return await result.future;
     } finally {
+      await subscription.cancel();
       try {
         await _discovery.stopBrowsing();
       } catch (_) {}
     }
   }
 
-  Future<LanConnection> _dial(LanPeer peer, LanChannel channel, Uint8List myDeviceId) async {
-    final socket = await Socket.connect(peer.host, peer.port);
-    socket.add(encodePreamble(deviceId: myDeviceId, channel: channel));
-    await socket.flush();
+  Future<void> _tryPeer(
+    LanPeer peer,
+    Uint8List dialPreamble,
+    Completer<LanConnectionPair?> result,
+  ) async {
+    LanConnection? control;
+    try {
+      control = await _dial(peer, LanChannel.control, dialPreamble);
+      final file = await _dial(peer, LanChannel.file, dialPreamble);
+      if (result.isCompleted) {
+        // Outro anúncio ganhou (ou `close` rodou) enquanto este discava.
+        control.destroy();
+        file.destroy();
+        return;
+      }
+      result.complete((control, file));
+    } catch (e) {
+      // O par é atômico: um `control` já aberto não pode sobrar sem `file`.
+      control?.destroy();
+      if (kDebugMode) debugPrint('[LanTransport] dial falhou em $peer: $e');
+    }
+  }
+
+  Future<LanConnection> _dial(LanPeer peer, LanChannel channel, Uint8List preambleId) async {
+    final socket = await Socket.connect(peer.host, peer.port, timeout: _dialTimeout);
+    try {
+      socket.add(encodePreamble(deviceId: preambleId, channel: channel));
+      await socket.flush();
+    } catch (_) {
+      socket.destroy();
+      rethrow;
+    }
     return LanConnection(socket: socket, incoming: socket);
   }
 
@@ -240,40 +402,35 @@ class LanTransport implements P2PTransport, TransportReadiness {
             // rejeita um quadro nunca deve ser tentado de novo sobre o
             // mesmo buffer — a única resposta correta é derrubar a conexão.
             await sub.cancel();
-            connection.destroy();
-            if (!_connectionEventsController.isClosed) {
-              _connectionEventsController.add(
-                const TransportConnectionEvent(
-                  TransportConnectionState.failed,
-                  reason: 'quadro rejeitado pelo enquadramento do socket local',
-                ),
-              );
-            }
+            _fail('quadro rejeitado pelo enquadramento do socket local');
           }
         }());
       },
       onError: (Object e, StackTrace st) {
         if (!out.isClosed) out.addError(e, st);
-        connection.destroy();
+        _fail('erro no socket local');
       },
+      onDone: () => _fail('conexão encerrada pelo par'),
     );
   }
 
   @override
   Future<void> close() async {
     _closed = true;
-    _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.control);
-    _listener.cancelWait(deviceId: _contactId.deviceId, channel: LanChannel.file);
+    final activeResult = _activeResult;
+    if (activeResult != null && !activeResult.isCompleted) activeResult.complete(null);
+    final waitPreamble = _waitPreamble;
+    if (waitPreamble != null) {
+      _listener.cancelWait(deviceId: waitPreamble, channel: LanChannel.control);
+      _listener.cancelWait(deviceId: waitPreamble, channel: LanChannel.file);
+    }
     try {
       await _discovery.stopAdvertising();
     } catch (_) {}
     try {
       await _discovery.stopBrowsing();
     } catch (_) {}
-    try {
-      _control?.destroy();
-      _file?.destroy();
-    } catch (_) {}
+    _destroySockets();
     if (!_incomingController.isClosed) await _incomingController.close();
     if (!_incomingFileController.isClosed) await _incomingFileController.close();
     if (!_connectionEventsController.isClosed) await _connectionEventsController.close();
@@ -281,6 +438,6 @@ class LanTransport implements P2PTransport, TransportReadiness {
 }
 
 /// Formata bytes como string hexadecimal — usado exclusivamente em logs de
-/// diagnóstico (debugPrint), nunca em lógica de protocolo.
+/// diagnóstico (apenas sob kDebugMode), nunca em lógica de protocolo.
 String _hex(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();

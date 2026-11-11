@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::OptionalExtension;
+use zeroize::Zeroizing;
 
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::kdf;
@@ -46,8 +47,13 @@ impl Store {
 
         let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
         apply_key(&conn, &db_key)?;
+        apply_pragmas(&conn)?;
 
         schema::migrate(&conn).map_err(|_| Error::Store)?;
+
+        for &retired in &get_retired_suite_ids() {
+            let _ = purge_retired_on_conn(&conn, retired);
+        }
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
@@ -76,7 +82,13 @@ impl Store {
         let conn = rusqlite::Connection::open(path).map_err(|_| Error::Store)?;
         let db_key = kdf::derive(kdf::context::DATABASE, master_secret.as_bytes());
         apply_key(&conn, &db_key)?;
+        apply_pragmas(&conn)?;
         schema::migrate(&conn).map_err(|_| Error::Store)?;
+
+        for &retired in &get_retired_suite_ids() {
+            let _ = purge_retired_on_conn(&conn, retired);
+        }
+
         *guard = Some(conn);
         Ok(())
     }
@@ -108,12 +120,36 @@ impl Store {
         paired_at_unix_secs: i64,
         nickname: Option<&str>,
     ) -> Result<()> {
-        self.with_conn(|conn| contacts::insert(conn, contact, paired_at_unix_secs, nickname))
+        self.insert_contact_with_suite(contact, paired_at_unix_secs, nickname, 1)
+    }
+
+    /// Persiste um contato recém-pareado com uma suíte específica, opcionalmente com apelido.
+    pub fn insert_contact_with_suite(
+        &self,
+        contact: &PublicIdentity,
+        paired_at_unix_secs: i64,
+        nickname: Option<&str>,
+        suite_id: u8,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            contacts::insert_with_suite(conn, contact, paired_at_unix_secs, nickname, suite_id)
+        })
     }
 
     /// Atualiza o apelido de um contato existente.
     pub fn update_contact_nickname(&self, device_id: &[u8; 16], nickname: &str) -> Result<()> {
         self.with_conn(|conn| contacts::update_nickname(conn, device_id, nickname))
+    }
+
+    /// Atualiza explicitamente as chaves criptográficas de um contato (reseta verificação e eleva suíte).
+    pub fn update_contact_keys(&self, contact: &PublicIdentity, new_suite: u8) -> Result<()> {
+        self.with_conn(|conn| contacts::update_keys(conn, contact, new_suite))
+    }
+
+    /// Descarta mensagens efêmeras, chaves efêmeras e transferências em staging cuja versão de cifra pertença
+    /// a uma suíte criptográfica desativada (§10, D24).
+    pub fn purge_retired_cipher_data(&self, retired_version: u8) -> Result<()> {
+        self.with_conn(|conn| purge_retired_on_conn(conn, retired_version))
     }
 
     /// Lista todos os contatos pareados.
@@ -124,6 +160,16 @@ impl Store {
     /// Busca um contato pelo `device_id`.
     pub fn find_contact(&self, device_id: &[u8; 16]) -> Result<Option<contacts::StoredContact>> {
         self.with_conn(|conn| contacts::find_by_device_id(conn, device_id))
+    }
+
+    /// Consulta a suite_id gravada para o contato.
+    pub fn get_contact_suite_id(&self, device_id: &[u8; 16]) -> Result<u8> {
+        self.with_conn(|conn| contacts::get_suite_id(conn, device_id))
+    }
+
+    /// Atualiza a suite_id gravada para o contato.
+    pub fn set_contact_suite_id(&self, device_id: &[u8; 16], suite_id: u8) -> Result<()> {
+        self.with_conn(|conn| contacts::update_suite_id(conn, device_id, suite_id))
     }
 
     /// Define se o contato está verificado (Fase 9).
@@ -227,6 +273,102 @@ impl Store {
         self.with_conn(|conn| messages::mark_sent(conn, message_id))
     }
 
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
+    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_sending(conn, message_id))
+    }
+
+    /// Devolve à fila uma mensagem `Sending` cujo envio não aconteceu.
+    pub fn requeue_message(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::requeue(conn, message_id))
+    }
+
+    /// Marca como `Unknown` todo texto que ficou em `Sending` (abertura e trava).
+    pub fn mark_sending_messages_unknown(&self) -> Result<usize> {
+        self.with_conn(messages::mark_all_sending_unknown)
+    }
+
+    /// Devolve à fila um texto `Unknown`, a pedido da pessoa.
+    pub fn resend_unknown_message(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::resend_unknown(conn, message_id))
+    }
+
+    /// Devolve à fila os envios em `Sending` de um único contato.
+    pub fn requeue_sending_messages_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| messages::requeue_sending_for_contact(conn, contact_device_id))
+    }
+
+    /// Marca como falha os envios de arquivo e voz `Pending` de um contato.
+    pub fn fail_pending_transfers_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| messages::fail_pending_transfers_for_contact(conn, contact_device_id))
+    }
+
+    /// Marca uma mensagem de saída `Pending` como falha.
+    pub fn mark_message_failed(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_failed(conn, message_id))
+    }
+
+    /// Liga a mensagem de saída de um arquivo ao seu `file_id`.
+    pub fn set_message_file_id(&self, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| messages::set_file_id(conn, message_id, file_id))
+    }
+
+    /// Marca como recusada a mensagem de arquivo deste contato (`FILE_REJECT`).
+    pub fn mark_message_rejected_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::mark_rejected_by_file_id(conn, file_id, contact_device_id))
+    }
+
+    /// Marca como expirada a mensagem de arquivo deste contato (oferta sem resposta).
+    pub fn mark_message_expired_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::mark_expired_by_file_id(conn, file_id, contact_device_id))
+    }
+
+    /// Marca como falha a mensagem de arquivo deste contato (envio cancelado pelo reset).
+    pub fn mark_message_failed_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::mark_failed_by_file_id(conn, file_id, contact_device_id))
+    }
+
+    /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
+    pub fn fail_pending_transfers(&self) -> Result<usize> {
+        self.with_conn(messages::fail_pending_transfers)
+    }
+
+    /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
+    pub fn mark_message_delivered(&self, message_id: i64) -> Result<()> {
+        self.with_conn(|conn| messages::mark_delivered(conn, message_id))
+    }
+
+    /// Marca uma mensagem como entregue buscando por identificador global, id numérico ou ratchet_counter.
+    pub fn mark_delivered_by_target(
+        &self,
+        target_id_str: &str,
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| messages::mark_delivered_by_target(conn, target_id_str, contact_device_id))
+    }
+
+    /// Atualiza o ratchet_counter associado a uma mensagem enviada.
+    pub fn update_message_ratchet_counter(&self, message_id: i64, counter: i64) -> Result<()> {
+        self.with_conn(|conn| messages::update_ratchet_counter(conn, message_id, counter))
+    }
+
+    /// Obtém o identificador global (UUID) de uma mensagem pelo seu rowid local.
+    pub fn get_message_global_id(&self, message_id: i64) -> Result<Option<String>> {
+        self.with_conn(|conn| messages::get_message_global_id(conn, message_id))
+    }
+
     /// Marca mensagem efêmera como lida, disparando o temporizador regressivo.
     pub fn mark_message_read(&self, message_id: i64, unix_now: i64) -> Result<()> {
         self.with_conn(|conn| messages::mark_message_read(conn, message_id, unix_now))
@@ -237,9 +379,19 @@ impl Store {
         self.with_conn(|conn| messages::sweep_expired_ephemeral_messages(conn, unix_now))
     }
 
+    /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
+    pub fn list_messages_paginated(
+        &self,
+        contact_device_id: &[u8; 16],
+        since_id: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<messages::StoredMessage>> {
+        self.with_conn(|conn| messages::list_for_contact_paginated(conn, contact_device_id, since_id, limit))
+    }
+
     /// Todas as mensagens de um contato, mais antigas primeiro.
     pub fn list_messages(&self, contact_device_id: &[u8; 16]) -> Result<Vec<messages::StoredMessage>> {
-        self.with_conn(|conn| messages::list_for_contact(conn, contact_device_id))
+        self.list_messages_paginated(contact_device_id, None, None)
     }
 
     /// Mensagens de saída ainda não entregues.
@@ -263,45 +415,22 @@ impl Store {
         })
     }
 
+    /// Adiciona uma reação emoji a uma mensagem buscando pelo identificador global ou rowid local.
+    pub fn add_reaction_by_target(
+        &self,
+        target_id_str: &str,
+        contact_device_id: &[u8; 16],
+        emoji: &str,
+        created_at_unix_secs: i64,
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| {
+            messages::add_reaction_by_target(conn, target_id_str, contact_device_id, emoji, created_at_unix_secs)
+        })
+    }
+
     /// Consulta as reações emoji vinculadas a uma mensagem.
     pub fn get_reactions(&self, message_id: i64) -> Result<Vec<String>> {
         self.with_conn(|conn| messages::get_reactions_for_message(conn, message_id))
-    }
-
-    /// Configura o PIN de coação e o modo de ação do cofre falso (Fase 9).
-    pub fn configure_duress_pin(&self, duress_pin: &str, action_mode: u8) -> Result<()> {
-        self.with_conn(|conn| {
-            let is_enabled = if duress_pin.is_empty() { 0 } else { 1 };
-            conn.execute(
-                "INSERT INTO decoy_vault_config (id, is_enabled, duress_pin, action_mode)
-                 VALUES (0, ?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET
-                    is_enabled = excluded.is_enabled,
-                    duress_pin = excluded.duress_pin,
-                    action_mode = excluded.action_mode",
-                rusqlite::params![is_enabled, duress_pin, action_mode as i64],
-            )
-            .map_err(|_| Error::Store)?;
-            Ok(())
-        })
-    }
-
-    /// Consulta a configuração do cofre falso (Fase 9).
-    pub fn get_decoy_vault_config(&self) -> Result<Option<(bool, Option<String>, u8)>> {
-        self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT is_enabled, duress_pin, action_mode FROM decoy_vault_config WHERE id = 0",
-                [],
-                |row| {
-                    let enabled: i64 = row.get(0)?;
-                    let pin: Option<String> = row.get(1)?;
-                    let mode: i64 = row.get(2)?;
-                    Ok((enabled != 0, pin, mode as u8))
-                },
-            )
-            .optional()
-            .map_err(|_| Error::Store)
-        })
     }
 
     /// Persiste `transfer_secret` (D15) e o manifesto de uma transferência nova.
@@ -364,13 +493,76 @@ impl core::fmt::Debug for Store {
     }
 }
 
+fn get_retired_suite_ids() -> Vec<u8> {
+    #[allow(unused_mut)]
+    let mut retired = crate::crypto::Suite::RETIRED.to_vec();
+    #[cfg(any(test, feature = "testing"))]
+    {
+        for id in [1u8, 2u8] {
+            if crate::crypto::Suite::is_retired(id) && !retired.contains(&id) {
+                retired.push(id);
+            }
+        }
+    }
+    retired
+}
+
+fn purge_retired_on_conn(conn: &rusqlite::Connection, retired_version: u8) -> Result<()> {
+    conn.execute(
+        "DELETE FROM ephemeral_message_keys WHERE message_id IN (
+            SELECT id FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1
+         )",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    conn.execute(
+        "DELETE FROM messages WHERE is_ephemeral = 1 AND body_cipher_version = ?1",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    conn.execute(
+        "DELETE FROM file_transfers WHERE staging_cipher_version = ?1",
+        rusqlite::params![retired_version as i64],
+    )
+    .map_err(|_| Error::Store)?;
+
+    Ok(())
+}
+
 /// Aplica `PRAGMA key` na conexão. Isolado em função própria porque a chave
 /// precisa ser formatada como blob hexadecimal (`x'...'`) para o SQLCipher não
 /// tentar interpretar bytes arbitrários como texto.
 fn apply_key(conn: &rusqlite::Connection, key: &kdf::Key) -> Result<()> {
-    let hex: String = key.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    conn.pragma_update(None, "key", format!("x'{hex}'"))
+    // Cada passo intermediário carrega a chave em hexadecimal, então todos
+    // são `Zeroizing`. O `String` interno que o rusqlite monta ao aplicar o
+    // pragma escapa ao nosso controle. `write!` evita o `String` temporário de `format!` por byte.
+    use std::fmt::Write;
+    let mut pragma = Zeroizing::new(String::with_capacity(4 + 2 * key.as_bytes().len()));
+    pragma.push_str("x'");
+    for b in key.as_bytes() {
+        write!(pragma, "{b:02x}").map_err(|_| Error::Store)?;
+    }
+    pragma.push('\'');
+    conn.pragma_update(None, "key", pragma.as_str())
         .map_err(|_| Error::Store)
+}
+
+/// Configura os pragmas obrigatórios da conexão:
+/// - `cipher_compatibility = 4`: fixa os parâmetros de criptografia no padrão do SQLCipher 4
+///   (PBKDF2-HMAC-SHA512, 256.000 iterações, páginas de 4096 B, HMAC-SHA512), garantindo que futuras
+///   atualizações de versão do SQLCipher não alterem os padrões nem quebrem a leitura de bancos existentes (#40).
+/// - `journal_mode = WAL`: concorrência e flush determinístico via checkpoint (D13).
+/// - `secure_delete = ON`: sobrescreve com zeros as páginas/células liberadas por DELETE,
+///   impedindo que chaves efêmeras destruídas continuem legíveis nas páginas livres (S-14).
+fn apply_pragmas(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA cipher_compatibility = 4;
+         PRAGMA journal_mode = WAL;
+         PRAGMA secure_delete = ON;",
+    )
+    .map_err(|_| Error::Store)
 }
 
 #[cfg(test)]
@@ -544,4 +736,307 @@ mod tests {
         store.set_config("my_nickname", "Luis H.").unwrap();
         assert_eq!(store.get_config("my_nickname").unwrap().as_deref(), Some("Luis H."));
     }
+
+    #[test]
+    fn ephemeral_key_shredded_and_not_in_decrypted_db_or_wal() {
+        use crate::wire::packet_type::PacketType;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(42);
+
+        let contact = LocalIdentity::generate().unwrap().public();
+        let (k_msg, _msg_id) = {
+            let store = Store::open(&path, &k).unwrap();
+            let sd: i64 = store
+                .with_conn(|conn| {
+                    conn.query_row("PRAGMA secure_delete;", [], |r| r.get(0))
+                        .map_err(|_| Error::Store)
+                })
+                .unwrap();
+            assert_eq!(sd, 1, "PRAGMA secure_delete deve estar ativado (1)");
+
+            store.insert_contact(&contact, 1_000, None).unwrap();
+            store.set_ephemeral_ttl(&contact.device_id, 60).unwrap();
+
+            let msg_id = store
+                .insert_incoming_message(&contact.device_id, PacketType::MsgText, "segredo efêmero", 1000)
+                .unwrap();
+
+            let k_msg: Vec<u8> = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT key FROM ephemeral_message_keys WHERE message_id = ?1",
+                        [msg_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| Error::Store)
+                })
+                .unwrap();
+            assert_eq!(k_msg.len(), 32);
+
+            store.mark_message_read(msg_id, 1010).unwrap();
+            let swept = store.sweep_expired_ephemeral_messages(1071).unwrap();
+            assert_eq!(swept, 1);
+
+            store.close().unwrap();
+            (k_msg, msg_id)
+        };
+
+        // Decifra o banco usando sqlcipher_export para validar o conteúdo exportado em claro.
+        let plaintext_path = dir.path().join("plaintext.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS plaintext KEY '';
+                 SELECT sqlcipher_export('plaintext');
+                 DETACH DATABASE plaintext;",
+                plaintext_path.to_str().unwrap()
+            ))
+            .unwrap();
+        }
+
+        // Lê todo o conteúdo das páginas do banco decifrado.
+        let decrypted_db_bytes = std::fs::read(&plaintext_path).unwrap();
+        assert!(
+            !decrypted_db_bytes.windows(k_msg.len()).any(|w| w == k_msg.as_slice()),
+            "K_msg ainda encontrada nas páginas livres do banco decifrado!"
+        );
+
+        // Verifica o arquivo WAL: se existir, deve estar vazio ou não conter K_msg.
+        let wal_path = dir.path().join("viska.sqlite3-wal");
+        if wal_path.exists() {
+            let wal_bytes = std::fs::read(&wal_path).unwrap();
+            assert!(
+                !wal_bytes.windows(k_msg.len()).any(|w| w == k_msg.as_slice()),
+                "K_msg ainda encontrada no WAL!"
+            );
+            assert_eq!(wal_bytes.len(), 0, "WAL deve estar truncado após sweep");
+        }
+    }
+
+    #[test]
+    fn database_created_without_cipher_compatibility_reopens_with_pragma() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(42);
+        let contact = LocalIdentity::generate().unwrap().public();
+
+        // 1. Cria o banco manualmente sem o pragma cipher_compatibility (como bancos legados)
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA secure_delete = ON;",
+            )
+            .unwrap();
+            schema::migrate(&conn).unwrap();
+            contacts::insert(&conn, &contact, 1_700_000_000, Some("LegacyAlice")).unwrap();
+        }
+
+        // 2. Reabre pelo Store::open (que agora aplica PRAGMA cipher_compatibility = 4)
+        let store = Store::open(&path, &k).unwrap();
+        let (found, paired_at, nickname, _) = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(found, contact);
+        assert_eq!(paired_at, 1_700_000_000);
+        assert_eq!(nickname.as_deref(), Some("LegacyAlice"));
+    }
+
+    #[test]
+    fn sqlcipher_export_matches_before_and_after_reopening_with_pragma() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(43);
+        let contact = LocalIdentity::generate().unwrap().public();
+
+        // 1. Cria o banco sem cipher_compatibility e exporta antes da reabertura
+        let export_before_path = dir.path().join("export_before.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA secure_delete = ON;",
+            )
+            .unwrap();
+            schema::migrate(&conn).unwrap();
+            contacts::insert(&conn, &contact, 1_700_000_000, Some("ExportTest")).unwrap();
+
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS plaintext_before KEY '';
+                 SELECT sqlcipher_export('plaintext_before');
+                 DETACH DATABASE plaintext_before;",
+                export_before_path.to_str().unwrap()
+            ))
+            .unwrap();
+        }
+
+        // 2. Reabre com Store::open (com PRAGMA cipher_compatibility = 4) e exporta novamente
+        let export_after_path = dir.path().join("export_after.sqlite3");
+        {
+            let store = Store::open(&path, &k).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.execute_batch(&format!(
+                        "ATTACH DATABASE '{}' AS plaintext_after KEY '';
+                         SELECT sqlcipher_export('plaintext_after');
+                         DETACH DATABASE plaintext_after;",
+                        export_after_path.to_str().unwrap()
+                    ))
+                    .map_err(|_| Error::Store)?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        // 3. Afirma que ambos os bancos exportados têm o mesmo conteúdo e esquema
+        let conn_before = rusqlite::Connection::open(&export_before_path).unwrap();
+        let conn_after = rusqlite::Connection::open(&export_after_path).unwrap();
+
+        let count_before: i64 = conn_before
+            .query_row("SELECT count(*) FROM contacts", [], |row| row.get(0))
+            .unwrap();
+        let count_after: i64 = conn_after
+            .query_row("SELECT count(*) FROM contacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_before, count_after);
+
+        let nick_before: String = conn_before
+            .query_row("SELECT nickname FROM contacts LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        let nick_after: String = conn_after
+            .query_row("SELECT nickname FROM contacts LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(nick_before, nick_after);
+        assert_eq!(nick_before, "ExportTest");
+    }
+
+    #[test]
+    fn legacy_db_schema_v8_migrates_to_v9_and_keeps_all_data_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_db_path(&dir);
+        let k = key(44);
+
+        let contact = LocalIdentity::generate().unwrap().public();
+        let file_id = [42u8; 16];
+
+        // 1. Cria o banco e roda as primeiras 8 migrations
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db_key = kdf::derive(kdf::context::DATABASE, k.as_bytes());
+            apply_key(&conn, &db_key).unwrap();
+            apply_pragmas(&conn).unwrap();
+            for migration in &schema::MIGRATIONS[..8] {
+                conn.execute_batch(migration).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 8).unwrap();
+
+            // Insere contato
+            conn.execute(
+                "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+                 VALUES (?1, ?2, ?3, 1000, 'Legacy')",
+                rusqlite::params![contact.device_id.as_slice(), contact.signing.as_slice(), contact.dh.as_bytes().as_slice()],
+            ).unwrap();
+
+            // Insere mensagem
+            conn.execute(
+                "INSERT INTO messages (id, contact_device_id, direction, packet_type, body, delivery_state, ratchet_counter, created_at_unix_secs, global_id)
+                 VALUES (1, ?1, 1, 16, 'conteudo legado', 2, 0, 2000, 'legacy-uuid')",
+                rusqlite::params![contact.device_id.as_slice()],
+            ).unwrap();
+
+            // Insere file transfer
+            conn.execute(
+                "INSERT INTO file_transfers (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind)
+                 VALUES (?1, 1, ?2, ?3, ?4, 3000, 0)",
+                rusqlite::params![file_id.as_slice(), contact.device_id.as_slice(), [8u8; 32].as_slice(), [7u8; 32].as_slice()],
+            ).unwrap();
+        }
+
+        // 2. Abre usando Store::open, que executa schema::migrate
+        let store = Store::open(&path, &k).unwrap();
+
+        // 3. Verifica se o contato continua legível e tem suite_id = 1
+        let found_contact = store.find_contact(&contact.device_id).unwrap().unwrap();
+        assert_eq!(found_contact.0, contact);
+        assert_eq!(found_contact.2.as_deref(), Some("Legacy"));
+        assert_eq!(store.get_contact_suite_id(&contact.device_id).unwrap(), 1);
+
+        // 4. Verifica se a mensagem continua legível
+        let msgs = store.list_messages(&contact.device_id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].body, "conteudo legado");
+        assert_eq!(msgs[0].global_id.as_deref(), Some("legacy-uuid"));
+
+        // 5. Verifica se o file transfer continua legível
+        let transfer = store.find_file_transfer(&file_id).unwrap().unwrap();
+        assert_eq!(transfer.file_id, file_id);
+        assert_eq!(transfer.created_at_unix_secs, 3000);
+    }
+
+    #[test]
+    fn purge_retired_suite_clears_messages_and_file_transfers_with_retired_cipher_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let store = Store::open(&path, &key(99)).unwrap();
+
+        let peer = LocalIdentity::generate().unwrap().public();
+        store.insert_contact(&peer, 1000, Some("Peer")).unwrap();
+
+        // Insere mensagem efêmera com body_cipher_version = 1
+        // Insere mensagem efêmera com body_cipher_version = 1 e chave efêmera associada
+        store.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO messages (id, contact_device_id, direction, packet_type, body, delivery_state, created_at_unix_secs, is_ephemeral, body_cipher_version)
+                 VALUES (10, ?1, 0, 0x10, 'efemera na suite 1', 0, 1000, 1, 1)",
+                rusqlite::params![peer.device_id.as_slice()],
+            ).unwrap();
+
+            conn.execute(
+                "INSERT INTO ephemeral_message_keys (message_id, key, read_at, expires_at)
+                 VALUES (10, ?1, NULL, 5000)",
+                rusqlite::params![[0xeeu8; 32].as_slice()],
+            ).unwrap();
+
+            // Insere transferência em staging com staging_cipher_version = 1
+            conn.execute(
+                "INSERT INTO file_transfers (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version)
+                 VALUES (?1, 1, ?2, X'00', ?3, 1000, 0, 1)",
+                rusqlite::params![[0xaau8; 16].as_slice(), peer.device_id.as_slice(), [0xbbu8; 32].as_slice()],
+            ).unwrap();
+
+            Ok(())
+        }).unwrap();
+
+        // Afirma que antes do expurgo existem linhas na versão 1
+        store.with_conn(|conn| {
+            let m_count: i64 = conn.query_row("SELECT count(*) FROM messages WHERE body_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            let k_count: i64 = conn.query_row("SELECT count(*) FROM ephemeral_message_keys WHERE message_id = 10", [], |r| r.get(0)).unwrap();
+            let f_count: i64 = conn.query_row("SELECT count(*) FROM file_transfers WHERE staging_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            assert_eq!(m_count, 1);
+            assert_eq!(k_count, 1);
+            assert_eq!(f_count, 1);
+            Ok(())
+        }).unwrap();
+
+        // Executa o expurgo da suíte desativada 1 (Item 4)
+        store.purge_retired_cipher_data(1).unwrap();
+
+        // Afirma que nenhuma linha de messages, ephemeral_message_keys ou file_transfers fica com versão de cifra desativada
+        store.with_conn(|conn| {
+            let m_count: i64 = conn.query_row("SELECT count(*) FROM messages WHERE body_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            let k_count: i64 = conn.query_row("SELECT count(*) FROM ephemeral_message_keys WHERE message_id = 10", [], |r| r.get(0)).unwrap();
+            let f_count: i64 = conn.query_row("SELECT count(*) FROM file_transfers WHERE staging_cipher_version = 1", [], |r| r.get(0)).unwrap();
+            assert_eq!(m_count, 0, "nenhuma linha de messages deve permanecer na versao desativada");
+            assert_eq!(k_count, 0, "nenhuma chave efêmera deve permanecer");
+            assert_eq!(f_count, 0, "nenhuma linha de file_transfers deve permanecer na versao desativada");
+            Ok(())
+        }).unwrap();
+    }
 }
+

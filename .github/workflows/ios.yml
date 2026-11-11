@@ -3,181 +3,120 @@ name: CI/CD iOS — Viska
 on:
   push:
     branches: [ main, develop, developer ]
-    tags: [ 'v*' ]
-    paths:
-      - 'ios/**'
-      - 'rust/**'
-      - 'rust_builder/**'
-      - 'lib/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/ios.yml'
   pull_request:
     branches: [ main, develop, developer ]
-    paths:
-      - 'ios/**'
-      - 'rust/**'
-      - 'rust_builder/**'
-      - 'lib/**'
-      - 'pubspec.yaml'
-      - '.github/workflows/ios.yml'
   workflow_dispatch:
-    inputs:
-      deploy_testflight:
-        description: 'Compilar com assinatura e publicar no TestFlight'
-        required: false
-        type: boolean
-        default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ios-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  # Job 1: Validacao continua de compilacao e linkage sem assinatura (F0–F3)
+  changes:
+    name: Detectar alterações relevantes para iOS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout em eventos push
+      pull-requests: read # paths-filter consulta arquivos do PR via API
+    outputs:
+      packages: ${{ steps.filter.outputs.changes }}
+    steps:
+      - name: Checkout raso para diff de push
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Filtrar caminhos modificados
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            ios:
+              - 'ios/**'
+              - 'rust/**'
+              - 'rust_builder/**'
+              - 'lib/**'
+              - 'pubspec.yaml'
+              - 'pubspec.lock'
+              - '.github/workflows/ios.yml'
+
   ios-build-check:
     name: Compilação iOS e Linkage Rust (No-Codesign)
-    runs-on: macos-14
+    needs: [changes]
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON(needs.changes.outputs.packages), 'ios') }}
+    runs-on: macos-15
     timeout-minutes: 30
-    if: "!inputs.deploy_testflight"
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Configurar Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: stable
-          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+          persist-credentials: false
 
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
+      - name: Adicionar alvo iOS ao Rust
+        run: rustup target add aarch64-apple-ios
+
+      - name: Cache de dependências Rust (Cargokit iOS)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
-            rust -> rust/target
+            rust -> ../build/ios/Build/Intermediates.noindex/Pods.build/Release-iphoneos/viska_core.build
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
           cache: true
 
-      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
-        run: flutter config --no-enable-swift-package-manager
-
       - name: Configurar Ruby e Bundler
-        uses: ruby/setup-ruby@277ba2a127aba66d45bad0fa2dc56f80dbfedffa  # v1.222.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
           working-directory: ios
 
       - name: Obter dependências Flutter
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Instalar CocoaPods
         working-directory: ios
-        run: bundle exec pod install --repo-update
-
-      - name: Verificação prévia do crate Rust para aarch64-apple-ios
-        working-directory: rust
-        run: cargo check --target aarch64-apple-ios --release
+        run: bundle exec pod install
 
       - name: Compilação do App iOS (Release sem assinatura)
         run: flutter build ios --no-codesign --release
 
-  # Job 2: Publicacao no TestFlight via Fastlane (F4)
-  ios-testflight-deploy:
-    name: Publicação TestFlight (Fastlane)
-    runs-on: macos-14
-    timeout-minutes: 30
-    if: "inputs.deploy_testflight"
+      - name: Validar empacotamento em IPA sem assinatura
+        run: |
+          chmod +x scripts/package_ios_unsigned.sh
+          ./scripts/package_ios_unsigned.sh build/ios/iphoneos/Runner.app build/ios/release_unsigned viska-ios-unsigned.ipa
+          test -s build/ios/release_unsigned/viska-ios-unsigned.ipa
+
+  ios-ok:
+    name: Status consolidado iOS
+    if: always()
+    needs: [changes, ios-build-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
     steps:
-      - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Validar presença de segredos Apple
+      - name: Verificar resultado dos jobs de iOS
         env:
-          CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
-          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if [ -z "$CERT_BASE64" ] || [ -z "$ASC_KEY" ]; then
-            echo "[-] Erro: Segredos de assinatura da Apple (IOS_DISTRIBUTION_CERTIFICATE_BASE64 ou APP_STORE_CONNECT_PRIVATE_KEY) não configurados." >&2
-            echo "[-] Configure os secrets necessários no GitHub antes de disparar deploy_testflight." >&2
-            exit 1
-          fi
-          echo "[+] Segredos de distribuição detectados."
-
-      - name: Configurar Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
-        with:
-          toolchain: stable
-          targets: aarch64-apple-ios
-
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
-        with:
-          workspaces: |
-            rust -> rust/target
-
-      - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
-        with:
-          channel: 'stable'
-          cache: true
-
-      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
-        run: flutter config --no-enable-swift-package-manager
-
-      - name: Configurar Ruby e Bundler
-        uses: ruby/setup-ruby@277ba2a127aba66d45bad0fa2dc56f80dbfedffa  # v1.222.0
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-          working-directory: ios
-
-      - name: Configurar Keychain efêmero e certificados Apple
-        env:
-          CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
-          PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-        run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          CERTIFICATE_PATH=$RUNNER_TEMP/distribution.p12
-          echo "$CERT_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-          security import "$CERTIFICATE_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
-
-      - name: Obter dependências Flutter
-        run: flutter pub get
-
-      - name: Instalar CocoaPods
-        working-directory: ios
-        run: bundle exec pod install --repo-update
-
-      - name: Executar Fastlane e Deploy no TestFlight
-        working-directory: ios
-        env:
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: bundle exec fastlane beta
-
-      - name: Limpar Keychain e certificados efêmeros
-        if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/distribution.p12"
-          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+          echo "Resultados: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) exit 1 ;;
+            esac
+          done

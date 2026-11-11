@@ -95,6 +95,12 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
 - **Volume e frequência de mensagens/arquivos.** O feedback de transferência de arquivo (`FILE_FEEDBACK`,
   §7.4) e o próprio ato de trocar mensagens revelam volume aproximado a quem observa o tráfego cifrado;
   o protocolo não tenta esconder isso (é tratado como já observável de qualquer forma).
+- **Jitter por rajada no canal de arquivos (P-02).** Para permitir taxas de transferência condizentes
+  com arquivos grandes (≥ 10 MB/s), o jitter no canal `file` é aplicado por rajada (`burstSize` > 1),
+  e não serialmente antes de cada símbolo individual de 16 KiB. Como o volume e a duração de uma
+  transferência de arquivo já são inerentemente observáveis em trânsito (§3), a decisão de mitigar o
+  gargalo serial de jitter no canal `file` é uma escolha consciente de equilíbrio entre desempenho e
+  análise de tráfego.
 - **Duração aproximada de uma nota de voz, pela contagem de pacotes.** Os buckets de padding (§6.3, D5)
   limitam a granularidade do *tamanho* de cada `AUDIO_CHUNK`, mas não escondem *quantos* pacotes uma
   nota de voz gera — um observador do tráfego cifrado pode estimar a duração contando pacotes na
@@ -105,20 +111,88 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
   suportar transferências concorrentes com o mesmo contato. `file_id` é aleatório, sem relação com
   conteúdo, nome ou tamanho; mesma categoria de vazamento necessário que `Counter`/`dh_pub` no canal
   `control` (D4/D14).
+- **Detectabilidade do cofre falso (issue #30, achado S-17 da auditoria de 2026-09).** O modo
+  "Cofre Falso" do PIN de coação **não é indetectável** para quem examina o armazenamento do
+  aparelho (§1.4), e o aplicativo não promete negação plausível da existência de um segundo cofre.
+  O que é observável hoje, sem decifrar nada:
+  - `<app_dir>/security_config.json` é JSON em texto claro. A presença de `duress_pin_hash` e
+    `duress_pin_length` indica que há PIN de coação configurado (`lock_controller.dart:188-193`).
+    `duress_action_mode` é gravada sempre, mesmo sem PIN de coação (`lock_controller.dart:193`),
+    então por si só não distingue aparelhos; qualquer valor diferente de 0 (na prática 1) escolhe o
+    cofre falso (`lock_controller.dart:442-446`), e só tem efeito se houver PIN de coação.
+  - `<app_dir>/decoy/` guarda um `Core` próprio, com banco independente do real
+    (`decoy/viska.sqlite3`, `rust/src/ffi/core.rs:24`; sem chave injetada pelo KeyStore, também um
+    `decoy/master.key`, `rust/logic/src/store/keyring.rs:24,71`), aberto por `Core.open(appDir: decoyDir)`
+    (`lock_controller.dart:462,469`). O diretório é criado de forma preguiçosa, em
+    `activateDecoyVault`, chamada quando o PIN de coação é aceito com o modo cofre falso
+    (`lock_controller.dart:460-466`).
+  - **O que isso prova:** `decoy/` presente indica que o cofre falso foi ativado alguma vez neste
+    aparelho. Ele persiste mesmo depois de o PIN de coação ser removido (`clearPins`,
+    `lock_controller.dart:271-279`, não o apaga), então não prova que há PIN de coação *hoje*. Pode
+    existir vazio se `Core.open` falhar (o erro é engolido, `lock_controller.dart:468-474`).
+    `duress_pin_hash` presente prova que existe um PIN de coação configurado.
+  - **O que isso não prova:** `decoy/` ausente **não** prova que não há cofre falso configurado
+    (basta o PIN de coação nunca ter sido digitado); `duress_*` ausente também não prova que nunca
+    houve PIN de coação, porque `clearPins` os remove. Os arquivos não dizem, por si, o conteúdo de
+    nenhum dos dois cofres.
+  - **Agravante já existente:** os PINs ficam em `security_config.json` como SHA-256 com prefixo
+    constante `viska-pin-v1:` (separação de domínio, não sal) e sem custo de derivação
+    (`_hashPin`, `lock_controller.dart:152-154`). Com PIN de 4 a 8 dígitos
+    (`lock_controller.dart:104-105`), quem lê o arquivo recupera os PINs por força bruta offline,
+    inclusive qual deles é o de coação, e pode editar `failed_pin_attempts` e
+    `pin_retry_not_before_ms`. O PIN é um portão de interface (a chave mestra fica fora desse
+    arquivo), então isso não abre o conteúdo cifrado, mas agrava a detectabilidade. Problema
+    próprio, **não corrigido aqui**.
+  - **Não mitigado:** renomear as chaves `duress_*` ou o diretório `decoy/` só atrapalharia um
+    examinador que não conhece o app; enquanto os dois cofres forem distinguíveis pela estrutura
+    de arquivos, o ganho é nulo contra um que conheça. O apagamento de emergência remove
+    `security_config.json` e `decoy/` em melhor esforço (falhas são engolidas,
+    `lock_controller.dart:510-536`), só depois de acionado (modo 0 do PIN de coação ou apagamento manual em Ajustes,
+    `settings_screen.dart:258`), e não ajuda
+    a esconder o cofre falso.
 - **Comprometimento do aparelho antes do primeiro uso.** Se o aparelho já estiver comprometido (malware,
   keylogger, câmera do QR interceptada) antes do pareamento, nenhuma primitiva aqui ajuda — a raiz de
   confiança é o pareamento presencial em si.
+- **Autenticação pós-quântica na Suíte 0x01.** A autenticação de identidade e pareamento na Suíte `0x01`
+  repousa exclusivamente em criptografia clássica (Ed25519 na assinatura do QR Code e X25519 para a
+  chave estática `IK_dh`). Embora o sigilo de sessão utilize ML-KEM-768 híbrido contra HNDL (§1.2), a
+  quebra criptoanalítica de X25519 compromete a autenticação mútua da Suíte `0x01`; nessa eventualidade,
+  o anúncio de suítes em banda (`CONTROL_SUITES`) não é confiável e a migração de suíte exige
+  obrigatoriamente re-pareamento presencial.
 
 ---
 
 ## 4. Segurança em repouso
 
-Resumo de D13 (`docs/deviations.md`): chave mestra embrulhada no KeyStore/Secure Enclave e
-desembrulhada só dentro do Rust; `zeroize` em todo segredo que passa por buffer temporário;
-`allowBackup=false`; `FLAG_SECURE`; bloqueio por biometria com auto-lock; apagamento de emergência por
-destruição de chave (crypto-shredding); staging de arquivo cifrado com chave descartável por
-transferência; teclado sem autocorreção nem sugestões; zero SDK de analytics, crash reporting ou
-publicidade; build reproduzível.
+O desvio D13 (`docs/deviations.md`) define o conjunto de defesas para o adversário que tem o
+aparelho em mãos. Para manter a fidelidade e não superestimar as defesas reais do sistema, a
+tabela abaixo discrimina o estado de cada medida entre o que foi **planejado** e o que está
+efetivamente **implementado**, com remissão ao relatório de endurecimento
+(`docs/reports/FASE-7-ENDURECIMENTO.md`).
+
+| Medida | Estado | Detalhes e Evidência no Código |
+|---|:---:|---|
+| **`zeroize` em buffers e segredos** | ✅ | Implementado em todo o núcleo Rust (`crypto/`, `wire/`, `store/`). |
+| **`android:allowBackup="false"`** | ✅ | Ativo no manifesto Android (`android/app/src/main/AndroidManifest.xml`). Impede extração via `adb backup`. |
+| **Staging cifrado descartável** | ✅ | Transferências de arquivos e notas de voz usam chave efêmera e montagem em `.staging`. |
+| **Teclado sem autocorreção/sugestões** | ✅ | Ativo nos campos de entrada de texto (`autocorrect: false`) em `chat_screen.dart`. |
+| **Zero SDK de telemetria / analytics** | ✅ | Zero dependências de rastreamento no `Cargo.toml` e `pubspec.yaml`. |
+| **Apagamento de emergência (crypto-shredding)** | ✅ | `Core::emergency_erase` destrói o banco SQLite, remove a chave mestra em disco e remove o alias no Android KeyStore. |
+| **`FLAG_SECURE` contra captura de tela** | 🟡 | Implementado no Android (`SecurityPlugin.kt`, `MainActivity.kt`), bloqueando gravação e miniaturas da janela de recentes. Equivalente no iOS (blur em `applicationWillResignActive`) pendente de validação. |
+| **Chave mestra no KeyStore / Secure Enclave** | 🟡 | Android implementa geração com StrongBox/TEE via `SecurityPlugin.kt` e injeção direta no Rust (`set_injected_master_secret`). Em plataformas sem suporte ou desktop, utiliza arquivo interino `master.key` com permissão restrita `0600` (`rust/logic/src/store/keyring.rs`). Secure Enclave no iOS não implementado. |
+| **Bloqueio por biometria e auto-lock** | 🟡 | Tela e controlador Dart (`lock_controller.dart`) com suporte a biometria (`local_auth`) e temporizador de inatividade. O despejo total de chaves de sessões ativas da memória RAM do Rust ao bloquear o app ainda é parcial. |
+| **Build reproduzível** | ❌ | Não implementado. Planejado na etapa F6 da Fase 7 (`FASE-7-ENDURECIMENTO.md`). |
+
+### 4.1 Restauração de backup clona a identidade
+
+Restaurar um backup (`.viskasafe`) grava no aparelho novo a mesma chave mestra e o mesmo banco do
+original, inclusive a identidade de longo prazo. Enquanto o aparelho de origem não for apagado, existem
+**duas instalações com a mesma identidade**, e o protocolo não tem revogação de aparelho que as
+distinga. A defesa é operacional: a tela de restauração avisa que o aparelho de origem deve ser
+apagado (ou o Viska desinstalado nele) logo após a restauração. Um aparelho de origem perdido ou
+roubado, que a pessoa não consegue apagar, mantém a identidade em poder de quem o tiver; o recurso
+nesse caso é o apagamento de emergência, se ainda houver acesso, ou o re-pareamento com novos
+contatos de uma identidade nova.
 
 ---
 

@@ -47,6 +47,14 @@ Certifique-se de ter instalado:
 - `flutter_rust_bridge_codegen` (`2.13.0`)
 - No Linux: bibliotecas de áudio `libasound2-dev` e `libpulse-dev`
 
+#### Alternativa opcional: ambiente via Nix
+
+Quem usa [Nix](https://nixos.org) (com flakes habilitadas, só `x86_64-linux`) pode pular a instalação manual: `nix develop` entrega Rust (com clippy, rustfmt e os alvos Android), Flutter, JDK 17, Android SDK/NDK, `flutter_rust_bridge_codegen 2.13.0` e as ferramentas dos scripts. Com `direnv`, rode `direnv allow` uma vez.
+
+- `nix run .#rust-check` e `nix run .#flutter-check` repetem os comandos da seção abaixo, a partir da raiz do repositório. Os testes do Flutter precisam de `rust/target/debug/libviska_core.so` (`cargo build --no-default-features`).
+- O primeiro uso baixa alguns GB. Ao usar este shell você aceita as licenças do Android SDK, declaradas em `flake.nix`.
+- O CI não usa Nix e o fluxo manual continua válido.
+
 ### 2. Validação Contínua (O que roda no CI)
 Antes de abrir um Pull Request, execute os seguintes comandos localmente e garanta que todos passem sem qualquer aviso ou falha:
 

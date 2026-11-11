@@ -17,13 +17,16 @@ dependencies:
   mobile_scanner: ^7.4.2
   mqtt_client: ^10.9.0
   nsd: ^5.0.1
+  path: ^1.9.1
   path_provider: ^2.1.6
   permission_handler: ^13.0.2
+  file_picker: ^8.1.7
   qr_flutter: ^4.1.0
   record: ^6.2.1
   typed_data: ^1.4.0
   crypto: ^3.0.6
   collection: ^1.19.0
+  clock: ^1.1.2
   viska_core:
     path: rust_builder
 
@@ -46,3 +49,18 @@ flutter:
   uses-material-design: true
   config:
     enable-swift-package-manager: false
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+    - family: JetBrains Mono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-Medium.ttf
+          weight: 500

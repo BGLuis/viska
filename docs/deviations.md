@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D18). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D26). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -204,11 +204,12 @@ Decisão do projeto: aceitar e declarar, em vez de sugerir uma proteção que n�
 A spec trata com profundidade o adversário de rede e quase não trata o adversário que tem o aparelho
 na mão — que, para a maior parte dos usuários reais, é o mais provável dos dois.
 
-Resumo: chave mestra embrulhada no KeyStore/Secure Enclave e desembrulhada só dentro do Rust;
-`zeroize` em todo segredo; `allowBackup=false`; `FLAG_SECURE`; bloqueio por biometria com auto-lock;
-apagamento de emergência por destruição de chave (crypto-shredding); staging cifrado com chave
-descartável; teclado sem autocorreção nem sugestões; zero SDK de analytics, crash reporting ou
-publicidade; build reproduzível.
+Resumo: conjunto explícito de medidas detalhado no §4 de `docs/threat-model.md` com status
+de implementação por item (ver também `docs/reports/FASE-7-ENDURECIMENTO.md`): chave mestra
+embrulhada no KeyStore/Secure Enclave (🟡), `zeroize` em todo segredo (✅), `allowBackup=false` (✅),
+`FLAG_SECURE` (🟡), bloqueio por biometria com auto-lock (🟡), apagamento de emergência por
+crypto-shredding (✅), staging cifrado com chave descartável (✅), teclado sem autocorreção nem
+sugestões (✅), zero telemetria (✅) e build reproduzível (❌).
 
 **Custo de reverter:** o adversário mais provável passa a ser o menos tratado.
 
@@ -264,6 +265,13 @@ retomar uma transferência não depende de reconstruir um estado de ratchet espe
 **Custo de reverter:** perder a capacidade de retomar uma transferência grande após queda de conexão
 sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
 desenhada dentro do ratchet — projeto à parte.
+
+**Estado atual (pendente):** a retomada que esta decisão torna possível ainda **não existe**. `Core::lock`
+e a abertura do app tratam toda transferência sem handle em memória como abortada e apagam a linha e o
+`transfer_secret` (U-03, issue #9), de modo que o segredo persistido hoje nunca é lido de volta. O
+envio de arquivo, em particular, não sobrevive a bloqueio nem a reinício, e por isso o prazo de oferta
+sem resposta do §7.7 item 5 também vive só em memória. Reconstruir `SendTransfer`/`ReceiveTransfer` a
+partir do banco no `unlock` é trabalho à parte.
 
 ---
 
@@ -346,3 +354,110 @@ plataformas de forma portátil e sem compilação nativa C via autotools.
 **Custo de reverter:** reintroduzir a ambiguidade de reprodução no iOS — provavelmente notas de voz
 mudas nesse aparelho, dependendo da versão. `rebuild_container`/`strip_container` continuam
 existindo (usados pelos testes do próprio demuxer), só não são mais o caminho de reprodução.
+
+---
+
+## D19 — Envio de `MSG_TYPING` diferido (apenas recepção ativa)
+**Spec:** §6.2, tipo de pacote `0x12 MSG_TYPING` para indicador efêmero de digitação.
+**Aqui:** a recepção e o descarte efêmero (sem persistência em banco) estão implementados no Rust e na UI, mas o gatilho de transmissão contínua enquanto o usuário digita no campo de texto foi diferido.
+
+O disparo contínuo de pacotes no canal de controle a cada tecla ou throttle na interface mobile introduz ruído de tráfego, consumo de bateria desnecessário e possíveis vazamentos de cadência de digitação para observadores de metadados. A infraestrutura de recepção, decodificação e exibição efêmera já existe (`TypingIndicatorEvent`); apenas o gerador de eventos no campo de texto foi omitido nesta fase.
+
+**Custo de reverter:** adicionar um listener com debounce no `TextEditingController` de `chat_screen.dart` chamando `Core::seal_outgoing_typing` ou similar.
+
+---
+
+## D20 — `CONTROL_PING` / Tráfego de cobertura omitido no cliente móvel
+**Spec:** §6.2, `0x40 CONTROL_PING` para keepalive e cover traffic.
+**Aqui:** omitido em dispositivos móveis operando em primeiro plano ou segundo plano.
+
+Manter tráfego de cobertura constante com envio periódico de envelopes fictícios impede os rádios celulares (LTE/5G) e Wi-Fi de entrarem em estados de baixo consumo de energia (RRC Idle / Connected DRX), resultando em drenagem acelerada da bateria e consumo severo da franquia de dados móveis do usuário. Conexões P2P WebRTC DataChannel já contam com keepalives SCTP/ICE integrados para manutenção de NAT bindings.
+
+**Custo de reverter:** implementar timer periódico disparando envelopes cifrados com `PacketType::ControlPing` quando uma sessão estiver ociosa.
+
+---
+
+## D21 — Backends de sinalização Nostr e troca manual diferidos
+**Spec:** §8.3, ordem de tentativa: "MQTT público → relay Nostr → troca manual".
+**Aqui:** apenas o backend MQTT público sobre TLS com suporte opcional a SOCKS5/Tor está implementado; Nostr e troca manual foram postergados.
+
+A infraestrutura abstrata `SignalingBackend` foi desenhada desde o início para permitir múltiplos provedores intercambiáveis sem alterar as camadas superiores. O backend MQTT público resolve a quase totalidade dos cenários de rendezvous P2P com baixa latência e alta disponibilidade. Relays Nostr (WebSocket com assinaturas Schnorr) e troca manual (copiar/colar SDP) foram postergados para fases posteriores de maturação do produto.
+
+**Custo de reverter:** implementar classes concretas `NostrSignalingBackend` e `ManualSignalingBackend` estendendo a interface `SignalingBackend`.
+
+---
+
+## D22 — Jitter de transmissão restrito a WebRTC
+**Spec:** §6.5, atraso amostrado de normal truncada [5 ms, 25 ms] antes de cada envio.
+**Aqui:** implementado e ativo no canal WebRTC; omitido em transportes de rede local (LAN TCP, Wi-Fi Aware, MultipeerConnectivity).
+
+O jitter artificial tem o propósito de dificultar correlação de tráfego contra observadores de rede remotos na Internet. Em redes estritamente locais (mesmo Wi-Fi ou conexão ad-hoc direta P2P entre aparelhos a poucos metros de distância), o atraso induzido não agrega benefício defensivo contra adversários remotos e penaliza a velocidade de transferência de arquivos de alta capacidade em conexões locais rápidas.
+
+**Custo de reverter:** aplicar a função `sample_jitter_delay_ms` antes de chamadas de envio em sockets locais.
+
+---
+
+## D23 — Símbolo da LAN de 65535 B e envelope de sessão com buckets do DataChannel
+**Spec:** §6.3 e §7.3, o símbolo da LAN tem 65536 B, e cada transporte usa o próprio par de buckets.
+**Aqui, símbolo:** `symbol_size = 65535` na LAN (`LAN_SYMBOL_SIZE`). O RaptorQ (RFC 6330) codifica o
+tamanho do símbolo em 16 bits, e `Manifest.symbol_size` é `u16`: 65536 não é representável (virava 0).
+O `FILE_SYMBOL` selado fica maior que um envelope, então `MAX_FRAME_LEN` passou a cobri-lo.
+
+**Aqui, envelope:** o envelope de sessão (texto, recibos, `FILE_METADATA`, `FILE_FEEDBACK`) é selado sempre com
+os buckets do DataChannel (1024/16384), inclusive na LAN. O canal `file` não é afetado: usa
+`symbol_size = 65535` na LAN (D6, acima) e não passa por `Session`.
+
+O receptor decifra com os mesmos buckets do emissor, então os dois lados precisam concordar sobre o
+transporte. Hoje o `Core` não recebe essa informação, e acrescentá-la muda a superfície FFI, o que
+exige regenerar `frb_generated.*` com `flutter_rust_bridge_codegen`. A perda é só de indistinguibilidade
+de tamanho dentro do tráfego da LAN, que tem o mesmo conjunto de dois tamanhos, só que menor.
+
+**Custo de reverter:** passar `Transport` por par a `encrypt_outgoing`/`decrypt_incoming` em
+`ffi/session.rs` e `ffi/transfer.rs`, e expô-lo ao Dart.
+
+**Recuperação de bloco no modo offset:** O emissor envia inicialmente os `k` símbolos-fonte do bloco atual em sequência. Se o feedback do receptor indicar que o bloco não foi concluído (`!advanced`) e todos os símbolos já foram transmitidos (`next_repair_symbol_id >= repair_limit`), o emissor aciona automaticamente `restart_current_block()`, reiniciando o envio a partir do símbolo 0 do bloco a partir do cache `current_source_symbols`. Como o receptor envia feedback a cada 500 ms mesmo sem chegar símbolo (§7.4), aceites tardios de arquivos pesados ou perdas pontuais na LAN não congelam a transferência. Além disso, 65535 não é potência de dois: um bloco de 1024 símbolos não é uma subárvore BLAKE3 alinhada na LAN, e `merkle::block_chaining_value` (hoje sem chamador) não serve para verificar blocos da LAN por posição. A raiz completa do manifesto não é afetada.
+
+A decisão de não verificar por bloco em nenhum transporte está em D26.
+
+---
+
+## D24 — Suítes criptográficas versionadas e ciclo de vida de migração
+**Spec:** §10 original previa apenas `version = 0x01` fixo com aborto imediato em versão desconhecida; sem conceito de suíte, fixação por contato, subida negociada nem processo de aposentadoria de primitiva.
+**Aqui:** o byte 0 do QR Code e das mensagens de handshake (`INIT`/`RESP`) passa a ser interpretado como `suite_id`. A combinação atual de primitivas da §1 é formalizada como Suíte `0x01`, idêntica byte a byte ao formato em vigor.
+
+O ciclo de vida de convivência e migração de suítes rege-se por sete princípios:
+1. **Identificador de suíte:** o byte 0 do QR e do handshake vira `suite_id`. A Suíte `0x01` mantém exatamente as primitivas e formatos vigentes (X25519 + ML-KEM-768, ChaCha20/XChaCha20-Poly1305, BLAKE3, Ed25519). O formato do QR v1 (145 B) permanece congelado.
+2. **Gravação por contato:** cada contato armazena no banco local (`contacts.suite_id`) a suíte acordada no pareamento. No handshake, o par só aceita suíte igual ou maior que a gravada para o contato e suportada pelo build local, rejeitando qualquer tentativa de handshake em suíte menor.
+3. **Anúncio autenticado em sessão:** assim que uma sessão é estabelecida (`Established`), cada ponta transmite um pacote de controle `CONTROL_SUITES` (§6.2, código `0x42`) contendo a lista de suítes suportadas pelo seu build. A suíte escolhida para a sessão seguinte é a maior em comum. O papel de iniciador do novo handshake segue a regra canônica de menor `IK_dh` (§4).
+4. **Momento da gravação:** a suíte gravada para o contato (`contacts.suite_id`) só é atualizada após a conclusão com sucesso de um handshake completo na suíte nova. O anúncio em si é efêmero e apenas planeja a tentativa; falhas no handshake mantêm a suíte gravada inalterada.
+5. **Aposentadoria de suíte:** uma suíte comprometida pode ser marcada como desativada/aposentada no build. O app recusa conexões e handshakes nela e orienta o usuário a re-parear presencialmente com o contato, preservando integralmente o histórico de mensagens e apelido.
+6. **Versionamento de formatos em repouso:** dados cifrados em repouso (cabeçalho de backup, mensagens efêmeras e staging de transferências) incluem explicitamente o identificador da versão de cifra utilizada. Leitores aceitam versões legadas suportadas; novos registros usam a versão mais recente.
+7. **Limite declarado de segurança:** a autenticação da Suíte `0x01` repousa na chave clássica X25519 (`IK_dh`). Caso o X25519 seja quebrado, o anúncio autenticado dentro da sessão não oferece garantia contra atacantes ativos; nessa hipótese, a transição para uma nova suíte exige estritamente re-pareamento presencial.
+
+**Custo de reverter:** reverter `suite_id` para um `PROTOCOL_VERSION = 0x01` fixo, remover o pacote `CONTROL_SUITES`, a coluna `suite_id` da tabela `contacts` e as colunas/prefixos de versão em repouso, tornando qualquer alteração de primitiva incompatível com pareamentos e dados históricos existentes.
+
+---
+
+## D25 — Limite de auto-aceite de arquivos em 100 MiB com retenção volátil
+**Spec:** §5, todas as ofertas de arquivos recebidas (`FILE_METADATA`) iniciavam imediatamente a recepção em disco de forma irrestrita.
+**Aqui:** ofertas com `file_size > auto_accept_file_size_limit` (padrão de 100 MiB, configurável via FFI) não iniciam recepção automática. Ficam retidas em memória volátil (`unconfirmed_offers`) aguardando confirmação explícita do usuário.
+
+A recepção irrestrita e automática de arquivos pesados expõe dispositivos móveis a exaustão de plano de dados, consumo abusivo de bateria e saturação de espaço de armazenamento por contatos maliciosos ou inadvertidos. A retenção volátil mitiga esses riscos:
+1. **Memória volátil:** `unconfirmed_offers` não grava metadados no SQLite até o aceite explícito. A fila é limitada a 16 ofertas por contato e 64 globais para evitar flood de memória.
+2. **Ciclo de vida no bloqueio:** Ao bloquear o aplicativo (`Core::lock()`), toda a lista de ofertas não confirmadas é destruída da memória.
+3. **Controle na UI:** O usuário tem a faculdade de aceitar (`accept_file_offer`) ou recusar (`reject_file_offer`). Ao aceitar, o receptor registra o `ReceiveTransfer` em `active_receives` e passa a enviar `FILE_FEEDBACK` a cada 500 ms (§7.4) para engajar o emissor.
+4. **Recusa avisa o emissor:** recusar explicitamente envia `FILE_REJECT` (`0x24`, §7.7), em melhor esforço e sem fila em disco. Perder a oferta num bloqueio continua sem pacote no fio, e não há timeout no emissor para quem nunca responde.
+
+**Custo de reverter:** remover a verificação de limite em `handle_incoming_file_metadata`, iniciando `start_receiving_transfer` para qualquer tamanho e expondo o aparelho móvel a downloads massivos não consentidos.
+
+---
+
+## D26 — Raiz Merkle verificada só ao final, não por source block
+**Spec:** §7.2, "o receptor verifica cada source block contra a árvore assim que o decodifica, e a raiz completa no final".
+**Aqui:** só a raiz completa é verificada, em `ReceiveTransfer::finish`, depois que todos os blocos completaram e antes do commit atômico (§7.5). Raiz divergente faz `finish` devolver `MerkleMismatch` sem escrever no destino final. Nenhum source block é autenticado contra a raiz isoladamente, em arquivos ou em notas de voz (`ReceiveTransfer` e `finish` são os mesmos).
+
+O manifesto carrega uma única `merkle_root` de 32 B, e autenticar um bloco do meio do arquivo contra ela exige dado extra: um *chaining value* de 32 B por bloco, mudando o formato do manifesto (§7.1). Isso só serve onde o bloco é uma subárvore BLAKE3 alinhada; na LAN, com `symbol_size` 65535 (D23), não é. Alinhar a LAN reabriria D23 (65536 não cabe em `u16`).
+
+O que continua garantido por símbolo: cada `FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `symbol_key` (`SendTransfer::next_sealed_symbol` sela, `ReceiveTransfer::ingest_sealed_symbol` abre; a chave vem de `keys::derive_symbol_key`, derivada do `transfer_secret`, D15; cifra e nonce em D11; em notas de voz o `AUDIO_CHUNK` usa `K_audio_chunk` no lugar de `K_symbol`), com `file_id` como AAD. Adulteração ou forja em trânsito por quem não detém o segredo da transferência falha na abertura. O que **não** é garantido: que o conteúdo bate com a raiz antes do fim. Um par pareado que mande conteúdo errado só é detectado depois de receber o arquivo inteiro, ao custo de banda e de espaço de staging. A autenticação é MAC simétrico, então a deniabilidade não muda.
+
+**Custo de reverter:** acrescentar um CV por bloco ao manifesto (ou a um pacote logo após ele), chamar `merkle::block_chaining_value` (hoje sem chamador) a cada bloco decodificado em `ReceiveTransfer`, e decidir a LAN: ficar sem verificação por bloco ou alinhar o `symbol_size` (reabrindo D23). Muda o wire e o limite de tamanho do manifesto.

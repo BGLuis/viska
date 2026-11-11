@@ -78,7 +78,7 @@ use crate::crypto::kem::{
     self, Kem, KemCiphertext, KemPublicKey, KemSecretKey, KemSharedSecret, MlKem768,
 };
 use crate::{Error, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use zeroize::Zeroize;
 
 /// Gatilho do re-KEM por contagem (§5.4): a cada 256 mensagens enviadas por
@@ -95,26 +95,12 @@ type SkippedAdditions = Vec<(SkippedId, kdf::Key)>;
 
 /// Deriva a chave de mensagem e a próxima chave de cadeia (§5.3).
 ///
-/// O texto de §5.3 lista dois contextos, `viska-send-chain-v1` para quem
-/// envia e `viska-recv-chain-v1` para quem recebe, como se cada lado
-/// escolhesse o contexto pelo seu papel local na troca. Isso não pode estar
-/// certo: `CKs` de quem envia e `CKr` de quem recebe são o mesmo segredo,
-/// numericamente, avançando em paralelo nas duas pontas — se cada lado
-/// aplicasse um contexto de domínio diferente ao avançar essa mesma cadeia,
-/// as duas pontas divergiriam depois da primeira mensagem, e nenhuma
-/// mensagem seguinte seria decifrável (confirmado por teste: é exatamente o
-/// que acontece se `CKr` avança com `RECV_CHAIN` enquanto `CKs` avança com
-/// `SEND_CHAIN` para a mesma cadeia).
-///
-/// A leitura que preserva correção é: quem **cria** uma cadeia (o lado que
-/// gerou o `DHs` dela) sempre a rotula como sua cadeia de envio e sempre usa
-/// `SEND_CHAIN` para avançá-la — e isso vale tanto para o iniciador quanto
-/// para o respondedor, simetricamente. A outra ponta, ao herdar essa mesma
-/// cadeia como sua `CKr`, precisa reproduzir exatamente o cálculo de quem a
-/// criou para os valores continuarem batendo, então usa o mesmo contexto
-/// `SEND_CHAIN`, não `RECV_CHAIN`. Na prática, isso significa que
-/// `viska-recv-chain-v1` nunca é usado por este módulo — ver o relatório
-/// final sobre esta divergência da especificação.
+/// Há um único contexto, `viska-send-chain-v1`, para as duas pontas (§5.3):
+/// `CKs` de quem envia e `CKr` de quem recebe são o mesmo segredo, avançando
+/// em paralelo nos dois aparelhos. Contextos de domínio diferentes por papel
+/// fariam as pontas divergirem logo depois da primeira mensagem, e nenhuma
+/// seguinte seria decifrável. Por isso `viska-recv-chain-v1` não existe mais
+/// em `crypto/kdf.rs`.
 fn chain_step(chain_key: &kdf::Key) -> (kdf::Key, kdf::Key) {
     let mut material = [0u8; kdf::KEY_LEN + 1];
     material[..kdf::KEY_LEN].copy_from_slice(chain_key.as_bytes());
@@ -228,6 +214,9 @@ fn walk_and_skip(
 /// duas cadeias diferentes podem ter a mesma mensagem número 3.
 struct SkippedKeys {
     entries: HashMap<SkippedId, SkippedEntry>,
+    /// Índice `seq -> id`, ordenado: a mais velha é sempre a primeira, então
+    /// estourar o teto custa O(log n) em vez de varrer `entries`.
+    by_age: BTreeMap<u64, SkippedId>,
     /// Contador monotônico só para decidir "qual é a mais velha" ao estourar
     /// o teto. `stored_at` (relógio de parede, resolução de segundo) não
     /// serve para isso sozinho: um lote de mensagens processado dentro do
@@ -253,6 +242,7 @@ impl SkippedKeys {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            by_age: BTreeMap::new(),
             next_seq: 0,
         }
     }
@@ -261,10 +251,28 @@ impl SkippedKeys {
         self.entries.len()
     }
 
-    /// Remove entradas mais velhas que o TTL.
+    /// Remove entradas mais velhas que o TTL a partir da cabeça de `by_age`.
+    ///
+    /// Como `seq` é estritamente monotônico e coincide com a ordem de inserção
+    /// cronológica, as entradas mais velhas por tempo estão sempre no início
+    /// de `by_age`. Drenamos as entradas expiradas a partir da menor chave até
+    /// encontrar a primeira entrada ainda válida, interrompendo a busca. Isso
+    /// evita varrer linearmente todas as entradas de `entries` a cada inserção
+    /// e garante que o custo de avaliar o TTL permaneça em O(log n) no caso comum.
     fn evict_expired(&mut self, now: u64) {
-        self.entries
-            .retain(|_, entry| now.saturating_sub(entry.stored_at) < Self::TTL_SECONDS);
+        while let Some((_, &oldest_id)) = self.by_age.first_key_value() {
+            let expired = self
+                .entries
+                .get(&oldest_id)
+                .is_none_or(|entry| now.saturating_sub(entry.stored_at) >= Self::TTL_SECONDS);
+
+            if expired {
+                self.by_age.pop_first();
+                self.entries.remove(&oldest_id);
+            } else {
+                break;
+            }
+        }
     }
 
     /// Insere uma chave pulada, aplicando TTL e o teto de `CAP`.
@@ -276,19 +284,14 @@ impl SkippedKeys {
         self.evict_expired(now);
 
         if self.entries.len() >= Self::CAP && !self.entries.contains_key(&id) {
-            if let Some(oldest) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.seq)
-                .map(|(id, _)| *id)
-            {
+            if let Some((_, oldest)) = self.by_age.pop_first() {
                 self.entries.remove(&oldest);
             }
         }
 
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.entries.insert(
+        let replaced = self.entries.insert(
             id,
             SkippedEntry {
                 key,
@@ -296,6 +299,10 @@ impl SkippedKeys {
                 seq,
             },
         );
+        if let Some(previous) = replaced {
+            self.by_age.remove(&previous.seq);
+        }
+        self.by_age.insert(seq, id);
     }
 
     /// Consome uma chave pulada, se existir.
@@ -305,7 +312,9 @@ impl SkippedKeys {
     /// isso é seguro porque essa chave já foi derivada e confirmada num passo
     /// anterior, ver a documentação de módulo.
     fn take(&mut self, id: &SkippedId) -> Option<kdf::Key> {
-        self.entries.remove(id).map(|entry| entry.key)
+        let entry = self.entries.remove(id)?;
+        self.by_age.remove(&entry.seq);
+        Some(entry.key)
     }
 }
 
@@ -1050,6 +1059,64 @@ mod tests {
             Err(Error::UndecryptableMessage)
         ));
         drop(recovered);
+    }
+
+    #[test]
+    fn skipped_keys_evicts_oldest_first_and_keeps_age_index_in_sync() {
+        let mut skipped = SkippedKeys::new();
+        let id = |n: u32| ([7u8; 32], n);
+        let total = 2 * SkippedKeys::CAP as u32;
+
+        for n in 0..total {
+            skipped.insert(id(n), kdf::Key::from_bytes([1; kdf::KEY_LEN]), 0);
+            assert_eq!(skipped.by_age.len(), skipped.entries.len());
+        }
+
+        assert_eq!(skipped.len(), SkippedKeys::CAP);
+        assert!(skipped.take(&id(SkippedKeys::CAP as u32 - 1)).is_none());
+        assert!(skipped.take(&id(SkippedKeys::CAP as u32)).is_some());
+        assert_eq!(skipped.by_age.len(), skipped.entries.len());
+
+        skipped.insert(id(total), kdf::Key::from_bytes([1; kdf::KEY_LEN]), u64::MAX);
+        assert_eq!(skipped.len(), 1, "TTL expirou as demais entradas");
+        assert_eq!(skipped.by_age.len(), 1);
+    }
+
+    #[test]
+    fn skipped_keys_drains_expired_entries_from_head_until_active() {
+        let mut skipped = SkippedKeys::new();
+        let id = |n: u32| ([9u8; 32], n);
+        let dummy_key = kdf::Key::from_bytes([2; kdf::KEY_LEN]);
+        let ttl = SkippedKeys::TTL_SECONDS;
+
+        // Inserções com idades distintas:
+        skipped.insert(id(1), dummy_key.clone(), 100);
+        skipped.insert(id(2), dummy_key.clone(), 200);
+        skipped.insert(id(3), dummy_key.clone(), 300);
+
+        // No tempo t = 100 + ttl - 1, nenhuma entrada expirou ainda:
+        skipped.insert(id(4), dummy_key.clone(), 100 + ttl - 1);
+        assert_eq!(skipped.len(), 4);
+        assert_eq!(skipped.by_age.len(), 4);
+
+        // No tempo t = 100 + ttl, a entrada 1 expira e a busca é interrompida na entrada 2:
+        skipped.insert(id(5), dummy_key.clone(), 100 + ttl);
+        assert_eq!(skipped.len(), 4);
+        assert_eq!(skipped.by_age.len(), 4);
+        assert!(skipped.take(&id(1)).is_none(), "entrada 1 deveria ter expirado");
+        assert!(skipped.take(&id(2)).is_some(), "entrada 2 deve continuar viva");
+
+        // No tempo t = 300 + ttl, a entrada 3 expira:
+        // Nota: entrada 2 já foi consumida via take acima, então a cabeça é 3.
+        skipped.insert(id(6), dummy_key, 300 + ttl);
+        assert_eq!(skipped.len(), 3); // 4, 5 e 6
+        assert_eq!(skipped.by_age.len(), 3);
+        assert!(skipped.take(&id(3)).is_none(), "entrada 3 deveria ter expirado");
+        assert!(skipped.take(&id(4)).is_some());
+        assert!(skipped.take(&id(5)).is_some());
+        assert!(skipped.take(&id(6)).is_some());
+        assert_eq!(skipped.len(), 0);
+        assert_eq!(skipped.by_age.len(), 0);
     }
 
     #[test]

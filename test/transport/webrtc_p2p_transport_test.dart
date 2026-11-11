@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' show RTCIceCandidate;
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+import 'package:viska/src/rust/lib.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/raw_p2p_channel.dart';
 import 'package:viska/src/transport/signaling/signaling_backend.dart';
@@ -96,6 +97,20 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<List<MessageDto>> listMessagesPaginated({
+    required List<int> peerDeviceId,
+    PlatformInt64? sinceId,
+    BigInt? limit,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> requeueMessage({required PlatformInt64 messageId}) => throw UnimplementedError();
+
+  @override
+  Future<void> resendUnknownMessage({required PlatformInt64 messageId}) => throw UnimplementedError();
+
+  @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) => throw UnimplementedError();
 
   @override
@@ -146,6 +161,13 @@ class _FakeCore implements Core {
   // implementando `Core` por inteiro.
   @override
   Future<void> cancelTransfer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<Uint8List> fileFeedback({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) =>
+      throw UnimplementedError();
 
   @override
   Future<Uint8List> finishReceiveAudio({
@@ -221,7 +243,10 @@ class _FakeCore implements Core {
   Future<bool> isLocked() => throw UnimplementedError();
 
   @override
-  Future<void> lock() => throw UnimplementedError();
+  Future<List<Uint8List>> listActiveFileTransferIds() => throw UnimplementedError();
+
+  @override
+  Future<List<SealedNoticeDto>> lock() => throw UnimplementedError();
 
   @override
   Future<void> markMessageRead({required PlatformInt64 messageId}) => throw UnimplementedError();
@@ -232,6 +257,13 @@ class _FakeCore implements Core {
     required PlatformInt64 ttlSecs,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<SessionStatusDto> resetSession({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SessionStateEventDto> subscribeSessionEvents() => throw UnimplementedError();
 
   @override
   Future<int> sweepExpiredMessages() => throw UnimplementedError();
@@ -248,9 +280,25 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
-  Future<void> configureDuressPin({
-    required String duressPin,
-    required int actionMode,
+  Future<bool> addReactionByGlobalId({
+    required U8Array16 contactDeviceId,
+    required String targetGlobalId,
+    required String emoji,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> markMessageDelivered({required PlatformInt64 messageId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> markMessageFailed({required PlatformInt64 messageId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<SealedMessageDto> sealOutgoingReceipt({
+    required List<int> peerDeviceId,
+    required String targetId,
   }) =>
       throw UnimplementedError();
 
@@ -286,6 +334,30 @@ class _FakeCore implements Core {
   @override
   Future<bool> isKeyChanged({required List<int> contactDeviceId}) =>
       throw UnimplementedError();
+
+  @override
+  Future<void> acceptFileOffer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> rejectFileOffer({required List<int> fileId}) => throw UnimplementedError();
+
+  @override
+  Future<List<FileOfferDto>> unconfirmedFileOffers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<BigInt> autoAcceptFileSizeLimit() => throw UnimplementedError();
+
+  @override
+  Future<void> setAutoAcceptFileSizeLimit({required BigInt limitBytes}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<ContactDto> repairFromQr({required List<int> payload}) => throw UnimplementedError();
 }
 
 class _FakeRawP2PChannel implements RawP2PChannel {
@@ -553,12 +625,51 @@ void main() {
           'sdpMLineIndex': 1,
         })),
       ]);
+      signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')])));
       signaling.emit(SignalingMessage('sub-1', remoteCandidatePayload));
-      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
       expect(channel.remoteCandidateCalls, [
         {'candidate': 'candidate:2 remoto', 'sdpMid': 'mid1', 'sdpMLineIndex': 1},
       ]);
+    });
+
+    test('remote candidate arriving before the offer is held and applied after it, once', () async {
+      final responderStatus = SessionStatusDto(
+        state: SessionStateKind.handshaking,
+        needsRehandshake: false,
+        outgoingHandshake: null,
+      );
+      final core = _FakeCore(topics: topics, sessionStatus_: responderStatus);
+      final channel = _FakeRawP2PChannel();
+      final signaling = _FakeSignalingBackend();
+      final transport = WebrtcP2PTransport(
+        core: core,
+        contactId: contact,
+        webrtcTransport: channel,
+        signalingBackend: signaling,
+      );
+      await transport.connect();
+
+      final candidate = Uint8List.fromList([
+        2,
+        ...utf8.encode(jsonEncode({'candidate': 'candidate:9 cedo', 'sdpMid': '0', 'sdpMLineIndex': 0})),
+      ]);
+      // Republicação (§8.2): o respondedor entra no tópico no meio de uma
+      // rodada e recebe o candidato antes da oferta, e depois tudo de novo.
+      signaling.emit(SignalingMessage('sub-1', candidate));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(channel.remoteCandidateCalls, isEmpty);
+
+      signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([0, ...utf8.encode('v=0 OFFER')])));
+      signaling.emit(SignalingMessage('sub-1', candidate));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(channel.answerCalls, ['v=0 OFFER']);
+      expect(channel.remoteCandidateCalls, [
+        {'candidate': 'candidate:9 cedo', 'sdpMid': '0', 'sdpMLineIndex': 0},
+      ]);
+      await transport.close();
     });
 
     test('disconnects signaling as soon as transport becomes connected', () async {
@@ -674,6 +785,120 @@ void main() {
 
       expect(channel.closed, isTrue);
       expect(signaling.disconnectCalls, 1);
+    });
+
+    group('republication (protocol.md §8.2)', () {
+      const refresh = Duration(milliseconds: 20);
+
+      SessionStatusDto status({required bool offerer}) => SessionStatusDto(
+            state: SessionStateKind.handshaking,
+            needsRehandshake: false,
+            outgoingHandshake: offerer ? Uint8List.fromList([1]) : null,
+          );
+
+      int countKind(_FakeSignalingBackend signaling, int kind) => signaling.publishCalls
+          .where((call) => _decodeTestPayload(call.value)['kind'] == kind)
+          .length;
+
+      test('offerer republishes offer and candidates until the answer arrives', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+
+        await transport.connect();
+        channel.emitLocalCandidate(RTCIceCandidate('candidate:1 local', 'mid0', 0));
+        await Future<void>.delayed(refresh * 4);
+
+        // O par pode não estar inscrito quando a primeira oferta sai (QoS 0, sem retain).
+        expect(countKind(signaling, 0), greaterThan(1));
+        expect(countKind(signaling, 2), greaterThan(1));
+        expect(channel.offerCalls, hasLength(1), reason: 'republica a mesma SDP, sem renegociar');
+
+        signaling.emit(SignalingMessage('sub-1', Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')])));
+        await Future<void>.delayed(refresh);
+        final offersAfterAnswer = countKind(signaling, 0);
+        await Future<void>.delayed(refresh * 4);
+
+        expect(countKind(signaling, 0), offersAfterAnswer);
+        await transport.close();
+      });
+
+      test('duplicate answer is applied only once', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        final answer = Uint8List.fromList([1, ...utf8.encode('v=0 ANSWER')]);
+        signaling.emit(SignalingMessage('sub-1', answer));
+        signaling.emit(SignalingMessage('sub-1', answer));
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(channel.remoteAnswerCalls, hasLength(1));
+        await transport.close();
+      });
+
+      test('responder answers a repeated offer with the cached answer instead of renegotiating', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: false));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        final offer = Uint8List.fromList([0, ...utf8.encode('v=0 OFFER REMOTA')]);
+        signaling.emit(SignalingMessage('sub-1', offer));
+        await Future<void>.delayed(Duration.zero);
+        signaling.emit(SignalingMessage('sub-1', offer));
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(channel.answerCalls, hasLength(1));
+        expect(countKind(signaling, 1), 2);
+        await transport.close();
+      });
+
+      test('stops refreshing signaling once the data channel connects', () async {
+        final core = _FakeCore(topics: topics, sessionStatus_: status(offerer: true));
+        final channel = _FakeRawP2PChannel();
+        final signaling = _FakeSignalingBackend();
+        final transport = WebrtcP2PTransport(
+          core: core,
+          contactId: contact,
+          webrtcTransport: channel,
+          signalingBackend: signaling,
+          signalingRefreshInterval: refresh,
+        );
+        await transport.connect();
+
+        channel.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.connected));
+        await Future<void>.delayed(Duration.zero);
+        final publishesAtConnect = signaling.publishCalls.length;
+        await Future<void>.delayed(refresh * 4);
+
+        expect(signaling.publishCalls.length, publishesAtConnect);
+        await transport.close();
+      });
     });
   });
 }

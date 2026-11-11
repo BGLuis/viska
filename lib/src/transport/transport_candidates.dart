@@ -7,6 +7,7 @@ import 'lan/lan_transport.dart';
 import 'lan/nsd_lan_discovery.dart';
 import 'multipeer/multipeer_transport.dart';
 import 'p2p_transport.dart';
+import 'signaling/proxy_config.dart';
 import 'webrtc_p2p_transport.dart';
 import 'wifi_aware/wifi_aware_transport.dart';
 
@@ -14,7 +15,7 @@ import 'wifi_aware/wifi_aware_transport.dart';
 /// prioridade — Fase 6, F3-F5. [SelectingP2PTransport] tenta cada um em
 /// ordem e fica com o primeiro que conectar; `WebrtcP2PTransport` sempre
 /// por último, como fallback garantido (não implementa `TransportReadiness`,
-/// então nunca é pulado).
+/// então nunca é pulado, a menos que desativado via configuração de proxy).
 ///
 /// Wi-Fi Aware só existe no Android, MultipeerConnectivity só no iOS — o
 /// `Platform.isAndroid`/`isIOS` evita sequer construir um canal de
@@ -23,6 +24,9 @@ import 'wifi_aware/wifi_aware_transport.dart';
 /// otimista, ver `WifiAwareTransport`/`MultipeerTransport`) ainda decide se
 /// `SelectingP2PTransport` chega a tentar `connect()` de verdade.
 List<P2PTransport> buildDefaultCandidates(Core core, ContactId contactId) {
+  final proxy = ProxyConfigStore.current;
+  final disableWebrtc = proxy.enabled && proxy.disableWebrtc;
+
   return [
     LanTransport(
       core: core,
@@ -32,6 +36,6 @@ List<P2PTransport> buildDefaultCandidates(Core core, ContactId contactId) {
     ),
     if (Platform.isAndroid) WifiAwareTransport(core: core, contactId: contactId),
     if (Platform.isIOS) MultipeerTransport(core: core, contactId: contactId),
-    WebrtcP2PTransport(core: core, contactId: contactId),
+    if (!disableWebrtc) WebrtcP2PTransport(core: core, contactId: contactId),
   ];
 }

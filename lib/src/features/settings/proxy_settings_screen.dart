@@ -16,6 +16,7 @@ class ProxySettingsScreen extends StatefulWidget {
 
 class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
   bool _enabled = false;
+  bool _disableWebrtc = false;
   late final TextEditingController _hostController;
   late final TextEditingController _portController;
   late final TextEditingController _usernameController;
@@ -28,6 +29,7 @@ class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
     super.initState();
     final cfg = ProxyConfigStore.current;
     _enabled = cfg.enabled;
+    _disableWebrtc = cfg.disableWebrtc;
     _hostController = TextEditingController(text: cfg.host);
     _portController = TextEditingController(text: cfg.port.toString());
     _usernameController = TextEditingController(text: cfg.username ?? '');
@@ -45,6 +47,7 @@ class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
         final cfg = ProxyConfig.fromJson(json);
         setState(() {
           _enabled = cfg.enabled;
+          _disableWebrtc = cfg.disableWebrtc;
           _hostController.text = cfg.host;
           _portController.text = cfg.port.toString();
           _usernameController.text = cfg.username ?? '';
@@ -89,6 +92,7 @@ class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
       port: port,
       username: _usernameController.text.trim().isEmpty ? null : _usernameController.text.trim(),
       password: _passwordController.text.trim().isEmpty ? null : _passwordController.text.trim(),
+      disableWebrtc: _disableWebrtc,
     );
 
     // 1. Salva no armazenamento seguro / arquivo local
@@ -142,7 +146,7 @@ class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
                   Expanded(
                     child: Text(
                       'O tráfego de sinalização passa por brokers MQTT públicos. '
-                      'Ativar um proxy SOCKS5 (como Orbot) oculta seu endereço IP e impede vazamento de metadados na rede.',
+                      'Ativar um proxy SOCKS5 (como Orbot) protege só a conexão com o servidor de sinalização; a conexão direta com o contato continua expondo seu IP.',
                       style: TextStyle(fontSize: 13, height: 1.4),
                     ),
                   ),
@@ -161,6 +165,22 @@ class _ProxySettingsScreenState extends State<ProxySettingsScreen> {
             activeThumbColor: DarkTechTheme.primary,
             onChanged: (val) => setState(() => _enabled = val),
           ),
+          if (_enabled) ...[
+            const SizedBox(height: 8),
+            SwitchListTile(
+              title: const Text(
+                'Desativar WebRTC (Evitar exposição de IP direto)',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: const Text(
+                'Impede conexões diretas via internet (STUN/ICE), restringindo a comunicação às redes locais (LAN, Wi-Fi Aware, Multipeer).',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: _disableWebrtc,
+              activeThumbColor: DarkTechTheme.primary,
+              onChanged: (val) => setState(() => _disableWebrtc = val),
+            ),
+          ],
           const SizedBox(height: 12),
           OutlinedButton.icon(
             onPressed: _applyOrbotPreset,

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import '../../common_widgets/security/mnemonic_grid.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
 
@@ -196,57 +197,7 @@ class _BackupScreenState extends State<BackupScreen> {
         ),
         const SizedBox(height: 8),
 
-        // Grid com as 24 palavras numeradas
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            childAspectRatio: 3.2,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
-          ),
-          itemCount: _words.length,
-          itemBuilder: (context, index) {
-            final word = _words[index];
-            final numStr = (index + 1).toString().padLeft(2, '0');
-            return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: DarkTechTheme.surfaceContainer,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: DarkTechTheme.divider.withValues(alpha: 0.5),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Text(
-                    numStr,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      color: DarkTechTheme.primary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      word,
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
+        MnemonicGrid(words: _words),
         const SizedBox(height: 24),
 
         // Seção do arquivo .viskasafe

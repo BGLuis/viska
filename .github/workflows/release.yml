@@ -17,108 +17,106 @@ on:
         required: false
         default: ''
 
+permissions: {}
+
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
-permissions: {}
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build-android:
     name: Compilar APK Android
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
     timeout-minutes: 30
+    cache-mode: none # release: nunca restaurar ou salvar cache em builds de release
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Configurar Java 17
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165  # v5.0.0
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
-          cache: true
+          cache: false
 
-      - name: Configurar Rust
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
-        with:
-          toolchain: stable
-          targets: aarch64-linux-android, x86_64-linux-android
-
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
-        with:
-          workspaces: |
-            rust -> rust/target
+      - name: Adicionar alvos Android ao Rust
+        run: rustup target add aarch64-linux-android x86_64-linux-android
 
       - name: Obter dependências Flutter
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Compilar APK (Release)
         run: flutter build apk --release --target-platform android-arm64,android-x64
+
+      - name: Auditoria de Segurança e Zero Telemetria no APK
+        run: |
+          chmod +x scripts/audit_apk.sh
+          ./scripts/audit_apk.sh build/app/outputs/flutter-apk/app-release.apk
 
       - name: Preparar artefato Android
         run: cp build/app/outputs/flutter-apk/app-release.apk viska-android.apk
 
       - name: Upload temporário do APK
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android-release-apk
           path: viska-android.apk
           retention-days: 1
+          if-no-files-found: error
 
   build-ios:
     name: Compilar IPA iOS (Unsigned)
-    runs-on: macos-14
-    permissions:
-      contents: read
+    runs-on: macos-15
     timeout-minutes: 30
+    cache-mode: none # release: nunca restaurar ou salvar cache em builds de release
+    permissions:
+      contents: read # checkout do código
     steps:
       - name: Checkout do código
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Configurar Rust e alvos iOS
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: stable
-          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+          persist-credentials: false
 
-      - name: Cache de dependências Rust
-        uses: Swatinem/rust-cache@400e7407cfd7a091e5fbb6afec01ec146c432b7c  # v2.7.7
-        with:
-          workspaces: |
-            rust -> rust/target
+      - name: Adicionar alvo iOS ao Rust
+        run: rustup target add aarch64-apple-ios
 
       - name: Configurar Flutter
-        uses: subosito/flutter-action@f2c4f6686ca8e8d6e6d0f28410eeef506ed66aff  # v2.18.0
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: 'stable'
-          cache: true
-
-      - name: Desabilitar Swift Package Manager (garante uso do CocoaPods)
-        run: flutter config --no-enable-swift-package-manager
+          cache: false
 
       - name: Configurar Ruby e CocoaPods
-        uses: ruby/setup-ruby@277ba2a127aba66d45bad0fa2dc56f80dbfedffa  # v1.222.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3'
-          bundler-cache: true
+          bundler-cache: false
           working-directory: ios
 
+      - name: Instalar gems do CocoaPods
+        working-directory: ios
+        run: bundle install --jobs 4 --retry 3
+
       - name: Obter dependências Flutter
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       - name: Instalar CocoaPods
         working-directory: ios
-        run: bundle exec pod install --repo-update
+        run: bundle exec pod install
 
       - name: Compilar App iOS (Release sem assinatura)
         run: flutter build ios --no-codesign --release
@@ -130,32 +128,37 @@ jobs:
           cp build/ios/release_unsigned/viska-ios-unsigned.ipa viska-ios-unsigned.ipa
 
       - name: Upload temporário do IPA
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ios-release-ipa
           path: viska-ios-unsigned.ipa
           retention-days: 1
+          if-no-files-found: error
 
   publish-release:
     name: Publicar Release no GitHub
     needs: [build-android, build-ios]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    cache-mode: none
     permissions:
-      contents: write
-    timeout-minutes: 15
+      contents: write # criar release e anexar binários no GitHub
+      id-token: write # assinar atestado SLSA de proveniência
+      attestations: write # publicar atestado de proveniência dos binários
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Baixar artefato Android
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: android-release-apk
 
       - name: Baixar artefato iOS
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ios-release-ipa
 
@@ -164,12 +167,20 @@ jobs:
           sha256sum viska-android.apk viska-ios-unsigned.ipa > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Atestar proveniência de build (SLSA Build L2)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            viska-android.apk
+            viska-ios-unsigned.ipa
+
       - name: Determinar identificador da Tag
         id: tag_info
         env:
           TAG_INPUT: ${{ inputs.tag_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           if [ -n "$TAG_INPUT" ]; then
             TAG="$TAG_INPUT"
@@ -178,34 +189,42 @@ jobs:
           else
             VERSION=$(grep '^version: ' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
             TAG="v${VERSION}"
-            git fetch --tags || true
             if git rev-parse "$TAG" >/dev/null 2>&1; then
-              TAG="${TAG}-build.${{ github.run_number }}"
+              TAG="${TAG}-build.${RUN_NUMBER}"
             fi
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Versão definida para a Release: ${TAG}"
 
       - name: Criar Release e Anexar Binários
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda  # v2.2.1
-        with:
-          tag_name: ${{ steps.tag_info.outputs.tag }}
-          name: Viska ${{ steps.tag_info.outputs.tag }}
-          files: |
-            viska-android.apk
-            viska-ios-unsigned.ipa
-            SHA256SUMS.txt
-          generate_release_notes: true
-          body: |
-            ## Binários de Instalação / Installation Binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag_info.outputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          cat << 'EOF' > "$NOTES_FILE"
+          ## Binários de Instalação / Installation Binaries
 
-            ### 🤖 Android (`viska-android.apk`)
-            - Arquivo APK compilado em modo Release e pronto para instalação direta.
-            - Habilite a opção **"Instalar apps desconhecidos"** nas configurações de segurança do seu aparelho.
+          ### 🤖 Android (`viska-android.apk`)
+          - Arquivo APK compilado em modo Release e pronto para instalação direta.
+          - Habilite a opção **"Instalar apps desconhecidos"** nas configurações de segurança do seu aparelho.
 
-            ### 🍎 iOS (`viska-ios-unsigned.ipa`)
-            - Arquivo `.ipa` sem assinatura para instalação via *sideloading*.
-            - Utilize utilitários como **AltStore**, **Sideloadly**, **SideStore**, **Scarlet** ou **TrollStore** para assinar e instalar no iPhone.
+          ### 🍎 iOS (`viska-ios-unsigned.ipa`)
+          - Arquivo `.ipa` sem assinatura para instalação via *sideloading*.
+          - Utilize utilitários como **AltStore**, **Sideloadly**, **SideStore**, **Scarlet** ou **TrollStore** para assinar e instalar no iPhone.
 
-            ### 🔒 Integridade (SHA-256)
-            As somas criptográficas de verificação de cada binário estão no arquivo `SHA256SUMS.txt`.
+          ### 🔒 Integridade (SHA-256) e Proveniência (SLSA)
+          As somas criptográficas de verificação de cada binário estão no arquivo `SHA256SUMS.txt`. A proveniência de compilação pode ser verificada com `gh attestation verify <arquivo> -R BGLuis/viska`.
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" viska-android.apk viska-ios-unsigned.ipa SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" viska-android.apk viska-ios-unsigned.ipa SHA256SUMS.txt \
+              --target "$TARGET_SHA" \
+              --title "Viska ${TAG}" \
+              --notes-file "$NOTES_FILE" \
+              --generate-notes
+          fi

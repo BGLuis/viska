@@ -75,4 +75,52 @@ void main() {
 
     controller.dispose();
   });
+
+  testWidgets('LockScreen with 6-digit PIN allows typing all 6 digits and unlocks upon 6th digit', (
+    WidgetTester tester,
+  ) async {
+    final localAuth = _FakeLocalAuthentication(shouldSucceed: false);
+    final controller = LockController(
+      core: _FakeCore(),
+      appDirPath: '/tmp/viska_test_pin6',
+      localAuth: localAuth,
+    );
+
+    await controller.setNormalPin('123456');
+    await controller.lock();
+    expect(controller.isLocked.value, isTrue);
+    expect(controller.normalPinLength, 6);
+
+    await tester.pumpWidget(
+      MaterialApp(home: LockScreen(controller: controller)),
+    );
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Viska Bloqueado'), findsOneWidget);
+
+    // Toca os primeiros 4 dígitos: não deve submeter nem mostrar erro
+    await tester.tap(find.text('1'));
+    await tester.pump();
+    await tester.tap(find.text('2'));
+    await tester.pump();
+    await tester.tap(find.text('3'));
+    await tester.pump();
+    await tester.tap(find.text('4'));
+    await tester.pump();
+
+    expect(controller.isLocked.value, isTrue);
+    expect(find.text('PIN incorreto'), findsNothing);
+
+    // Toca os 2 dígitos restantes para completar os 6
+    await tester.tap(find.text('5'));
+    await tester.pump();
+    await tester.tap(find.text('6'));
+    await tester.pumpAndSettle();
+
+    expect(controller.isLocked.value, isFalse);
+    expect(find.text('PIN incorreto'), findsNothing);
+
+    controller.dispose();
+  });
 }
