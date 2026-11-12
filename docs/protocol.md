@@ -790,8 +790,10 @@ RESP forjada matou a candidata dele, só um `REOPEN` novo destrava. Simetricamen
 INIT sem resposta (em `AwaitingResponse`, ou com uma candidata nesse ponto) que recebe qualquer coisa
 além da RESP — um `REOPEN`, um envelope de uma sessão anterior — reenvia a mesma INIT, com o mesmo
 limite: o par não está na sessão que ele negocia, seja porque a INIT se perdeu, seja porque o par a
-recusou pelo limite de taxa abaixo. Nenhum dos dois lados responde a INIT ou RESP com um sinal, então
-não há pingue-pongue.
+recusou pelo limite de taxa abaixo. A INIT publicada ao conectar o canal também conta para esse
+limite. O reenvio não tem prazo: uma candidata de iniciador sem resposta segue reenviando a cada
+tráfego ilegível até receber uma RESP ou ser trocada. Nenhum dos dois lados responde a INIT ou RESP
+com um sinal, então não há pingue-pongue.
 
 Limite conhecido: uma RESP inválida recebida pela sessão principal em `AwaitingResponse` ainda leva a
 `Failed` (§11.1). O respondedor, sem confirmação, só repete o `REOPEN` quando recebe algo, e um

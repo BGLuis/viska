@@ -598,6 +598,12 @@ class MessageReceptionService {
     await _flushPending(contactId);
   }
 
+  /// Drena a fila de um contato. O Rust não cifra um texto novo enquanto houver
+  /// um mais antigo na fila (a ordem de envio vale mais que a pressa), então
+  /// quem recebe `bytes` nulo com a sessão pronta chama isto, e o lote sai na
+  /// ordem.
+  Future<void> flushPendingFor(ContactId contactId) => _flushPending(contactId);
+
   Future<void> _flushPending(ContactId contactId) async {
     try {
       final sealed = await _core.flushPending(peerDeviceId: contactId.deviceId);

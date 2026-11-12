@@ -965,6 +965,22 @@ void main() {
     expect(core.markSentCalls, hasLength(1));
   });
 
+  test('text held behind an older queued one drains the whole queue in order', () async {
+    core.sessionState = SessionStateKind.established;
+    controller = makeController();
+    await controller.initialize();
+    // Um envio anterior falhou e voltou à fila: o Rust não cifra o novo antes dele.
+    core.sealOutgoingTextHandler = (_) => SealedMessageDto(messageId: 2, bytes: null);
+    core.pendingToFlush = [
+      SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([1])),
+      SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([2])),
+    ];
+
+    await controller.sendText('b');
+
+    expect(transport.sendCalls, [Uint8List.fromList([1]), Uint8List.fromList([2])]);
+  });
+
   test('failed send stays pending: sendText does not mark as sent nor throw', () async {
     core.sessionState = SessionStateKind.established;
     controller = makeController();

@@ -133,8 +133,13 @@ impl Session {
 
     /// Como [`Self::connect_signal`], com o instante explícito.
     pub fn connect_signal_at(&mut self, now: u64) -> Result<Option<Vec<u8>>> {
+        // A INIT publicada aqui conta para o limite, como o `REOPEN`: o sinal
+        // que o par manda ao conectar não deve fazê-la sair de novo na hora.
         match &self.state {
-            SessionState::AwaitingResponse(_) => Ok(self.pending_outgoing_handshake.clone()),
+            SessionState::AwaitingResponse(_) => {
+                self.last_signal_at = Some(now);
+                Ok(self.pending_outgoing_handshake.clone())
+            }
             SessionState::AwaitingPeerInit => self.reopen_signal(now).map(Some),
             SessionState::Established(_) | SessionState::Failed => {
                 if let Some(Candidate {
@@ -142,7 +147,9 @@ impl Session {
                     ..
                 }) = &self.candidate
                 {
-                    return Ok(Some(init.clone()));
+                    let init = init.clone();
+                    self.last_signal_at = Some(now);
+                    return Ok(Some(init));
                 }
                 if self.is_established() && self.unconfirmed_responder() {
                     return self.reopen_signal(now).map(Some);
@@ -237,6 +244,11 @@ impl Session {
         // ela prova que o par não está respondendo à nossa INIT (perdeu-a,
         // reabriu depois dela, ou a recusou pelo limite de taxa): reenviamos a
         // mesma, sem inundar. Um `REOPEN` cai aqui também.
+        if bytes.len() == reopen::REOPEN_LEN {
+            // Registra o nonce mesmo sem abrir candidata: senão o mesmo sinal,
+            // repetido depois que esta sessão estabelecer, abriria uma à toa.
+            let _ = self.admit_reopen(bytes, now);
+        }
         if self.signal_allowed(now) {
             if let Some(init) = self.pending_outgoing_handshake.clone() {
                 return Ok(Received::reply(init));
@@ -703,13 +715,19 @@ mod tests {
         let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
 
         // Os dois reiniciaram: o `REOPEN` de Bob e a INIT de Alice se cruzam.
-        let init = alice_session.connect_signal().unwrap().unwrap();
-        let signal = bob_session.connect_signal().unwrap().unwrap();
-        let resp = recv(&mut bob_session, &bob, &init).reply.unwrap();
-        let init_again = recv(&mut alice_session, &alice, &signal).reply.unwrap();
+        let t = now();
+        let init = alice_session.connect_signal_at(t).unwrap().unwrap();
+        let signal = bob_session.connect_signal_at(t).unwrap().unwrap();
+        let resp = recv_at(&mut bob_session, &bob, &init, t).reply.unwrap();
+        // Logo depois de publicar, a INIT não sai de novo por causa do sinal.
+        let early = bob_session.connect_signal_at(t + 1).unwrap().unwrap();
+        assert!(recv_at(&mut alice_session, &alice, &early, t + 1).reply.is_none());
+        // Um sinal que chega depois do intervalo a faz sair de novo, igual.
+        let later = t + SIGNAL_INTERVAL_SECS;
+        let init_again = recv_at(&mut alice_session, &alice, &signal, later).reply.unwrap();
         assert_eq!(init_again, init);
 
-        let repeated = recv(&mut bob_session, &bob, &init_again);
+        let repeated = recv_at(&mut bob_session, &bob, &init_again, later);
         assert!(!repeated.candidate_opened);
         assert_eq!(repeated.reply.as_deref(), Some(resp.as_slice()));
         assert!(!bob_session.is_renewing());
@@ -808,6 +826,22 @@ mod tests {
         let back = recv(&mut bob_session, &bob, &suites).reply.unwrap();
         recv(&mut alice_session, &alice, &back);
         assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
+    }
+
+    #[test]
+    fn reopen_seen_while_awaiting_response_cannot_be_replayed_later() {
+        let (alice, bob) = pair();
+        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
+        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
+        let signal = bob_session.connect_signal().unwrap().unwrap();
+        recv(&mut alice_session, &alice, &signal);
+
+        let resp = recv(&mut bob_session, &bob, &init.unwrap()).reply.unwrap();
+        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
+        let back = recv(&mut bob_session, &bob, &suites).reply.unwrap();
+        recv(&mut alice_session, &alice, &back);
+
+        assert!(!recv(&mut alice_session, &alice, &signal).candidate_opened);
     }
 
     #[test]
