@@ -41,5 +41,6 @@ class RustPinHasher implements PinHasher {
 /// sal nem custo). Espelha `is_legacy_hash` do Rust; fica no Dart, e não no
 /// FFI, porque a tela de Ajustes precisa da resposta de forma síncrona e o
 /// valor examinado é o mesmo que está em claro no `security_config.json`.
-bool isLegacyPinHash(String storedHash) =>
-    RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(storedHash);
+bool isLegacyPinHash(String storedHash) => _legacyPinHash.hasMatch(storedHash);
+
+final _legacyPinHash = RegExp(r'^[0-9a-fA-F]{64}$');

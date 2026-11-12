@@ -29,6 +29,9 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
   final _duressPinController = TextEditingController();
   late int _actionMode = widget.controller.duressActionMode;
   bool _saving = false;
+  bool _clearing = false;
+
+  bool get _busy => _saving || _clearing;
   String? _error;
 
   LockController get _controller => widget.controller;
@@ -60,6 +63,7 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
     final normalConfirm = _normalPinConfirmController.text.trim();
     final duress = _duressPinController.text.trim();
 
+    if (_busy) return;
     if (normal != normalConfirm) {
       setState(() => _error = 'A confirmação não coincide com o novo PIN Normal.');
       return;
@@ -104,11 +108,14 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
   }
 
   Future<void> _clearPins() async {
-    if (_saving) return;
-    setState(() => _saving = true);
+    if (_busy) return;
+    setState(() {
+      _clearing = true;
+      _error = null;
+    });
     final matches = await _currentPinMatches();
     if (!mounted) return;
-    setState(() => _saving = false);
+    setState(() => _clearing = false);
     if (!matches) {
       setState(() => _error = 'Digite o PIN atual para remover os PINs.');
       return;
@@ -304,7 +311,7 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                 label: 'SALVAR CONFIGURAÇÃO DE PIN',
                 isLoading: _saving,
                 isFullWidth: true,
-                onPressed: _save,
+                onPressed: _busy ? null : _save,
               ),
               if (_controller.hasNormalPin || _controller.hasDuressPin) ...[
                 const SizedBox(height: ViskaSpacing.spaceMd),
@@ -312,7 +319,8 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                   label: 'REMOVER PINS CONFIGURADOS',
                   style: ViskaButtonStyle.danger,
                   isFullWidth: true,
-                  onPressed: _clearPins,
+                  isLoading: _clearing,
+                  onPressed: _busy ? null : _clearPins,
                 ),
               ],
             ],

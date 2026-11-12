@@ -45,3 +45,11 @@ strip = true
 [profile.dev.package.raptorq]
 opt-level = 3
 
+
+# Argon2id do PIN (issue #90): os testes de `crypto::pin` fazem dezenas de
+# derivações de 64 MiB; sem otimização elas somam minutos a cada `cargo test`.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

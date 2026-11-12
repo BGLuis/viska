@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -625,6 +626,70 @@ void main() {
 
       hasher.throwOnCheck = false;
       expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      controller.dispose();
+    });
+
+    test('failed migration still unlocks and resets the attempt counter', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+      for (var i = 0; i < LockController.freePinAttempts - 1; i++) {
+        await controller.verifyAndUnlockWithPin('0000');
+      }
+      expect(readConfig()['failed_pin_attempts'], LockController.freePinAttempts - 1);
+
+      hasher.throwOnHash = true;
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      expect(readConfig().containsKey('failed_pin_attempts'), isFalse);
+      expect(readConfig()['normal_pin_hash'], FakePinHasher.legacyHash('1234'),
+          reason: 'hash antigo continua válido até a próxima tentativa');
+      controller.dispose();
+    });
+
+    test('failed migration still opens the decoy vault', () async {
+      writeLegacyConfig(duress: '9999', mode: 1);
+      final hasher = FakePinHasher()..throwOnHash = true;
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      expect(await controller.verifyAndUnlockWithPin('9999'), isTrue);
+      expect(controller.isDecoyVault.value, isTrue);
+      expect(controller.duressPinNeedsReset, isTrue);
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen keeps accepting digits while the shorter-PIN check is pending', (tester) async {
+      File('${tempDir.path}/security_config.json').writeAsStringSync(jsonEncode({
+        'normal_pin_hash': FakePinHasher.legacyHash('123456'),
+        'normal_pin_length': 6,
+        'duress_pin_hash': FakePinHasher.legacyHash('9999'),
+        'duress_pin_length': 4,
+        'duress_action_mode': 0,
+      }));
+      final core = _FakeCore();
+      final hasher = FakePinHasher()..checkGate = Completer<void>();
+      final controller = build(core, hasher);
+      await controller.lock();
+
+      await tester.pumpWidget(MaterialApp(home: LockScreen(controller: controller)));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (final d in ['1', '2', '3', '4', '5', '6']) {
+        await tester.tap(find.text(d));
+        await tester.pump();
+      }
+      expect(find.byKey(const Key('pin-verifying')), findsOneWidget);
+
+      hasher.checkGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(core.unlockCalls, 1);
+      expect(controller.isLocked.value, isFalse);
+      expect(core.emergencyEraseCalls, 0);
       controller.dispose();
     });
 

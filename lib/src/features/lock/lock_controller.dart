@@ -172,6 +172,7 @@ class LockController with WidgetsBindingObserver {
   Future<bool> isNormalPin(String pin) async =>
       _normalPinHash != null && await _matchPin(pin) == PinMatchDto.normal;
 
+  @visibleForTesting
   Future<bool> isDuressPin(String pin) async =>
       _duressPinHash != null && await _matchPin(pin) == PinMatchDto.duress;
 
@@ -285,6 +286,9 @@ class LockController with WidgetsBindingObserver {
     await _saveSecurityConfig();
   }
 
+  /// Cada verificação aqui é uma checagem completa (duas derivações Argon2id);
+  /// salvar uma troca na tela de Ajustes custa alguns segundos por isso, o que
+  /// é aceitável numa operação rara e com indicador de progresso.
   Future<bool> _pinsCollide({String? normal, String? duress}) async {
     if (normal != null && duress != null) return normal == duress;
     if (duress != null) {
@@ -483,13 +487,12 @@ class LockController with WidgetsBindingObserver {
         }
         return false;
       } else {
-        // Modo 2: Alterna para o cofre falso (Decoy Vault)
-        if (result.needsRehash) {
-          _duressPinHash = await _pinHasher.hash(trimmed);
-          await _saveSecurityConfig();
-        }
+        // Modo 2: Alterna para o cofre falso (Decoy Vault). A migração vem
+        // depois da troca de tela, como no PIN normal: antes, o PIN de coação
+        // legado responderia mais devagar que o normal já migrado.
         await _resetFailedPinAttempts();
         await activateDecoyVault();
+        if (result.needsRehash) await _migratePinHash(PinMatchDto.duress, trimmed);
         return true;
       }
     }
@@ -497,19 +500,30 @@ class LockController with WidgetsBindingObserver {
     if (result.matched == PinMatchDto.normal) {
       final unlocked = await _unlockWithoutBiometrics();
       if (unlocked) {
-        // Migração sob demanda (formato legado ou custo abaixo do atual): o
-        // PIN em claro só está disponível aqui.
-        if (result.needsRehash) {
-          _normalPinHash = await _pinHasher.hash(trimmed);
-          await _saveSecurityConfig();
-        }
         await _resetFailedPinAttempts();
+        if (result.needsRehash) await _migratePinHash(PinMatchDto.normal, trimmed);
       }
       return unlocked;
     }
 
     await _registerFailedPinAttempt();
     return false;
+  }
+
+  /// Migração sob demanda (formato legado ou custo abaixo do atual): o PIN em
+  /// claro só está disponível no desbloqueio. Melhor esforço — uma falha aqui
+  /// (memória, RNG) não pode impedir o desbloqueio nem o cofre falso; o hash
+  /// antigo continua válido e a migração é tentada de novo na próxima vez.
+  Future<void> _migratePinHash(PinMatchDto slot, String pin) async {
+    try {
+      final hash = await _pinHasher.hash(pin);
+      if (slot == PinMatchDto.normal) {
+        _normalPinHash = hash;
+      } else {
+        _duressPinHash = hash;
+      }
+      await _saveSecurityConfig();
+    } catch (_) {}
   }
 
   /// Ativa o cofre falso com histórico inócuo.

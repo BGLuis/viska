@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
@@ -14,6 +15,11 @@ class FakePinHasher implements PinHasher {
   var hashCalls = 0;
   var checkCalls = 0;
   var throwOnCheck = false;
+  var throwOnHash = false;
+
+  /// Quando definido, toda verificação espera por ele: simula a derivação
+  /// lenta do aparelho real para testar o que a interface faz enquanto isso.
+  Completer<void>? checkGate;
 
   static String legacyHash(String pin) =>
       sha256.convert(utf8.encode('viska-pin-v1:$pin')).toString();
@@ -21,6 +27,7 @@ class FakePinHasher implements PinHasher {
   @override
   Future<String> hash(String pin) async {
     hashCalls++;
+    if (throwOnHash) throw StateError('falha na derivação');
     return 'fake\$${_salt++}\$$pin';
   }
 
@@ -32,6 +39,8 @@ class FakePinHasher implements PinHasher {
   }) async {
     checkCalls++;
     if (throwOnCheck) throw StateError('falha na derivação');
+    final gate = checkGate;
+    if (gate != null) await gate.future;
     final duress = _verify(pin, duressHash);
     if (duress != null) {
       return PinCheckDto(matched: PinMatchDto.duress, needsRehash: duress);

@@ -76,8 +76,12 @@ class _LockScreenState extends State<LockScreen> {
 
   Future<void> _submitPin() async {
     if (_pin.isEmpty || _isSubmitting) return;
-    _isSubmitting = true;
-    setState(() => _errorMessage = null);
+    // Visível na tela: a verificação agora é uma derivação cara (issue #90) e
+    // leva perto de um segundo num aparelho modesto.
+    setState(() {
+      _isSubmitting = true;
+      _errorMessage = null;
+    });
 
     try {
       final success = await _controller.verifyAndUnlockWithPin(_pin);
@@ -90,7 +94,11 @@ class _LockScreenState extends State<LockScreen> {
         _syncRetryTicker();
       }
     } finally {
-      _isSubmitting = false;
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      } else {
+        _isSubmitting = false;
+      }
     }
   }
 
@@ -121,26 +129,24 @@ class _LockScreenState extends State<LockScreen> {
   }
 
   /// Configurações antigas, com PINs de tamanhos diferentes: no tamanho do mais
-  /// curto só envia se ele coincidir. A verificação agora é uma derivação cara
-  /// (issue #90), então a digitação fica bloqueada enquanto ela roda, para que
-  /// o PIN conferido seja o mesmo que vai ser enviado.
+  /// curto só envia se ele coincidir. A verificação é uma derivação cara (issue
+  /// #90) e roda sem bloquear a digitação: quem continua digitando o PIN mais
+  /// longo não pode perder dígitos, e um resultado que chega depois de o PIN
+  /// mudar é descartado pela comparação com `candidate`.
   Future<void> _submitIfShorterPinMatches() async {
     final candidate = _pin;
-    _isSubmitting = true;
     var matches = false;
     try {
       matches = await _controller.matchesAnyPin(candidate);
     } catch (_) {
       // Falha na derivação equivale a não coincidir: o dono ainda alcança o
       // tamanho maior e o PIN é avaliado de novo no envio.
-    } finally {
-      _isSubmitting = false;
     }
     if (mounted && matches && _pin == candidate) await _submitPin();
   }
 
   void _onBackspacePressed() {
-    if (_pin.isEmpty) return;
+    if (_pin.isEmpty || _isSubmitting) return;
     setState(() => _pin = _pin.substring(0, _pin.length - 1));
   }
 
@@ -211,6 +217,18 @@ class _LockScreenState extends State<LockScreen> {
                     length: _submitLength,
                     filledCount: _pin.length,
                     hasError: hasError,
+                  ),
+                  const SizedBox(height: ViskaSpacing.spaceSm),
+                ],
+
+                if (hasPin && _isSubmitting && _errorMessage == null && !isWaiting) ...[
+                  Text(
+                    'Verificando PIN…',
+                    key: const Key('pin-verifying'),
+                    textAlign: TextAlign.center,
+                    style: ViskaTypography.bodySmall.copyWith(
+                      color: ViskaColors.textMuted,
+                    ),
                   ),
                   const SizedBox(height: ViskaSpacing.spaceSm),
                 ],
