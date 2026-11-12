@@ -42,9 +42,17 @@ pub fn pin_hash(pin: String) -> Result<String, FfiError> {
 
 /// Confere `pin` contra os hashes gravados, sempre com o mesmo trabalho seja
 /// qual for o PIN digitado (ver `viska_proto::crypto::pin::check_pin`).
-pub fn pin_check(pin: String, normal_hash: Option<String>, duress_hash: Option<String>) -> PinCheckDto {
+pub fn pin_check(
+    pin: String,
+    normal_hash: Option<String>,
+    duress_hash: Option<String>,
+) -> PinCheckDto {
     let pin = Zeroizing::new(pin);
-    let check = pin::check_pin(pin.as_bytes(), normal_hash.as_deref(), duress_hash.as_deref());
+    let check = pin::check_pin(
+        pin.as_bytes(),
+        normal_hash.as_deref(),
+        duress_hash.as_deref(),
+    );
     PinCheckDto {
         matched: match check.matched {
             None => PinMatchDto::NoMatch,

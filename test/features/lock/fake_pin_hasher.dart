@@ -21,6 +21,9 @@ class FakePinHasher implements PinHasher {
   /// lenta do aparelho real para testar o que a interface faz enquanto isso.
   Completer<void>? checkGate;
 
+  /// Mesmo papel de [checkGate], para a derivação de um hash novo.
+  Completer<void>? hashGate;
+
   static String legacyHash(String pin) =>
       sha256.convert(utf8.encode('viska-pin-v1:$pin')).toString();
 
@@ -28,6 +31,8 @@ class FakePinHasher implements PinHasher {
   Future<String> hash(String pin) async {
     hashCalls++;
     if (throwOnHash) throw StateError('falha na derivação');
+    final gate = hashGate;
+    if (gate != null) await gate.future;
     return 'fake\$${_salt++}\$$pin';
   }
 

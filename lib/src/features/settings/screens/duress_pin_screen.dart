@@ -59,11 +59,11 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
   }
 
   Future<void> _save() async {
+    if (_busy) return;
     final normal = _normalPinController.text.trim();
     final normalConfirm = _normalPinConfirmController.text.trim();
     final duress = _duressPinController.text.trim();
 
-    if (_busy) return;
     if (normal != normalConfirm) {
       setState(() => _error = 'A confirmação não coincide com o novo PIN Normal.');
       return;
@@ -243,12 +243,15 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                 // Só o PIN digitado migra para o formato novo, e o de coação
                 // quase nunca é digitado: sem redefinir, ele continua
                 // recuperável por força bruta a partir do arquivo de config.
-                Text(
-                  'Seu PIN de Coação foi salvo num formato antigo, fácil de descobrir por quem copia os arquivos do aparelho. Digite-o de novo abaixo e salve para protegê-lo.',
-                  key: const Key('duress-legacy-warning'),
-                  style: ViskaTypography.bodySmall.copyWith(
-                    color: ViskaColors.dangerDefault,
-                    height: 1.35,
+                Semantics(
+                  liveRegion: true,
+                  child: Text(
+                    'Seu PIN de Coação foi salvo num formato antigo, fácil de descobrir por quem copia os arquivos do aparelho. Digite-o de novo abaixo e salve para protegê-lo.',
+                    key: const Key('duress-legacy-warning'),
+                    style: ViskaTypography.bodySmall.copyWith(
+                      color: ViskaColors.dangerDefault,
+                      height: 1.35,
+                    ),
                   ),
                 ),
                 const SizedBox(height: ViskaSpacing.spaceSm),

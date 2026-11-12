@@ -50,7 +50,7 @@ void main() {
   ) async {
     final localAuth = _FakeLocalAuthentication(shouldSucceed: false);
     final controller = LockController(
-        pinHasher: FakePinHasher(),
+      pinHasher: FakePinHasher(),
       core: _FakeCore(),
       appDirPath: '/tmp/viska_test',
       localAuth: localAuth,
@@ -84,7 +84,7 @@ void main() {
   ) async {
     final localAuth = _FakeLocalAuthentication(shouldSucceed: false);
     final controller = LockController(
-        pinHasher: FakePinHasher(),
+      pinHasher: FakePinHasher(),
       core: _FakeCore(),
       appDirPath: '/tmp/viska_test_pin6',
       localAuth: localAuth,

@@ -514,10 +514,25 @@ class LockController with WidgetsBindingObserver {
   /// claro só está disponível no desbloqueio. Melhor esforço — uma falha aqui
   /// (memória, RNG) não pode impedir o desbloqueio nem o cofre falso; o hash
   /// antigo continua válido e a migração é tentada de novo na próxima vez.
+  ///
+  /// Só grava se o hash daquela posição ainda for o que foi conferido: se o
+  /// dono trocou ou removeu os PINs durante a derivação, gravar aqui
+  /// ressuscitaria o PIN antigo.
   Future<void> _migratePinHash(PinMatchDto slot, String pin) async {
+    final bool isNormal;
+    switch (slot) {
+      case PinMatchDto.normal:
+        isNormal = true;
+      case PinMatchDto.duress:
+        isNormal = false;
+      case PinMatchDto.noMatch:
+        return;
+    }
+    final before = isNormal ? _normalPinHash : _duressPinHash;
     try {
       final hash = await _pinHasher.hash(pin);
-      if (slot == PinMatchDto.normal) {
+      if ((isNormal ? _normalPinHash : _duressPinHash) != before) return;
+      if (isNormal) {
         _normalPinHash = hash;
       } else {
         _duressPinHash = hash;

@@ -57,7 +57,10 @@ class _LockScreenState extends State<LockScreen> {
   }
 
   Future<void> _authenticate() async {
-    if (_isAuthenticating) return;
+    // Biometria e PIN em paralelo podem terminar em qualquer ordem — por
+    // exemplo, o cofre real abrir e um resultado de coação tardio trocar para o
+    // cofre falso. Com a verificação do PIN levando ~1 s, a janela é real.
+    if (_isAuthenticating || _isSubmitting) return;
     setState(() {
       _isAuthenticating = true;
       _errorMessage = null;
@@ -106,9 +109,9 @@ class _LockScreenState extends State<LockScreen> {
   /// os dois PINs do mesmo tamanho; nas antigas vale o maior, para que o mais
   /// longo continue alcançável.
   int get _submitLength => max(
-        _controller.normalPinLength ?? LockController.minPinLength,
-        _controller.duressPinLength ?? 0,
-      );
+    _controller.normalPinLength ?? LockController.minPinLength,
+    _controller.duressPinLength ?? 0,
+  );
 
   void _onDigitPressed(String digit) {
     if (_isSubmitting || _controller.pinRetryDelay > Duration.zero) return;
@@ -119,7 +122,8 @@ class _LockScreenState extends State<LockScreen> {
     });
 
     final len = _pin.length;
-    final reachesShorterPin = len == _controller.normalPinLength ||
+    final reachesShorterPin =
+        len == _controller.normalPinLength ||
         len == _controller.duressPinLength;
     if (len == _submitLength) {
       _submitPin();
@@ -150,12 +154,47 @@ class _LockScreenState extends State<LockScreen> {
     setState(() => _pin = _pin.substring(0, _pin.length - 1));
   }
 
+  /// Cabe duas linhas de `bodySmall`, o caso das mensagens mais longas.
+  static const double _statusLineHeight = 40;
+
+  Widget _buildStatusLine(bool isWaiting, Duration retryDelay) {
+    final String? text;
+    final Color color;
+    Key? key;
+    if (isWaiting) {
+      text =
+          'Muitas tentativas. Tente novamente em ${_formatRetryDelay(retryDelay)}.';
+      color = ViskaColors.dangerDefault;
+    } else if (_errorMessage != null) {
+      text = _errorMessage;
+      color = ViskaColors.dangerDefault;
+    } else if (_isSubmitting) {
+      text = 'Verificando PIN...';
+      color = ViskaColors.textMuted;
+      key = const Key('pin-verifying');
+    } else {
+      return const SizedBox.shrink();
+    }
+    return Text(
+      text!,
+      key: key,
+      textAlign: TextAlign.center,
+      maxLines: 2,
+      style: ViskaTypography.bodySmall.copyWith(
+        color: color,
+        fontWeight: color == ViskaColors.dangerDefault ? FontWeight.w600 : null,
+      ),
+    );
+  }
+
   String _formatRetryDelay(Duration delay) {
     final seconds = delay.inSeconds + (delay.inMilliseconds % 1000 > 0 ? 1 : 0);
     if (seconds < 60) return '$seconds s';
     final minutes = seconds ~/ 60;
     final rest = seconds % 60;
-    return rest == 0 ? '$minutes min' : '$minutes min ${rest.toString().padLeft(2, '0')} s';
+    return rest == 0
+        ? '$minutes min'
+        : '$minutes min ${rest.toString().padLeft(2, '0')} s';
   }
 
   @override
@@ -170,7 +209,9 @@ class _LockScreenState extends State<LockScreen> {
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: ViskaSpacing.space2xl),
+            padding: const EdgeInsets.symmetric(
+              horizontal: ViskaSpacing.space2xl,
+            ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -192,15 +233,12 @@ class _LockScreenState extends State<LockScreen> {
                     Icons.lock_outline_rounded,
                     size: 28,
                     color: hasError
-                          ? ViskaColors.dangerDefault
-                          : ViskaColors.textSecondary,
+                        ? ViskaColors.dangerDefault
+                        : ViskaColors.textSecondary,
                   ),
                 ),
                 const SizedBox(height: ViskaSpacing.spaceSm),
-                Text(
-                  'Viska Bloqueado',
-                  style: ViskaTypography.headline,
-                ),
+                Text('Viska Bloqueado', style: ViskaTypography.headline),
                 const SizedBox(height: 4),
                 Text(
                   'Chaves destruídas em memória e cofre lacrado.',
@@ -221,51 +259,51 @@ class _LockScreenState extends State<LockScreen> {
                   const SizedBox(height: ViskaSpacing.spaceSm),
                 ],
 
-                if (hasPin && _isSubmitting && _errorMessage == null && !isWaiting) ...[
-                  Text(
-                    'Verificando PIN…',
-                    key: const Key('pin-verifying'),
-                    textAlign: TextAlign.center,
-                    style: ViskaTypography.bodySmall.copyWith(
-                      color: ViskaColors.textMuted,
+                // Uma só linha de status, de altura fixa: espera, erro ou
+                // verificação. Linhas que aparecem e somem deslocariam o
+                // teclado sob o dedo a cada envio.
+                Semantics(
+                  liveRegion: true,
+                  child: SizedBox(
+                    height: _statusLineHeight,
+                    child: Center(
+                      child: _buildStatusLine(isWaiting, retryDelay),
                     ),
                   ),
-                  const SizedBox(height: ViskaSpacing.spaceSm),
-                ],
-
-                if (isWaiting || _errorMessage != null) ...[
-                  Text(
-                    isWaiting
-                        ? 'Muitas tentativas. Tente novamente em ${_formatRetryDelay(retryDelay)}.'
-                        : _errorMessage!,
-                    textAlign: TextAlign.center,
-                    style: ViskaTypography.bodySmall.copyWith(
-                      color: ViskaColors.dangerDefault,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: ViskaSpacing.spaceSm),
-                ],
+                ),
+                const SizedBox(height: ViskaSpacing.spaceSm),
 
                 if (hasPin) ...[
-                  PinPad(
-                    keySize: 52.0,
-                    onDigitPressed: _onDigitPressed,
-                    onBackspacePressed: _onBackspacePressed,
-                    leftAction: IconButton(
-                      icon: const Icon(Icons.fingerprint, size: 24),
-                      color: ViskaColors.trustDefault,
-                      tooltip: 'Desbloquear com biometria',
-                      onPressed: _isAuthenticating ? null : _authenticate,
+                  // Esmaecido enquanto o PIN é verificado: dígitos são
+                  // ignorados nesse intervalo e o teclado não pode parecer ativo.
+                  AnimatedOpacity(
+                    opacity: _isSubmitting ? 0.5 : 1,
+                    duration: const Duration(milliseconds: 150),
+                    child: PinPad(
+                      keySize: 52.0,
+                      onDigitPressed: _onDigitPressed,
+                      onBackspacePressed: _onBackspacePressed,
+                      leftAction: IconButton(
+                        icon: const Icon(Icons.fingerprint, size: 24),
+                        color: ViskaColors.trustDefault,
+                        tooltip: 'Desbloquear com biometria',
+                        onPressed: _isAuthenticating || _isSubmitting
+                            ? null
+                            : _authenticate,
+                      ),
                     ),
                   ),
                   const SizedBox(height: ViskaSpacing.spaceSm),
                 ],
 
                 OutlinedButton.icon(
-                  onPressed: _isAuthenticating ? null : _authenticate,
+                  onPressed: _isAuthenticating || _isSubmitting
+                      ? null
+                      : _authenticate,
                   icon: const Icon(Icons.fingerprint),
-                  label: Text(_isAuthenticating ? 'Verificando...' : 'Desbloquear'),
+                  label: Text(
+                    _isAuthenticating ? 'Verificando...' : 'Desbloquear',
+                  ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: ViskaColors.trustDefault,
                     side: const BorderSide(color: ViskaColors.borderStrong),

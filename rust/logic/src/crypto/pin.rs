@@ -64,7 +64,8 @@ pub struct PinCheck {
 /// existe campo separado de sal para manter.
 pub fn hash_pin(pin: &[u8]) -> Result<String> {
     let salt = rng::array::<SALT_LEN>()?;
-    let ctx = Argon2::new(Algorithm::Argon2id, Version::V0x13, current_params()?);
+    let params = current_params()?;
+    let ctx = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.clone());
     let mut out = Zeroizing::new([0u8; OUTPUT_LEN]);
     ctx.hash_password_into(pin, &salt, out.as_mut())
         .map_err(|_| Error::InvalidState("derivação do PIN"))?;
@@ -72,7 +73,7 @@ pub fn hash_pin(pin: &[u8]) -> Result<String> {
     let phc = PasswordHash {
         algorithm: Algorithm::Argon2id.ident(),
         version: Some(Version::V0x13.into()),
-        params: (&current_params()?)
+        params: (&params)
             .try_into()
             .map_err(|_| Error::InvalidState("parâmetros do PIN"))?,
         salt: Some(
@@ -205,7 +206,8 @@ fn parse_phc(stored: &str) -> Option<ParsedPhc> {
         return None;
     }
     let mut salt = [0u8; 64];
-    salt.get_mut(..salt_bytes.len())?.copy_from_slice(salt_bytes);
+    salt.get_mut(..salt_bytes.len())?
+        .copy_from_slice(salt_bytes);
 
     let hash_src = phc.hash?;
     let mut hash = Zeroizing::new([0u8; OUTPUT_LEN]);
@@ -294,9 +296,18 @@ mod tests {
     fn pin_hashes_differ_across_installs_with_same_pin() {
         let a = hash_pin(b"1234").unwrap();
         let b = hash_pin(b"1234").unwrap();
-        assert_ne!(a, b, "sal aleatório por hash tem que gerar strings distintas");
-        assert_eq!(check_pin(b"1234", Some(&a), None).matched, Some(PinSlot::Normal));
-        assert_eq!(check_pin(b"1234", Some(&b), None).matched, Some(PinSlot::Normal));
+        assert_ne!(
+            a, b,
+            "sal aleatório por hash tem que gerar strings distintas"
+        );
+        assert_eq!(
+            check_pin(b"1234", Some(&a), None).matched,
+            Some(PinSlot::Normal)
+        );
+        assert_eq!(
+            check_pin(b"1234", Some(&b), None).matched,
+            Some(PinSlot::Normal)
+        );
     }
 
     #[test]
@@ -324,7 +335,10 @@ mod tests {
     #[test]
     fn duress_wins_when_both_slots_match() {
         let h = hash_pin(b"1234").unwrap();
-        assert_eq!(check_pin(b"1234", Some(&h), Some(&h)).matched, Some(PinSlot::Duress));
+        assert_eq!(
+            check_pin(b"1234", Some(&h), Some(&h)).matched,
+            Some(PinSlot::Duress)
+        );
     }
 
     #[test]
@@ -351,7 +365,11 @@ mod tests {
         );
         assert_eq!(check_pin(b"4321", Some(&legacy), None).matched, None);
         assert_eq!(
-            check_pin(b"9999", Some(&hash_pin(b"1234").unwrap()), Some(&legacy_hash("9999"))),
+            check_pin(
+                b"9999",
+                Some(&hash_pin(b"1234").unwrap()),
+                Some(&legacy_hash("9999"))
+            ),
             PinCheck {
                 matched: Some(PinSlot::Duress),
                 needs_rehash: true
@@ -365,7 +383,10 @@ mod tests {
         // código (`sha256sum`), igual ao que o `crypto` do Dart gravava. Trava a
         // compatibilidade da migração com os arquivos que já existem.
         const STORED: &str = "57a7eaef7b07d67b536a9485609f91ed36efe6cef17b268190470d9f4afd8f2a";
-        assert_eq!(check_pin(b"1234", Some(STORED), None).matched, Some(PinSlot::Normal));
+        assert_eq!(
+            check_pin(b"1234", Some(STORED), None).matched,
+            Some(PinSlot::Normal)
+        );
         assert_eq!(check_pin(b"1235", Some(STORED), None).matched, None);
     }
 

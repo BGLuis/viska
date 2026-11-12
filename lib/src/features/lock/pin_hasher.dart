@@ -1,5 +1,4 @@
 import 'package:viska/src/rust/ffi/pin.dart' as ffi;
-import 'package:viska/src/rust/ffi/pin.dart' show PinCheckDto;
 
 export 'package:viska/src/rust/ffi/pin.dart' show PinCheckDto, PinMatchDto;
 
@@ -9,13 +8,13 @@ export 'package:viska/src/rust/ffi/pin.dart' show PinCheckDto, PinMatchDto;
 /// da biblioteca Rust carregada (eles usam um `Core` falso pelo mesmo motivo).
 /// Em produção a derivação é Argon2id no Rust (issue #90): o PIN cruza o FFI
 /// só no sentido Dart→Rust, por decisão explícita do mantenedor.
-abstract class PinHasher {
+abstract interface class PinHasher {
   /// String PHC com sal aleatório novo; pode ser gravada em claro.
   Future<String> hash(String pin);
 
   /// Confere [pin] contra os dois hashes gravados com o mesmo trabalho seja
   /// qual for o PIN, para que o tempo não denuncie o PIN de coação.
-  Future<PinCheckDto> check(
+  Future<ffi.PinCheckDto> check(
     String pin, {
     String? normalHash,
     String? duressHash,
@@ -29,7 +28,7 @@ class RustPinHasher implements PinHasher {
   Future<String> hash(String pin) => ffi.pinHash(pin: pin);
 
   @override
-  Future<PinCheckDto> check(
+  Future<ffi.PinCheckDto> check(
     String pin, {
     String? normalHash,
     String? duressHash,

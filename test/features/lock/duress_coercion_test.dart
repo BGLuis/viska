@@ -648,6 +648,29 @@ void main() {
       controller.dispose();
     });
 
+    test('migration does not overwrite a PIN changed while it was deriving', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      final gate = Completer<void>();
+      hasher.hashGate = gate;
+      final unlocking = controller.verifyAndUnlockWithPin('1234');
+      while (hasher.hashCalls == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      hasher.hashGate = null;
+      await controller.configurePins(normalPin: '5678');
+      gate.complete();
+      expect(await unlocking, isTrue);
+
+      expect(await controller.isNormalPin('5678'), isTrue);
+      expect(await controller.isNormalPin('1234'), isFalse);
+      controller.dispose();
+    });
+
     test('failed migration still opens the decoy vault', () async {
       writeLegacyConfig(duress: '9999', mode: 1);
       final hasher = FakePinHasher()..throwOnHash = true;
