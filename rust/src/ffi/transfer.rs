@@ -83,8 +83,8 @@ use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
     TransferEventDto, TransferEventKind, TransferProgressDto,
 };
-use crate::transfer_events::TransferEventSink;
 use crate::frb_generated::StreamSink;
+use crate::transfer_events::TransferEventSink;
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
 use viska_proto::file::merkle;
@@ -737,8 +737,8 @@ impl Core {
         contact: [u8; DEVICE_ID_LEN],
         file_id: [u8; FILE_ID_LEN],
     ) {
-        // Trava envenenada: o aviso se perde, e o Dart ainda relê a lista na
-        // próxima ação da pessoa.
+        // Trava envenenada só acontece depois de um pânico, que já inutiliza a
+        // Core; o aviso se perde e a lista só é relida na próxima ação da pessoa.
         if let Ok(events) = self.transfer_events.lock() {
             events.emit(offer_event(kind, contact, file_id));
         }
@@ -3044,32 +3044,48 @@ mod tests {
         assert_eq!(seen[0].file_id, started.file_id);
     }
 
-    #[test]
-    fn accept_reject_and_cancel_each_emit_gone_once() {
+    /// Entrega uma oferta retida a B, assina e descarta o replay, e roda `act`.
+    fn gone_events_after(act: impl FnOnce(&EstablishedPair, &[u8])) -> (Vec<TransferEventDto>, Vec<u8>) {
         let dir = tempfile::tempdir().unwrap();
-        for action in ["accept", "reject", "cancel"] {
-            let (pair, started) = pair_with_retained_offer(&dir);
-            pair.core_b
-                .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
-                .unwrap();
-            let seen = watch_offers(&pair.core_b);
-            seen.lock().unwrap().clear();
+        let (pair, started) = pair_with_retained_offer(&dir);
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
+            .unwrap();
+        let seen = watch_offers(&pair.core_b);
+        seen.lock().unwrap().clear();
+        act(&pair, &started.file_id);
+        // Repetir não pode avisar de novo: a oferta já não existe.
+        let _ = pair.core_b.cancel_transfer(started.file_id.clone());
+        let events = seen.lock().unwrap().clone();
+        (events, started.file_id)
+    }
 
-            match action {
-                "accept" => pair.core_b.accept_file_offer(started.file_id.clone()).unwrap(),
-                "reject" => {
-                    pair.core_b.reject_file_offer(started.file_id.clone()).unwrap();
-                }
-                _ => pair.core_b.cancel_transfer(started.file_id.clone()).unwrap(),
-            }
-            // Repetir não pode avisar de novo: a oferta já não existe.
-            let _ = pair.core_b.cancel_transfer(started.file_id.clone());
+    fn assert_single_gone(result: (Vec<TransferEventDto>, Vec<u8>)) {
+        let (events, file_id) = result;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TransferEventKind::OfferGone);
+        assert_eq!(events[0].file_id, file_id);
+    }
 
-            let seen = seen.lock().unwrap();
-            assert_eq!(seen.len(), 1, "{action}");
-            assert_eq!(seen[0].kind, TransferEventKind::OfferGone, "{action}");
-            assert_eq!(seen[0].file_id, started.file_id, "{action}");
-        }
+    #[test]
+    fn accepting_an_offer_emits_gone_once() {
+        assert_single_gone(gone_events_after(|pair, id| {
+            pair.core_b.accept_file_offer(id.to_vec()).unwrap();
+        }));
+    }
+
+    #[test]
+    fn rejecting_an_offer_emits_gone_once() {
+        assert_single_gone(gone_events_after(|pair, id| {
+            pair.core_b.reject_file_offer(id.to_vec()).unwrap();
+        }));
+    }
+
+    #[test]
+    fn cancelling_an_offer_emits_gone_once() {
+        assert_single_gone(gone_events_after(|pair, id| {
+            pair.core_b.cancel_transfer(id.to_vec()).unwrap();
+        }));
     }
 
     #[test]
