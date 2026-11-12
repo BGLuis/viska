@@ -1,19 +1,18 @@
 //! Tabela de transferências de arquivo — Fase 4, D15.
 //!
-//! Guarda só o que uma transferência precisa para sobreviver a uma queda de
-//! conexão dentro da mesma execução do app: `transfer_secret` (D15 — a raiz
-//! de todas as chaves da transferência, `file::keys`) e o manifesto já
-//! codificado em CBOR, para reconstruir `Manifest::decode` sem precisar
-//! renegociar nada com o par. Cifrado em repouso pelo banco inteiro (D7) —
-//! não há cifra adicional aqui, mesma political de `store::messages`.
+//! Guarda o que uma transferência precisa para sobreviver a bloqueio do cofre e
+//! a reinício do app (§7.5): `transfer_secret` (D15 — a raiz de todas as chaves
+//! da transferência, `file::keys`), o manifesto já codificado em CBOR, para
+//! reconstruir `Manifest::decode` sem renegociar nada com o par, e se a oferta
+//! já foi respondida (`answered`), que decide a re-oferta e o prazo de §7.7.
+//! Cifrado em repouso pelo banco inteiro (D7) — não há cifra adicional aqui,
+//! mesma política de `store::messages`.
 //!
-//! Sobreviver a um **reinício do app** exigiria também persistir o
-//! progresso (quais blocos já foram recebidos/confirmados) — não
-//! implementado: hoje, reabrir o app com uma transferência pendente exige
-//! recomeçá-la do zero. Registrado como lacuna conhecida, não decidida em
-//! silêncio.
+//! O progresso não é persistido: o emissor o reaprende do bitmap do primeiro
+//! `FILE_FEEDBACK`, e o receptor o recompõe do próprio `.staging`.
 
 use rusqlite::OptionalExtension;
+use zeroize::Zeroizing;
 
 use crate::file::transfer::TransferKind;
 use crate::{Error, Result};
@@ -35,20 +34,38 @@ impl Direction {
 }
 
 /// Uma transferência de arquivo persistida.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StoredTransfer {
     pub file_id: [u8; 16],
     pub direction: Direction,
     pub contact_device_id: [u8; 16],
     pub manifest_cbor: Vec<u8>,
-    pub transfer_secret: Vec<u8>,
+    pub transfer_secret: Zeroizing<Vec<u8>>,
     pub created_at_unix_secs: i64,
     /// Arquivo comum ou nota de voz (Fase 5, D16) — persistido para uma
     /// transferência retomada saber qual chave rederivar (`K_symbol` vs.
     /// `K_audio_chunk`) sem precisar do `FILE_METADATA` de novo.
     pub kind: TransferKind,
     pub staging_cipher_version: u8,
+    /// O destinatário já respondeu a oferta com um `FILE_FEEDBACK` (§7.7 item
+    /// 5). Só faz sentido no envio.
+    pub answered: bool,
 }
+
+impl core::fmt::Debug for StoredTransfer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StoredTransfer")
+            .field("file_id", &hex::encode(self.file_id))
+            .field("direction", &self.direction)
+            .field("transfer_secret", &"<redigido>")
+            .field("kind", &self.kind)
+            .field("answered", &self.answered)
+            .finish_non_exhaustive()
+    }
+}
+
+const COLUMNS: &str = "file_id, direction, contact_device_id, manifest_cbor, transfer_secret, \
+    created_at_unix_secs, kind, staging_cipher_version, answered";
 
 #[allow(clippy::too_many_arguments)]
 pub fn insert(
@@ -81,8 +98,7 @@ pub fn insert(
 
 pub fn find(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<Option<StoredTransfer>> {
     conn.query_row(
-        "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version
-         FROM file_transfers WHERE file_id = ?1",
+        &format!("SELECT {COLUMNS} FROM file_transfers WHERE file_id = ?1"),
         [file_id.as_slice()],
         row_to_transfer,
     )
@@ -99,12 +115,11 @@ pub fn list_for_contact(
     direction: Direction,
 ) -> Result<Vec<StoredTransfer>> {
     let mut statement = conn
-        .prepare(
-            "SELECT file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version
-             FROM file_transfers
+        .prepare(&format!(
+            "SELECT {COLUMNS} FROM file_transfers
              WHERE contact_device_id = ?1 AND direction = ?2
-             ORDER BY created_at_unix_secs ASC",
-        )
+             ORDER BY created_at_unix_secs ASC"
+        ))
         .map_err(|_| Error::Store)?;
 
     let rows = statement
@@ -119,6 +134,31 @@ pub fn list_for_contact(
         transfers.push(row.map_err(|_| Error::Store)?);
     }
     Ok(transfers)
+}
+
+/// Todas as transferências persistidas — para aplicar os prazos de retenção
+/// (§7.5, §7.7) sem depender de qual contato está com a sessão aberta.
+pub fn list_all(conn: &rusqlite::Connection) -> Result<Vec<StoredTransfer>> {
+    let mut statement = conn
+        .prepare(&format!("SELECT {COLUMNS} FROM file_transfers ORDER BY created_at_unix_secs ASC"))
+        .map_err(|_| Error::Store)?;
+    let rows = statement.query_map([], row_to_transfer).map_err(|_| Error::Store)?;
+    let mut transfers = Vec::new();
+    for row in rows {
+        transfers.push(row.map_err(|_| Error::Store)?);
+    }
+    Ok(transfers)
+}
+
+/// Registra que a oferta foi respondida: encerra o prazo de §7.7 item 5 e a
+/// re-oferta na retomada. Idempotente.
+pub fn mark_answered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<()> {
+    conn.execute(
+        "UPDATE file_transfers SET answered = 1 WHERE file_id = ?1",
+        [file_id.as_slice()],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
 }
 
 /// Todos os `file_id` persistidos — usado por
@@ -162,6 +202,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
     let created_at_unix_secs: i64 = row.get(5)?;
     let kind: i64 = row.get(6)?;
     let staging_cipher_version: i64 = row.get(7)?;
+    let answered: i64 = row.get(8)?;
 
     Ok(StoredTransfer {
         file_id: file_id.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -170,10 +211,11 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
             .try_into()
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         manifest_cbor,
-        transfer_secret,
+        transfer_secret: Zeroizing::new(transfer_secret),
         created_at_unix_secs,
         kind: TransferKind::from_u8(kind as u8).map_err(|_| rusqlite::Error::InvalidQuery)?,
         staging_cipher_version: staging_cipher_version as u8,
+        answered: answered != 0,
     })
 }
 
@@ -217,7 +259,8 @@ mod tests {
         assert_eq!(found.direction, Direction::Sending);
         assert_eq!(found.contact_device_id, contact);
         assert_eq!(found.manifest_cbor, b"manifesto-cbor");
-        assert_eq!(found.transfer_secret, b"segredo-de-32-bytes-ou-nao");
+        assert_eq!(found.transfer_secret.as_slice(), b"segredo-de-32-bytes-ou-nao");
+        assert!(!found.answered);
         assert_eq!(found.created_at_unix_secs, 1000);
         assert_eq!(found.kind, TransferKind::Audio);
     }
@@ -248,6 +291,36 @@ mod tests {
         delete(&conn, &file_id).unwrap();
         assert!(find(&conn, &file_id).unwrap().is_none());
         delete(&conn, &file_id).unwrap(); // segunda chamada não deveria errar.
+    }
+
+    #[test]
+    fn mark_answered_persists_and_list_all_returns_every_row() {
+        let contact = [4u8; 16];
+        let conn = conn_with_contact(contact);
+        for (id, at) in [([1u8; 16], 20), ([2u8; 16], 10)] {
+            insert(&conn, &id, Direction::Sending, &contact, b"m", b"s", at, TransferKind::File).unwrap();
+        }
+
+        mark_answered(&conn, &[1u8; 16]).unwrap();
+        mark_answered(&conn, &[1u8; 16]).unwrap();
+
+        let all = list_all(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].file_id, [2u8; 16], "ordenado por criação");
+        assert!(!all[0].answered);
+        assert!(all[1].answered);
+    }
+
+    #[test]
+    fn debug_never_prints_the_transfer_secret() {
+        let contact = [7u8; 16];
+        let conn = conn_with_contact(contact);
+        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"segredo-visivel", 0, TransferKind::File)
+            .unwrap();
+        let shown = format!("{:?}", find(&conn, &[3u8; 16]).unwrap().unwrap());
+        assert!(!shown.contains("segredo-visivel"));
+        assert!(!shown.contains(&format!("{:?}", b"segredo-visivel".to_vec())));
+        assert!(shown.contains("<redigido>"));
     }
 
     #[test]

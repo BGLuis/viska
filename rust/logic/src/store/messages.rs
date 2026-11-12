@@ -707,13 +707,16 @@ pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
 }
 
 /// Marca como falha os envios de arquivo e de nota de voz que ficaram
-/// `Pending`. A transferência vive só em memória (U-03): sem o handle ativo
-/// ela não retoma, então a linha não pode continuar como "Enviando…". Também
-/// a tira de `list_pending`, que reenviaria o nome do arquivo como texto.
+/// `Pending` e não têm mais linha em `file_transfers`: sem ela não há segredo
+/// nem cópia para retomar, então a linha não pode continuar como "Enviando…".
+/// Os que ainda têm linha retomam quando a sessão voltar (§7.5) e ficam como
+/// estão. Também os tira de `list_pending`, que reenviaria o nome do arquivo
+/// como texto.
 pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
     conn.execute(
         "UPDATE messages SET delivery_state = ?1
-         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)",
+         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)
+           AND (file_id IS NULL OR file_id NOT IN (SELECT file_id FROM file_transfers))",
         rusqlite::params![
             DeliveryState::Failed as i64,
             Direction::Outgoing as i64,
@@ -725,25 +728,43 @@ pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
     .map_err(|_| Error::Store)
 }
 
-/// Como [`fail_pending_transfers`], restrita a um contato.
-pub fn fail_pending_transfers_for_contact(
+/// `id` da mensagem de saída ligada a `file_id` deste contato, se houver.
+pub fn outgoing_id_by_file_id(
     conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
     contact_device_id: &[u8; 16],
-) -> Result<usize> {
-    conn.execute(
-        "UPDATE messages SET delivery_state = ?1
-         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
-           AND packet_type IN (?5, ?6)",
-        rusqlite::params![
-            DeliveryState::Failed as i64,
-            contact_device_id.as_slice(),
-            Direction::Outgoing as i64,
-            DeliveryState::Pending as i64,
-            PacketType::FileMetadata.to_u8() as i64,
-            PacketType::AudioChunk.to_u8() as i64,
-        ],
+) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM messages WHERE file_id = ?1 AND contact_device_id = ?2 AND direction = ?3",
+        rusqlite::params![file_id.as_slice(), contact_device_id.as_slice(), Direction::Outgoing as i64],
+        |row| row.get(0),
     )
+    .optional()
     .map_err(|_| Error::Store)
+}
+
+/// Devolve a `Pending` o envio de arquivo que falhou mas vai retomar: a falha
+/// marcada pelo Dart quando o bombeamento caiu (transporte, bloqueio) deixou de
+/// valer, porque a transferência continua. Só sai de `Failed`.
+pub fn reopen_failed_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE messages SET delivery_state = ?1
+             WHERE file_id = ?2 AND contact_device_id = ?3 AND direction = ?4 AND delivery_state = ?5",
+            rusqlite::params![
+                DeliveryState::Pending as i64,
+                file_id.as_slice(),
+                contact_device_id.as_slice(),
+                Direction::Outgoing as i64,
+                DeliveryState::Failed as i64,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(changed > 0)
 }
 
 /// Liga a mensagem de saída de um arquivo ao `file_id` da transferência, para
@@ -778,9 +799,9 @@ pub fn mark_expired_by_file_id(
     mark_unfinished_by_file_id(conn, DeliveryState::Expired, file_id, contact_device_id)
 }
 
-/// Como [`mark_rejected_by_file_id`], para o envio cancelado localmente (reset
-/// de sessão): falha local, não recusa nem prazo vencido. Como as demais,
-/// só move `Pending`, `Sending` e `Sent`.
+/// Como [`mark_rejected_by_file_id`], para o envio que não pode mais retomar
+/// (cópia local alterada, teto de retenção vencido): falha local, não recusa
+/// nem prazo vencido. Como as demais, só move `Pending`, `Sending` e `Sent`.
 pub fn mark_failed_by_file_id(
     conn: &rusqlite::Connection,
     file_id: &[u8; 16],
@@ -1588,14 +1609,13 @@ mod tests {
         mark_sending(&conn, text_b).unwrap();
 
         assert_eq!(requeue_sending_for_contact(&conn, &a).unwrap(), 1);
-        assert_eq!(fail_pending_transfers_for_contact(&conn, &a).unwrap(), 1);
 
         let state = |id: i64| -> i64 {
             conn.query_row("SELECT delivery_state FROM messages WHERE id = ?1", [id], |r| r.get(0))
                 .unwrap()
         };
         assert_eq!(state(text_a), DeliveryState::Pending as i64);
-        assert_eq!(state(file_a), DeliveryState::Failed as i64);
+        assert_eq!(state(file_a), DeliveryState::Pending as i64);
         assert_eq!(state(text_b), DeliveryState::Sending as i64);
         assert_eq!(state(file_b), DeliveryState::Pending as i64);
     }
@@ -1685,6 +1705,49 @@ mod tests {
         let pendentes = list_pending(&conn, &contact).unwrap();
         assert_eq!(pendentes.len(), 1);
         assert_eq!(pendentes[0].id, texto);
+    }
+
+    #[test]
+    fn fail_pending_transfers_spares_sends_that_can_still_resume() {
+        let contact = [42u8; 16];
+        let conn = conn_with_contact(contact);
+        let resumable = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        let orphan = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 2).unwrap();
+        set_file_id(&conn, resumable, &[1u8; 16]).unwrap();
+        set_file_id(&conn, orphan, &[2u8; 16]).unwrap();
+        conn.execute(
+            "INSERT INTO file_transfers (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs)
+             VALUES (?1, 0, ?2, x'00', x'00', 0)",
+            rusqlite::params![[1u8; 16].as_slice(), contact.as_slice()],
+        )
+        .unwrap();
+
+        assert_eq!(fail_pending_transfers(&conn).unwrap(), 1);
+
+        let state = |id: i64| list_for_contact(&conn, &contact).unwrap().into_iter().find(|m| m.id == id).unwrap().delivery_state;
+        assert_eq!(state(resumable), DeliveryState::Pending);
+        assert_eq!(state(orphan), DeliveryState::Failed);
+    }
+
+    #[test]
+    fn reopen_failed_by_file_id_only_leaves_failed_for_the_matching_send() {
+        let contact = [43u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [3u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+        assert_eq!(outgoing_id_by_file_id(&conn, &file_id, &contact).unwrap(), Some(id));
+        assert_eq!(outgoing_id_by_file_id(&conn, &file_id, &[44u8; 16]).unwrap(), None);
+
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+        mark_failed(&conn, id).unwrap();
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &[44u8; 16]).unwrap());
+        assert!(reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Pending);
+
+        mark_sent(&conn, id).unwrap();
+        mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap();
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
     }
 
     #[test]
