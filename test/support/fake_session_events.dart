@@ -15,6 +15,7 @@ mixin FakeSessionEvents {
   var _gone = false;
   var _needsRehandshake = false;
   var _generation = 0;
+  var _renewing = false;
   final _sessionEvents = StreamController<SessionStateEventDto>.broadcast(sync: true);
 
   SessionStateKind get sessionState => _state;
@@ -44,6 +45,14 @@ mixin FakeSessionEvents {
     _emitSessionState();
   }
 
+  bool get renewing => _renewing;
+
+  /// Uma candidata passou a segurar (ou deixou de segurar) a fila (§11.4).
+  set renewing(bool value) {
+    _renewing = value;
+    _emitSessionState();
+  }
+
   void _emitSessionState() => _sessionEvents.add(_snapshot());
 
   SessionStateEventDto _snapshot() => SessionStateEventDto(
@@ -51,6 +60,7 @@ mixin FakeSessionEvents {
         state: _gone ? null : _state,
         needsRehandshake: _needsRehandshake,
         generation: _generation,
+        renewing: _renewing,
       );
 
   Stream<SessionStateEventDto> subscribeSessionEvents() async* {

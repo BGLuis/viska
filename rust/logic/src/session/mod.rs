@@ -29,9 +29,12 @@
 //! desenho do próprio módulo `ratchet`, não uma suposição nova daqui.
 
 pub mod reopen;
+mod renewal;
+
+pub use renewal::{Received, CANDIDATE_TIMEOUT_SECS, SIGNAL_INTERVAL_SECS};
 
 use crate::crypto::aead;
-use crate::crypto::handshake::{respond, Initiator, INIT_LEN, RESP_LEN};
+use crate::crypto::handshake::{respond, Initiator};
 use crate::crypto::kdf::Key;
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::ratchet::{RatchetHeader, RatchetState};
@@ -72,16 +75,6 @@ const COUNTER_REHANDSHAKE_THRESHOLD: u32 = 600;
 /// um valor normativo da spec (que não cobre isso); é uma política nova,
 /// registrada em `docs/protocol.md` §11.1.
 const MAX_CONSECUTIVE_AEAD_FAILURES: u32 = 8;
-
-/// Segundos que uma sessão candidata (§11.4) espera pela confirmação de chave.
-/// Enquanto ela existe, nada de aplicação é cifrado; uma INIT forjada, que
-/// nunca confirma, segura a fila por no máximo isso.
-pub const CANDIDATE_TIMEOUT_SECS: u64 = 30;
-
-/// Intervalo mínimo entre dois sinais de reabertura (`REOPEN`, ou a INIT
-/// reenviada em resposta a um) disparados por tráfego recebido. Sem isso, cada
-/// pacote ilegível de um par dessincronizado geraria um sinal de volta.
-pub const SIGNAL_INTERVAL_SECS: u64 = 10;
 
 /// Estado de uma sessão — `docs/protocol.md` §11.1.
 ///
@@ -150,7 +143,15 @@ pub struct Session {
     last_signal_at: Option<u64>,
     /// Sessão nova em negociação ao lado da atual (§11.4). Só é promovida
     /// quando o primeiro AEAD sob ela abre.
-    candidate: Option<Candidate>,
+    candidate: Option<renewal::Candidate>,
+    /// A última INIT a que respondemos (resumo) e a RESP que demos. A mesma
+    /// INIT chega de novo sempre que o par republica (canal reconectado,
+    /// `REOPEN` cruzado): responder outra vez com efêmeras novas faria os dois
+    /// lados derivarem raízes diferentes (§11.4).
+    answered_init: Option<renewal::AnsweredInit>,
+    /// Quando a última candidata de respondedor foi aberta: limita quantas
+    /// INITs diferentes por minuto custam um encapsulamento ML-KEM.
+    last_candidate_at: Option<u64>,
     /// Se esta sessão já mandou o seu `CONTROL_SUITES` (§10.2). Também é o que
     /// confirma a chave para o par numa sessão nova: o respondedor só ganha
     /// cadeia de envio ao decifrar a primeira mensagem do iniciador (§5.1).
@@ -159,34 +160,6 @@ pub struct Session {
     /// candidata, para quem está fora saber que o par tem uma sessão nova
     /// mesmo quando o estado continua `Established`.
     generation: u32,
-}
-
-/// Sessão nova negociada sem derrubar a atual — §11.4.
-#[derive(Debug)]
-struct Candidate {
-    stage: CandidateStage,
-    opened_at: u64,
-}
-
-#[derive(Debug)]
-enum CandidateStage {
-    /// Somos iniciador: INIT enviada em resposta a um `REOPEN`.
-    AwaitingResponse { initiator: Box<Initiator>, init: Vec<u8>, suite: u8 },
-    /// Handshake concluído, aguardando o primeiro AEAD válido do par.
-    Established { ratchet: Box<RatchetState>, suite: u8, suites_sent: bool },
-}
-
-/// Resultado de [`Session::receive`].
-#[derive(Debug, Default)]
-pub struct Received {
-    /// Mensagem de aplicação decifrada, se houver.
-    pub message: Option<InnerPlaintext>,
-    /// Bytes a mandar de volta ao par: RESP, INIT, `REOPEN` ou um
-    /// `CONTROL_SUITES` já cifrado. Nunca segredo.
-    pub reply: Option<Vec<u8>>,
-    /// Uma sessão candidata foi aberta nesta chamada: o par muito
-    /// provavelmente perdeu a sessão atual.
-    pub candidate_opened: bool,
 }
 
 impl Session {
@@ -240,6 +213,8 @@ impl Session {
                     reopen_seen: reopen::ReplayGuard::default(),
                     last_signal_at: None,
                     candidate: None,
+                    answered_init: None,
+                    last_candidate_at: None,
                     suites_sent: false,
                     generation: 0,
                 },
@@ -262,6 +237,8 @@ impl Session {
                     reopen_seen: reopen::ReplayGuard::default(),
                     last_signal_at: None,
                     candidate: None,
+                    answered_init: None,
+                    last_candidate_at: None,
                     suites_sent: false,
                     generation: 0,
                 },
@@ -322,11 +299,10 @@ impl Session {
     /// Processa uma mensagem de handshake recebida (INIT ou RESP, conforme o
     /// estado atual) e devolve os bytes de resposta a enviar, se houver.
     ///
-    /// A distinção entre "isto é handshake" e "isto é um envelope de sessão"
-    /// nunca é um marcador no fio — isso contradiria D4 (nada além do
-    /// contador e do `dh_pub` em claro). É puramente o estado local: enquanto
-    /// não `Established`, todo byte recebido é handshake.
-    pub fn process_handshake_message(
+    /// Só chamado por [`Self::receive`], que já decidiu pelo estado e pelo
+    /// tamanho que os bytes são handshake — nunca por um marcador no fio
+    /// (D4). Ver `renewal`.
+    fn process_handshake_message(
         &mut self,
         local: &LocalIdentity,
         bytes: &[u8],
@@ -437,18 +413,12 @@ impl Session {
         Ok(envelope_bytes)
     }
 
-    /// Decifra um envelope recebido contra uma sessão estabelecida.
-    ///
-    /// `Ok(None)` cobre toda falha de decifragem — envelope malformado,
-    /// `dh_pub` de ordem baixa, contador repetido, tag do AEAD inválida,
-    /// plaintext decodificado que não bate com o bucket. Nenhuma dessas
-    /// causas é diferenciada por fora: distinguir abriria exatamente o tipo
-    /// de oráculo que `crypto::aead` já evita para a falha do próprio AEAD
-    /// (ver `crypto/aead.rs`), e aqui a mesma regra vale para qualquer falha
-    /// anterior a ele. Só o uso indevido da API — chamar isto antes da
-    /// sessão estar `Established`, ou depois dela ter falhado — devolve
-    /// `Err`.
-    pub fn decrypt_incoming(
+    /// Decifra um envelope só contra a sessão atual, sem a candidata nem
+    /// nenhuma resposta ao par — o núcleo de [`Self::receive`] isolado para os
+    /// testes do ratchet. Toda falha é `Ok(None)`, sem diferenciar a causa;
+    /// `Err` só para uso fora de `Established`.
+    #[cfg(test)]
+    fn decrypt_incoming(
         &mut self,
         bytes: &[u8],
         transport: Transport,
@@ -465,232 +435,27 @@ impl Session {
 
         match try_decrypt(ratchet, bytes, transport) {
             Ok(inner) => {
-                self.consecutive_aead_failures = 0;
-                self.peer_confirmed = true;
-                if inner.packet_type == PacketType::ControlSuites {
-                    self.handle_control_suites(&inner.body);
-                }
+                self.on_decrypted(&inner);
                 Ok(Some(inner))
             }
             Err(_) => {
-                self.consecutive_aead_failures = self.consecutive_aead_failures.saturating_add(1);
-                if self.consecutive_aead_failures >= MAX_CONSECUTIVE_AEAD_FAILURES {
-                    self.state = SessionState::Failed;
-                }
+                self.count_failure();
                 Ok(None)
             }
         }
     }
 
-    /// Geração desta sessão: muda a cada promoção de candidata (§11.4).
-    pub fn generation(&self) -> u32 {
-        self.generation
-    }
-
-    /// Define a geração de uma sessão aberta no lugar de outra, para que a
-    /// troca seja visível mesmo quando o estado novo é igual ao antigo.
-    pub fn set_generation(&mut self, generation: u32) {
-        self.generation = generation;
-    }
-
-    /// `true` enquanto há uma candidata recente esperando confirmação: nada de
-    /// aplicação é cifrado até ela ser promovida ou passar do prazo.
-    pub fn is_renewing(&self) -> bool {
-        self.is_renewing_at(crate::util::time::unix_seconds())
-    }
-
-    /// Como [`Self::is_renewing`], com o instante explícito.
-    pub fn is_renewing_at(&self, now: u64) -> bool {
-        self.candidate
-            .as_ref()
-            .is_some_and(|c| now.saturating_sub(c.opened_at) < CANDIDATE_TIMEOUT_SECS)
-    }
-
-    /// Bytes a publicar quando o canal com o par conecta (§11.4): a INIT se
-    /// formos iniciador esperando a RESP (da sessão ou da candidata), um
-    /// `REOPEN` novo se formos respondedor esperando a INIT, `None` nos demais
-    /// casos. Cada `REOPEN` tem nonce e carimbo próprios.
-    pub fn connect_signal(&mut self) -> Result<Option<Vec<u8>>> {
-        self.connect_signal_at(crate::util::time::unix_seconds())
-    }
-
-    /// Como [`Self::connect_signal`], com o instante explícito.
-    pub fn connect_signal_at(&mut self, now: u64) -> Result<Option<Vec<u8>>> {
-        match &self.state {
-            SessionState::AwaitingResponse(_) => Ok(self.pending_outgoing_handshake.clone()),
-            SessionState::AwaitingPeerInit => {
-                // Gatilho local, não tráfego recebido: não passa pelo limite de
-                // taxa, mas conta para ele, para o primeiro pacote ilegível
-                // logo depois não gerar um segundo sinal.
-                self.last_signal_at = Some(now);
-                reopen::seal_at(&self.reopen_key, self.direction, now).map(Some)
-            }
-            SessionState::Established(_) | SessionState::Failed => {
-                Ok(match &self.candidate {
-                    Some(Candidate {
-                        stage: CandidateStage::AwaitingResponse { init, .. },
-                        ..
-                    }) => Some(init.clone()),
-                    _ => None,
-                })
-            }
-        }
-    }
-
-    /// Ponto único de entrada de bytes vindos do par — §11.4.
-    ///
-    /// Decide sozinho, pelo estado local e pelo tamanho, se os bytes são INIT,
-    /// RESP, `REOPEN` ou envelope: nenhum marcador no fio (D4). INIT (1218 B) e
-    /// RESP (1122 B) nunca têm o tamanho de um envelope (1076 ou 16436 B), e o
-    /// `REOPEN` tem o de um envelope, então só é testado depois que nem a
-    /// sessão atual nem a candidata abriram os bytes.
-    ///
-    /// Bytes que não servem para nada devolvem `Received::default()`, sem
-    /// distinguir a causa por fora. Nada aqui derruba uma sessão viva: uma
-    /// sessão nova só a substitui depois de provar a chave (§4.4).
-    pub fn receive(
-        &mut self,
-        local: &LocalIdentity,
-        bytes: &[u8],
-        transport: Transport,
-    ) -> Result<Received> {
-        self.receive_at(local, bytes, transport, crate::util::time::unix_seconds())
-    }
-
-    /// Como [`Self::receive`], com o instante explícito.
-    pub fn receive_at(
-        &mut self,
-        local: &LocalIdentity,
-        bytes: &[u8],
-        transport: Transport,
-        now: u64,
-    ) -> Result<Received> {
-        match self.state {
-            SessionState::AwaitingPeerInit => return self.receive_awaiting_init(local, bytes, now),
-            SessionState::AwaitingResponse(_) => {
-                return self.receive_awaiting_response(local, bytes, transport, now)
-            }
-            SessionState::Established(_) | SessionState::Failed => {}
-        }
-        let we_initiate = self.direction == topic::Direction::A2B;
-
-        if bytes.len() == INIT_LEN && !we_initiate {
-            if let Some(resp) = self.open_responder_candidate(local, bytes, now) {
-                return Ok(Received {
-                    reply: Some(resp),
-                    candidate_opened: true,
-                    ..Received::default()
-                });
-            }
-            self.count_failure();
-            return Ok(Received::default());
-        }
-
-        if bytes.len() == RESP_LEN && we_initiate && self.candidate_awaits_response() {
-            return Ok(Received {
-                reply: self.finish_initiator_candidate(local, bytes, transport),
-                ..Received::default()
-            });
-        }
-
-        if let SessionState::Established(ratchet) = &mut self.state {
-            if let Ok(inner) = try_decrypt(ratchet, bytes, transport) {
-                return Ok(self.accept(inner, transport));
-            }
-        }
-
-        if let Some(inner) = self.try_candidate(bytes, transport) {
-            self.promote_candidate();
-            return Ok(self.accept(inner, transport));
-        }
-
-        if bytes.len() == reopen::REOPEN_LEN && we_initiate && self.admit_reopen(bytes, now) {
-            let init = self.open_initiator_candidate(local, now)?;
-            return Ok(Received {
-                reply: Some(init),
-                candidate_opened: true,
-                ..Received::default()
-            });
-        }
-
-        self.count_failure();
-        Ok(Received::default())
-    }
-
-    fn receive_awaiting_init(
-        &mut self,
-        local: &LocalIdentity,
-        bytes: &[u8],
-        now: u64,
-    ) -> Result<Received> {
-        if bytes.len() == INIT_LEN {
-            // Erro de INIT não muda o estado (§11.1): o par tenta de novo.
-            let reply = self.process_handshake_message(local, bytes).ok().flatten();
-            return Ok(Received { reply, ..Received::default() });
-        }
-        // Tráfego de uma sessão que não temos mais: o par não sabe que
-        // reabrimos. Lembramos a ele, sem inundar.
-        let reply = if self.signal_allowed(now) {
-            Some(reopen::seal_at(&self.reopen_key, self.direction, now)?)
-        } else {
-            None
-        };
-        Ok(Received { reply, ..Received::default() })
-    }
-
-    fn receive_awaiting_response(
-        &mut self,
-        local: &LocalIdentity,
-        bytes: &[u8],
-        transport: Transport,
-        now: u64,
-    ) -> Result<Received> {
-        if bytes.len() == RESP_LEN {
-            if self.process_handshake_message(local, bytes).is_err() {
-                return Ok(Received::default());
-            }
-            // Primeira mensagem da sessão nova: confirma a chave para o
-            // respondedor e lhe dá cadeia de envio (§4.4, §5.1, §10.2).
-            let reply = self.build_control_suites(transport).ok();
-            return Ok(Received { reply, ..Received::default() });
-        }
-        // Qualquer outra coisa é ignorada sem consumir o `Initiator`: um
-        // envelope de uma sessão anterior do par levaria a `Failed` à toa.
-        if bytes.len() == reopen::REOPEN_LEN
-            && self.admit_reopen(bytes, now)
-            && self.signal_allowed(now)
-        {
-            // O par reabriu depois de a nossa INIT ter saído (ou ela se perdeu).
-            return Ok(Received {
-                reply: self.pending_outgoing_handshake.clone(),
-                ..Received::default()
-            });
-        }
-        Ok(Received::default())
-    }
-
-    /// Aplica uma mensagem decifrada pela sessão atual.
-    fn accept(&mut self, inner: InnerPlaintext, transport: Transport) -> Received {
+    /// Contabilidade de uma mensagem que a sessão atual decifrou.
+    fn on_decrypted(&mut self, inner: &InnerPlaintext) {
         self.consecutive_aead_failures = 0;
         self.peer_confirmed = true;
         if inner.packet_type == PacketType::ControlSuites {
             self.handle_control_suites(&inner.body);
         }
-        // O respondedor só consegue cifrar depois da primeira mensagem do
-        // iniciador; é aqui que manda o seu anúncio (§10.2), o que também
-        // confirma a chave para o iniciador.
-        let reply = if self.suites_sent {
-            None
-        } else {
-            self.build_control_suites(transport).ok()
-        };
-        Received {
-            message: Some(inner),
-            reply,
-            candidate_opened: false,
-        }
     }
 
+    /// Uma falha de decifragem na sessão atual; o limiar de §11.1 leva a
+    /// `Failed`. Só conta com a sessão `Established`.
     fn count_failure(&mut self) {
         if !matches!(self.state, SessionState::Established(_)) {
             return;
@@ -699,153 +464,6 @@ impl Session {
         if self.consecutive_aead_failures >= MAX_CONSECUTIVE_AEAD_FAILURES {
             self.state = SessionState::Failed;
         }
-    }
-
-    fn signal_allowed(&mut self, now: u64) -> bool {
-        if self
-            .last_signal_at
-            .is_some_and(|at| now.saturating_sub(at) < SIGNAL_INTERVAL_SECS)
-        {
-            return false;
-        }
-        self.last_signal_at = Some(now);
-        true
-    }
-
-    fn admit_reopen(&mut self, bytes: &[u8], now: u64) -> bool {
-        match reopen::open_at(&self.reopen_key, self.direction.flip(), now, bytes) {
-            Ok(nonce) => self.reopen_seen.admit(nonce, now),
-            Err(_) => false,
-        }
-    }
-
-    fn candidate_awaits_response(&self) -> bool {
-        matches!(
-            self.candidate,
-            Some(Candidate { stage: CandidateStage::AwaitingResponse { .. }, .. })
-        )
-    }
-
-    /// Responde a uma INIT recebida com uma sessão já existente, sem tocar
-    /// nela. A candidata nova substitui qualquer anterior: só a INIT mais
-    /// recente do par pode estar viva do lado dele.
-    fn open_responder_candidate(
-        &mut self,
-        local: &LocalIdentity,
-        init: &[u8],
-        now: u64,
-    ) -> Option<Vec<u8>> {
-        let suite = *init.first()?;
-        if suite < self.min_suite {
-            return None;
-        }
-        let (outcome, resp) = respond(local, &self.peer, init).ok()?;
-        let ratchet = RatchetState::initialize(outcome).ok()?;
-        self.candidate = Some(Candidate {
-            stage: CandidateStage::Established {
-                ratchet: Box::new(ratchet),
-                suite,
-                suites_sent: false,
-            },
-            opened_at: now,
-        });
-        Some(resp.to_vec())
-    }
-
-    /// Abre a candidata como iniciador, em resposta a um `REOPEN` válido.
-    fn open_initiator_candidate(&mut self, local: &LocalIdentity, now: u64) -> Result<Vec<u8>> {
-        // Um `REOPEN` repetido logo depois reaproveita a INIT já enviada: abrir
-        // outra invalidaria a que o par talvez já esteja respondendo.
-        if let Some(Candidate {
-            stage: CandidateStage::AwaitingResponse { init, .. },
-            opened_at,
-        }) = &self.candidate
-        {
-            if now.saturating_sub(*opened_at) < SIGNAL_INTERVAL_SECS {
-                return Ok(init.clone());
-            }
-        }
-        let suite_id = self
-            .agreed_upgrade_suite
-            .unwrap_or(self.current_suite)
-            .max(self.min_suite);
-        let suite = Suite::from_id(suite_id)?;
-        let (initiator, init) = Initiator::start_with_suite(local, &self.peer, suite)?;
-        let init = init.to_vec();
-        self.candidate = Some(Candidate {
-            stage: CandidateStage::AwaitingResponse {
-                initiator: Box::new(initiator),
-                init: init.clone(),
-                suite: suite_id,
-            },
-            opened_at: now,
-        });
-        Ok(init)
-    }
-
-    /// Conclui a candidata de iniciador com a RESP e devolve o primeiro
-    /// envelope dela (`CONTROL_SUITES`), que é o que o par usa para confirmar.
-    /// A candidata segue não promovida até o par responder sob ela.
-    fn finish_initiator_candidate(
-        &mut self,
-        local: &LocalIdentity,
-        resp: &[u8],
-        transport: Transport,
-    ) -> Option<Vec<u8>> {
-        let Candidate { stage, opened_at } = self.candidate.take()?;
-        let CandidateStage::AwaitingResponse { initiator, suite, .. } = stage else {
-            return None;
-        };
-        // Em erro, a candidata é descartada: `finish` consome o `Initiator`
-        // (mesma razão de §11.1), e o próximo `REOPEN` abre outra.
-        let outcome = initiator.finish(local, resp).ok()?;
-        let mut ratchet = RatchetState::initialize(outcome).ok()?;
-        let suites = seal_with(
-            &mut ratchet,
-            PacketType::ControlSuites,
-            Self::control_suites_payload(),
-            transport,
-        )
-        .ok()
-        .map(|(bytes, _)| bytes);
-        self.candidate = Some(Candidate {
-            stage: CandidateStage::Established {
-                ratchet: Box::new(ratchet),
-                suite,
-                suites_sent: suites.is_some(),
-            },
-            opened_at,
-        });
-        suites
-    }
-
-    fn try_candidate(&mut self, bytes: &[u8], transport: Transport) -> Option<InnerPlaintext> {
-        match &mut self.candidate {
-            Some(Candidate {
-                stage: CandidateStage::Established { ratchet, .. },
-                ..
-            }) => try_decrypt(ratchet, bytes, transport).ok(),
-            _ => None,
-        }
-    }
-
-    /// Troca a sessão atual pela candidata, que acabou de provar a chave.
-    fn promote_candidate(&mut self) {
-        let Some(Candidate {
-            stage: CandidateStage::Established { ratchet, suite, suites_sent },
-            ..
-        }) = self.candidate.take()
-        else {
-            return;
-        };
-        self.state = SessionState::Established(ratchet);
-        self.current_suite = suite;
-        self.suites_sent = suites_sent;
-        self.agreed_upgrade_suite = None;
-        self.consecutive_aead_failures = 0;
-        self.needs_rehandshake = false;
-        self.pending_outgoing_handshake = None;
-        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Monta o payload do pacote `CONTROL_SUITES` (§6.2, `0x42`).
@@ -1873,303 +1491,5 @@ mod tests {
         assert_eq!(bob_s.agreed_upgrade_suite(), None);
 
         set_suite_retired(1, false);
-    }
-
-    // --- Reabertura de sessão (§11.4, D27) ---
-
-    fn now() -> u64 {
-        crate::util::time::unix_seconds()
-    }
-
-    fn text(session: &mut Session, body: &[u8]) -> Vec<u8> {
-        session
-            .encrypt_outgoing(PacketType::MsgText, body.to_vec(), Transport::DataChannel)
-            .unwrap()
-    }
-
-    fn recv(session: &mut Session, local: &LocalIdentity, bytes: &[u8]) -> Received {
-        session.receive(local, bytes, Transport::DataChannel).unwrap()
-    }
-
-    fn body_of(received: &Received) -> Option<&[u8]> {
-        received.message.as_ref().map(|m| m.body.as_slice())
-    }
-
-    /// Os dois lados conversam nas duas direções.
-    fn assert_talks(
-        alice: &LocalIdentity,
-        alice_session: &mut Session,
-        bob: &LocalIdentity,
-        bob_session: &mut Session,
-    ) {
-        let a = text(alice_session, b"oi bob");
-        assert_eq!(body_of(&recv(bob_session, bob, &a)), Some(&b"oi bob"[..]));
-        let b = text(bob_session, b"oi alice");
-        assert_eq!(body_of(&recv(alice_session, alice, &b)), Some(&b"oi alice"[..]));
-    }
-
-    #[test]
-    fn receive_completes_first_handshake_and_both_announce_suites() {
-        let (alice, bob) = pair();
-        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-
-        let resp = recv(&mut bob_session, &bob, &init.unwrap()).reply.unwrap();
-        let alice_suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
-        let got = recv(&mut bob_session, &bob, &alice_suites);
-        assert_eq!(got.message.unwrap().packet_type, PacketType::ControlSuites);
-        let bob_suites = got.reply.expect("o respondedor anuncia ao ganhar cadeia de envio");
-        let back = recv(&mut alice_session, &alice, &bob_suites);
-        assert_eq!(back.message.unwrap().packet_type, PacketType::ControlSuites);
-        assert!(back.reply.is_none(), "cada lado anuncia uma vez só");
-
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-    }
-
-    #[test]
-    fn initiator_reopens_and_established_responder_follows_without_action() {
-        let (alice, mut old_alice, bob, mut bob_session) = established_pair();
-        assert_talks(&alice, &mut old_alice, &bob, &mut bob_session);
-
-        // Alice perde a sessão (reinício, cofre, reset) e abre outra.
-        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
-        let opened = recv(&mut bob_session, &bob, &init.unwrap());
-        assert!(opened.candidate_opened);
-        assert!(bob_session.is_renewing());
-        let resp = opened.reply.unwrap();
-
-        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
-        let confirmed = recv(&mut bob_session, &bob, &suites);
-        assert!(confirmed.message.is_some());
-        assert_eq!(bob_session.generation(), 1);
-        assert!(!bob_session.is_renewing());
-        recv(&mut alice_session, &alice, &confirmed.reply.unwrap());
-
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-    }
-
-    #[test]
-    fn responder_reopens_with_signal_and_established_initiator_follows() {
-        let (alice, mut alice_session, bob, mut old_bob) = established_pair();
-        assert_talks(&alice, &mut alice_session, &bob, &mut old_bob);
-
-        let (mut bob_session, none) = Session::open(&bob, alice.public(), 1).unwrap();
-        assert!(none.is_none());
-        let signal = bob_session.connect_signal().unwrap().unwrap();
-        assert_eq!(signal.len(), reopen::REOPEN_LEN);
-
-        let opened = recv(&mut alice_session, &alice, &signal);
-        assert!(opened.candidate_opened);
-        let init = opened.reply.unwrap();
-        assert_eq!(init.len(), INIT_LEN);
-        // Reconectar o canal agora republica a mesma INIT.
-        assert_eq!(alice_session.connect_signal().unwrap(), Some(init.clone()));
-
-        let resp = recv(&mut bob_session, &bob, &init).reply.unwrap();
-        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
-        // RESP sozinha não prova nada: a sessão de Alice continua a antiga.
-        assert_eq!(alice_session.generation(), 0);
-        assert!(alice_session.is_renewing());
-
-        let bob_suites = recv(&mut bob_session, &bob, &suites).reply.unwrap();
-        recv(&mut alice_session, &alice, &bob_suites);
-        assert_eq!(alice_session.generation(), 1);
-        assert!(!alice_session.is_renewing());
-
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-    }
-
-    #[test]
-    fn failed_responder_recovers_when_initiator_reopens() {
-        let (alice, _old_alice, bob, mut bob_session) = established_pair();
-        for _ in 0..MAX_CONSECUTIVE_AEAD_FAILURES {
-            let garbage = crate::util::rng::array::<{ reopen::REOPEN_LEN }>().unwrap();
-            recv(&mut bob_session, &bob, &garbage);
-        }
-        assert!(bob_session.is_failed());
-
-        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
-        let resp = recv(&mut bob_session, &bob, &init.unwrap()).reply.unwrap();
-        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
-        let reply = recv(&mut bob_session, &bob, &suites).reply.unwrap();
-        recv(&mut alice_session, &alice, &reply);
-
-        assert!(bob_session.is_established());
-        assert!(!bob_session.is_failed());
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-    }
-
-    #[test]
-    fn failed_initiator_recovers_when_responder_reopens() {
-        let (alice, mut alice_session, bob, _old_bob) = established_pair();
-        for _ in 0..MAX_CONSECUTIVE_AEAD_FAILURES {
-            let garbage = crate::util::rng::array::<1100>().unwrap();
-            recv(&mut alice_session, &alice, &garbage);
-        }
-        assert!(alice_session.is_failed());
-
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-        let signal = bob_session.connect_signal().unwrap().unwrap();
-        let init = recv(&mut alice_session, &alice, &signal).reply.unwrap();
-        let resp = recv(&mut bob_session, &bob, &init).reply.unwrap();
-        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
-        let reply = recv(&mut bob_session, &bob, &suites).reply.unwrap();
-        recv(&mut alice_session, &alice, &reply);
-
-        assert!(alice_session.is_established());
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-    }
-
-    #[test]
-    fn forged_init_never_breaks_the_live_session() {
-        let (_alice, mut alice_session, bob, mut bob_session) = established_pair();
-        let mallory = LocalIdentity::generate().unwrap();
-        let (_, forged) = Initiator::start(&mallory, &bob.public()).unwrap();
-
-        let opened = recv(&mut bob_session, &bob, &forged);
-        assert!(opened.candidate_opened);
-        assert!(opened.reply.is_some(), "INIT não é autenticada: a RESP sai mesmo assim");
-
-        // A sessão atual continua decifrando, e não é trocada.
-        let a = text(&mut alice_session, b"ainda aqui");
-        assert_eq!(body_of(&recv(&mut bob_session, &bob, &a)), Some(&b"ainda aqui"[..]));
-        assert_eq!(bob_session.generation(), 0);
-        assert!(bob_session.is_established());
-    }
-
-    #[test]
-    fn sends_are_held_while_renewing_and_resume_after_timeout() {
-        let (alice, mut alice_session, bob, mut bob_session) = established_pair();
-        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
-        let mallory = LocalIdentity::generate().unwrap();
-        let (_, forged) = Initiator::start(&mallory, &bob.public()).unwrap();
-
-        recv(&mut bob_session, &bob, &forged);
-        assert!(bob_session
-            .encrypt_outgoing(PacketType::MsgText, b"x".to_vec(), Transport::DataChannel)
-            .is_err());
-
-        // Mesma candidata, aberta há mais que o prazo.
-        let stale = now() - CANDIDATE_TIMEOUT_SECS - 1;
-        bob_session
-            .receive_at(&bob, &forged, Transport::DataChannel, stale)
-            .unwrap();
-        assert!(!bob_session.is_renewing());
-        assert!(bob_session
-            .encrypt_outgoing(PacketType::MsgText, b"x".to_vec(), Transport::DataChannel)
-            .is_ok());
-    }
-
-    #[test]
-    fn replayed_reopen_is_rejected() {
-        let (alice, mut alice_session, bob, _bob_session) = established_pair();
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-        let signal = bob_session.connect_signal().unwrap().unwrap();
-
-        assert!(recv(&mut alice_session, &alice, &signal).candidate_opened);
-        let again = recv(&mut alice_session, &alice, &signal);
-        assert!(!again.candidate_opened);
-        assert!(again.reply.is_none());
-    }
-
-    #[test]
-    fn own_reopen_reflected_back_is_rejected() {
-        let (alice, mut alice_session, _bob, _bob_session) = established_pair();
-        // Um `REOPEN` com a direção de Alice (o que ela mesma selaria).
-        let reflected =
-            reopen::seal_at(&alice_session.reopen_key, alice_session.direction, now()).unwrap();
-        assert!(!recv(&mut alice_session, &alice, &reflected).candidate_opened);
-    }
-
-    #[test]
-    fn responder_never_answers_a_reopen() {
-        let (_alice, alice_session, bob, mut bob_session) = established_pair();
-        let signal =
-            reopen::seal_at(&alice_session.reopen_key, alice_session.direction, now()).unwrap();
-        let got = recv(&mut bob_session, &bob, &signal);
-        assert!(!got.candidate_opened);
-        assert!(got.reply.is_none());
-    }
-
-    #[test]
-    fn awaiting_response_ignores_stale_envelopes_instead_of_failing() {
-        let (alice, mut old_alice, bob, mut bob_session) = established_pair();
-        assert_talks(&alice, &mut old_alice, &bob, &mut bob_session);
-        let stale = text(&mut bob_session, b"da sessao velha");
-
-        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
-        let got = recv(&mut alice_session, &alice, &stale);
-        assert!(got.reply.is_none() && got.message.is_none());
-        assert!(!alice_session.is_failed());
-        assert_eq!(alice_session.pending_outgoing_handshake(), init.as_deref());
-    }
-
-    #[test]
-    fn awaiting_response_resends_init_on_reopen_at_most_every_interval() {
-        let (alice, bob) = pair();
-        let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-
-        let t = now();
-        let first = bob_session.connect_signal_at(t).unwrap().unwrap();
-        let got = alice_session
-            .receive_at(&alice, &first, Transport::DataChannel, t)
-            .unwrap();
-        assert_eq!(got.reply, init);
-
-        let second = bob_session.connect_signal_at(t + 1).unwrap().unwrap();
-        let got = alice_session
-            .receive_at(&alice, &second, Transport::DataChannel, t + 1)
-            .unwrap();
-        assert!(got.reply.is_none(), "limite de taxa");
-
-        let later = t + SIGNAL_INTERVAL_SECS + 1;
-        let third = bob_session.connect_signal_at(later).unwrap().unwrap();
-        let got = alice_session
-            .receive_at(&alice, &third, Transport::DataChannel, later)
-            .unwrap();
-        assert_eq!(got.reply, init);
-    }
-
-    #[test]
-    fn awaiting_init_answers_unreadable_traffic_with_rate_limited_reopen() {
-        let (alice, mut alice_session, bob, _old_bob) = established_pair();
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-        let t = now();
-
-        let stale = text(&mut alice_session, b"para a sessao que sumiu");
-        let got = bob_session
-            .receive_at(&bob, &stale, Transport::DataChannel, t)
-            .unwrap();
-        let signal = got.reply.expect("o respondedor lembra o par de que reabriu");
-        assert_eq!(signal.len(), reopen::REOPEN_LEN);
-
-        let again = bob_session
-            .receive_at(&bob, &stale, Transport::DataChannel, t + 1)
-            .unwrap();
-        assert!(again.reply.is_none());
-
-        // O sinal leva Alice a reabrir.
-        assert!(recv(&mut alice_session, &alice, &signal).candidate_opened);
-    }
-
-    #[test]
-    fn connect_signal_is_none_for_a_settled_session() {
-        let (_alice, mut alice_session, _bob, mut bob_session) = established_pair();
-        assert!(alice_session.connect_signal().unwrap().is_none());
-        assert!(bob_session.connect_signal().unwrap().is_none());
-    }
-
-    #[test]
-    fn valid_reopen_does_not_count_as_aead_failure() {
-        let (alice, mut alice_session, bob, _bob_session) = established_pair();
-        for _ in 0..MAX_CONSECUTIVE_AEAD_FAILURES - 1 {
-            let garbage = crate::util::rng::array::<1100>().unwrap();
-            recv(&mut alice_session, &alice, &garbage);
-        }
-        let (mut bob_session, _) = Session::open(&bob, alice.public(), 1).unwrap();
-        let signal = bob_session.connect_signal().unwrap().unwrap();
-        recv(&mut alice_session, &alice, &signal);
-        assert!(!alice_session.is_failed());
     }
 }

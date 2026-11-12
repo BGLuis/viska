@@ -26,7 +26,7 @@ use crate::ffi::types::{
     SealedMessageDto, SessionStateEventDto, SessionStateKind, SessionStatusDto,
 };
 use crate::frb_generated::StreamSink;
-use crate::session_events::{PublishOnExit, SessionEventSink};
+use crate::session_events::{PublishOnExit, SessionEventSink, SessionView};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
 use viska_proto::wire::plaintext::InnerPlaintext;
@@ -235,40 +235,6 @@ impl Core {
         Ok(status)
     }
 
-    /// Alimenta a sessão com uma mensagem de handshake recebida via
-    /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
-    /// de resposta a publicar, se houver.
-    ///
-    /// O app usa [`Self::receive_incoming`]; este caminho não trata uma sessão
-    /// já estabelecida que recebe a INIT de uma reabertura (§11.4).
-    ///
-    /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
-    /// sido chamado antes para este contato — este método nunca cria uma
-    /// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
-    /// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
-    /// errado dependendo só de qual mensagem chegou primeiro.
-    pub fn feed_handshake(
-        &self,
-        peer_device_id: Vec<u8>,
-        bytes: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, FfiError> {
-        let device_id = to_device_id(peer_device_id)?;
-        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
-        let _publish = self.publish_on_exit(device_id);
-        let mut sessions = self.lock_sessions()?;
-        let session = sessions
-            .get_mut(&device_id)
-            .ok_or(FfiError::NoActiveSession)?;
-
-        let id = self.identity.read().map_err(|_| FfiError::Internal)?;
-        let resp = session.process_handshake_message(&id, &bytes)?;
-        let recorded = self.store.get_contact_suite_id(&device_id)?;
-        if session.should_upgrade_contact(recorded) {
-            let _ = self.store.set_contact_suite_id(&device_id, session.current_suite());
-        }
-        Ok(resp)
-    }
-
     /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
     pub fn build_control_suites(
         &self,
@@ -346,57 +312,6 @@ impl Core {
         Ok(SealedMessageDto { message_id, bytes })
     }
 
-    /// Decifra um envelope recebido no `DataChannel`.
-    ///
-    /// O app usa [`Self::receive_incoming`], que também trata handshake e
-    /// reabertura (§11.4); este caminho só serve a quem já sabe que os bytes
-    /// são um envelope da sessão atual, e não considera uma sessão candidata.
-    ///
-    /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
-    /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
-    /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-    /// DTO efêmero, sem `message_id`.
-    ///
-    /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
-    /// processados aqui como efeito colateral — inicia/atualiza/encerra o
-    /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
-    /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
-    /// deste método para acomodar isso quebraria `chat_controller.dart`
-    /// sem necessidade. Uma oferta retida para confirmação chega pelo stream de
-    /// `Core::subscribe_transfer_events`; não é preciso consultar nada depois
-    /// de cada pacote. Falha ao processar um desses três
-    /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
-    /// política de silêncio de qualquer corpo malformado nesta fronteira, e
-    /// nunca deveria acontecer vindo de um par honesto.
-    ///
-    /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
-    /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
-    /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
-    pub fn decrypt_incoming(
-        &self,
-        peer_device_id: Vec<u8>,
-        envelope: Vec<u8>,
-    ) -> Result<Option<IncomingMessageDto>, FfiError> {
-        let device_id = to_device_id(peer_device_id)?;
-        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
-        let _publish = self.publish_on_exit(device_id);
-        let mut sessions = self.lock_sessions()?;
-        let session = sessions
-            .get_mut(&device_id)
-            .ok_or(FfiError::NoActiveSession)?;
-        let inner = session.decrypt_incoming(&envelope, Transport::DataChannel)?;
-        self.record_suite_progress(&device_id, session);
-
-        let Some(inner) = inner else {
-            return Ok(None);
-        };
-        // Libera o lock de sessões antes de tocar o banco — as duas coisas
-        // não precisam do mesmo lock, e segurar um enquanto se espera o
-        // outro é desnecessário.
-        drop(sessions);
-        self.handle_incoming_plaintext(device_id, inner, &envelope)
-    }
-
     /// Entrada única dos bytes que chegam do par — `docs/protocol.md` §11.4.
     ///
     /// O Rust decide o que os bytes são (INIT, RESP, `REOPEN` ou envelope),
@@ -430,13 +345,14 @@ impl Core {
         self.record_suite_progress(&device_id, session);
         drop(sessions);
 
+        // A sessão já mudou: um erro de banco daqui em diante não pode engolir
+        // a resposta, senão o par fica sem RESP/INIT e a reabertura para.
         if received.candidate_opened {
-            self.store.mark_sending_messages_unknown_for_contact(&device_id)?;
+            let _ = self.store.mark_sending_messages_unknown_for_contact(&device_id);
         }
-        let message = match received.message {
-            Some(inner) => self.handle_incoming_plaintext(device_id, inner, &bytes)?,
-            None => None,
-        };
+        let message = received
+            .message
+            .and_then(|inner| self.handle_incoming_plaintext(device_id, inner, &bytes).ok().flatten());
         Ok(IncomingResultDto {
             message,
             reply: received.reply,
@@ -484,6 +400,15 @@ impl Core {
     /// Aplica um pacote já decifrado: persiste texto, processa recibo e
     /// controle de arquivo. `envelope` é o envelope de onde ele saiu, para o
     /// contador em claro.
+    ///
+    /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
+    /// DTO efêmero, sem `message_id`. `FILE_METADATA`/`FILE_FEEDBACK`/
+    /// `FILE_COMPLETE`/`FILE_REJECT` são processados como efeito colateral e
+    /// devolvem `None`; quem quer saber de uma oferta nova assina
+    /// `Core::subscribe_transfer_events`. Falha ao processar um desses (CBOR
+    /// malformado, `file_id` desconhecido) é silenciada — nunca deveria
+    /// acontecer vindo de um par honesto. `FILE_SYMBOL` nunca chega aqui:
+    /// vem pelo canal `file`, direto em `Core::ingest_incoming_file_symbol`.
     fn handle_incoming_plaintext(
         &self,
         device_id: [u8; DEVICE_ID_LEN],
@@ -780,8 +705,13 @@ fn session_state(session: &Session) -> SessionStateKind {
 
 /// Sem passar por `status_dto`: este cálculo roda ao sair de todo método que
 /// mexe em sessão, e `status_dto` copiaria a INIT pendente só para descartá-la.
-fn snapshot(session: &Session) -> (SessionStateKind, bool, u32) {
-    (session_state(session), session.needs_rehandshake(), session.generation())
+fn snapshot(session: &Session) -> SessionView {
+    SessionView {
+        state: session_state(session),
+        needs_rehandshake: session.needs_rehandshake(),
+        generation: session.generation(),
+        renewing: session.is_renewing(),
+    }
 }
 
 fn status_dto(session: &Session) -> SessionStatusDto {
@@ -880,8 +810,10 @@ mod tests {
             .feed_handshake(responder_peer, init)
             .unwrap()
             .expect("respondedor sempre devolve a RESP");
-        let none = initiator_core.feed_handshake(initiator_peer, resp).unwrap();
-        assert!(none.is_none());
+        // A resposta do iniciador é o anúncio de suítes (§10.2); estes testes
+        // não precisam dele, e o respondedor só ganha cadeia de envio com a
+        // primeira mensagem de verdade (`give_b_a_send_chain`).
+        initiator_core.feed_handshake(initiator_peer, resp).unwrap();
     }
 
     #[test]
@@ -932,16 +864,6 @@ mod tests {
         assert_eq!(
             core.ensure_session(vec![0u8; 16]),
             Err(FfiError::ContactNotFound)
-        );
-    }
-
-    #[test]
-    fn feed_handshake_without_open_session_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let core = open_core(&dir);
-        assert_eq!(
-            core.feed_handshake(vec![0u8; 16], vec![0u8; 10]),
-            Err(FfiError::NoActiveSession)
         );
     }
 

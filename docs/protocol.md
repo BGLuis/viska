@@ -783,35 +783,50 @@ duas vezes. A direção no AAD impede que o sinal de um lado seja refletido de v
 iniciador aceita `REOPEN`; só o respondedor aceita INIT de reabertura.
 
 O respondedor emite `REOPEN` (a) uma vez quando o canal conecta com uma sessão recém-aberta em
-`AwaitingPeerInit`, e (b) de novo quando recebe algo que não é INIT enquanto espera, no máximo um a
-cada 10 s. Um iniciador em `AwaitingResponse` que recebe um `REOPEN` válido reenvia a sua INIT, com o
-mesmo limite.
+`AwaitingPeerInit`, ou `Established` mas ainda sem nada decifrado do par, e (b) de novo quando recebe
+algo que não consegue ler nesses mesmos estados, no máximo um a cada 10 s. O caso "estabelecido sem
+confirmação" existe porque o iniciador nunca repete a INIT sozinho: se a RESP dele se perdeu, ou uma
+RESP forjada matou a candidata dele, só um `REOPEN` novo destrava. Um iniciador em
+`AwaitingResponse` que recebe um `REOPEN` válido reenvia a sua INIT, com o mesmo limite.
 
 **O lado que não reabriu** (`Established` ou `Failed`) nunca derruba a sessão atual por causa de um
 sinal. Ele negocia uma **sessão candidata** ao lado dela:
 
 - recebeu uma INIT (somos respondedor): responde a RESP e guarda a candidata;
 - recebeu um `REOPEN` válido (somos iniciador): manda uma INIT nova e guarda a candidata; ao receber
-  a RESP, manda sob ela o primeiro envelope (`CONTROL_SUITES`).
+  a RESP, manda sob ela o primeiro envelope (`CONTROL_SUITES`). Enquanto essa INIT não tiver
+  resposta, um `REOPEN` seguinte reenvia a mesma INIT em vez de abrir outra.
+
+**A mesma INIT de novo recebe a mesma RESP.** O par republica a INIT sempre que o canal reconecta, e
+uma INIT e um `REOPEN` cruzados também a fazem voltar. O respondedor guarda o resumo da última INIT
+que respondeu e a RESP que deu, e devolve a mesma RESP sem abrir candidata. Responder de novo com
+efêmeras novas faria os dois lados derivarem raízes diferentes.
 
 A candidata só substitui a sessão atual quando o primeiro AEAD sob ela abre (confirmação de chave,
-§4.4). A INIT não é autenticada e uma RESP também não prova nada sozinha, então uma INIT forjada custa
-uma RESP e nunca troca a sessão viva. Há uma candidata por contato; a mais nova substitui a anterior.
-Bytes recebidos são testados nesta ordem: INIT ou RESP pelo tamanho, a sessão atual, a candidata e,
-por último, `REOPEN`. Um sinal válido não conta para o limiar de 8 falhas de §11.1; um inválido conta.
+§4.4), mesmo depois do prazo abaixo. A INIT não é autenticada e uma RESP também não prova nada
+sozinha, então uma INIT forjada custa uma RESP e nunca troca a sessão viva. Há uma candidata por
+contato; a mais nova substitui a anterior, e no máximo uma candidata de respondedor é aberta a cada
+10 s. Bytes recebidos são testados nesta ordem: INIT ou RESP pelo tamanho, a sessão atual, a
+candidata e, por último, `REOPEN`. Bytes com tamanho de INIT ou RESP que não se aplicam ao papel ou
+ao estado são ignorados sem contar para o limiar de 8 falhas de §11.1, porque nunca são envelope. Um
+`REOPEN` válido não conta; uma INIT inválida recebida pelo respondedor conta.
 
-Enquanto a candidata tem menos de 30 s, nada de aplicação é cifrado: o texto fica `pending` e sai
-pela sessão nova assim que ela é promovida. Passado o prazo, a fila volta a sair pela sessão atual
-(a candidata continua podendo ser promovida se a confirmação chegar depois). Textos que estavam em
-`Sending` quando a candidata abriu viram `unknown` (mesma regra do trancamento, §11.1).
+Enquanto a candidata tem menos de 30 s, nada é cifrado pela sessão: o texto fica `pending` e sai pela
+sessão nova assim que ela é promovida. Pacotes de controle (recibo, `FILE_FEEDBACK`,
+`FILE_COMPLETE`) não têm fila: os que caírem nesse intervalo se perdem, como se perderiam pela
+sessão que o par já não lê. Passado o prazo, a fila volta a sair pela sessão atual. O Rust não tem
+relógio próprio, então o evento de estado da sessão leva `renewing`, e o app drena a fila depois do
+prazo. Um relógio que volta para trás não estende o prazo. Textos que estavam em `Sending` quando a
+candidata abriu viram `unknown` (mesma regra do trancamento, §11.1).
 
 **Confirmação nos dois sentidos.** Cada lado manda o seu `CONTROL_SUITES` (§10.2) uma vez por sessão,
 o mais cedo que puder: o iniciador logo depois de processar a RESP, o respondedor ao decifrar a
 primeira mensagem do iniciador (que é quando ganha cadeia de envio, §5.1). Esse par de anúncios é o
 que confirma a chave para os dois lados mesmo sem nenhuma mensagem da pessoa.
 
-**Geração.** Cada sessão tem um contador local de geração, incrementado quando a sessão é aberta no
-lugar de outra e quando uma candidata é promovida. Ele vai no evento de estado da sessão ao Dart, e é
+**Geração.** Cada sessão tem um contador local de geração, incrementado quando `reset_session` abre
+uma sessão no lugar de outra e quando uma candidata é promovida. Ele volta a 0 quando as sessões
+somem da memória (trancamento, reinício do app); essa troca aparece antes como o evento sem estado. Ele vai no evento de estado da sessão ao Dart, e é
 como quem dependia da sessão anterior (retomada de arquivo, issue #82) descobre que o par tem uma
 sessão nova mesmo quando o estado continua `Established`.
 

@@ -93,6 +93,11 @@ pub struct SessionStateEventDto {
     /// refazer algo que dependia da sessão anterior compara este valor. É só
     /// um contador local, sem relação com nenhuma chave.
     pub generation: u32,
+    /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+    /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+    /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+    /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+    pub renewing: bool,
 }
 
 /// Resultado de `Core::receive_incoming`.

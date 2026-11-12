@@ -69,37 +69,6 @@ abstract class Core implements RustOpaqueInterface {
   /// nenhum, com ou sem suporte a Opus (D18).
   Future<Uint8List> decodeAudioToWav({required List<int> internalBytes});
 
-  /// Decifra um envelope recebido no `DataChannel`.
-  ///
-  /// O app usa [`Self::receive_incoming`], que também trata handshake e
-  /// reabertura (§11.4); este caminho só serve a quem já sabe que os bytes
-  /// são um envelope da sessão atual, e não considera uma sessão candidata.
-  ///
-  /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
-  /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
-  /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
-  /// DTO efêmero, sem `message_id`.
-  ///
-  /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (Fase 4) são
-  /// processados aqui como efeito colateral — inicia/atualiza/encerra o
-  /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
-  /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
-  /// deste método para acomodar isso quebraria `chat_controller.dart`
-  /// sem necessidade. Uma oferta retida para confirmação chega pelo stream de
-  /// `Core::subscribe_transfer_events`; não é preciso consultar nada depois
-  /// de cada pacote. Falha ao processar um desses três
-  /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
-  /// política de silêncio de qualquer corpo malformado nesta fronteira, e
-  /// nunca deveria acontecer vindo de um par honesto.
-  ///
-  /// `FILE_SYMBOL` nunca chega aqui: contorna `Session` por completo (ver
-  /// `viska_proto::file::transfer`, doc do módulo) — chega pelo canal
-  /// `file` do WebRTC, direto em `Core::ingest_incoming_file_symbol`.
-  Future<IncomingMessageDto?> decryptIncoming({
-    required List<int> peerDeviceId,
-    required List<int> envelope,
-  });
-
   /// `BeaconID` para anunciar agora (época corrente, nossa direção), os três aceitáveis
   /// para procurar (épocas anterior/atual/seguinte, direção do par), o identificador de
   /// preâmbulo TCP para discar agora e os três preâmbulos aceitáveis para receber —
@@ -126,23 +95,6 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Exporta backup cifrado com frase mnemônica de 24 palavras (BIP-39).
   Future<String> exportEncryptedBackup({required String destPath});
-
-  /// Alimenta a sessão com uma mensagem de handshake recebida via
-  /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
-  /// de resposta a publicar, se houver.
-  ///
-  /// O app usa [`Self::receive_incoming`]; este caminho não trata uma sessão
-  /// já estabelecida que recebe a INIT de uma reabertura (§11.4).
-  ///
-  /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
-  /// sido chamado antes para este contato — este método nunca cria uma
-  /// sessão sozinho: o papel (quem inicia) já foi decidido no momento em
-  /// que a sessão foi aberta, e recriá-la aqui poderia escolher o papel
-  /// errado dependendo só de qual mensagem chegou primeiro.
-  Future<Uint8List?> feedHandshake({
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  });
 
   /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
   /// indicado, refletindo o progresso atual do `ReceiveTransfer` (U-02).

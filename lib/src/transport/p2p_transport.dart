@@ -65,7 +65,7 @@ abstract class P2PTransport {
   /// voz, já selado com chave própria fora do ratchet (Fase 4/5).
   Future<void> sendFile(Uint8List bytes);
 
-  /// Envelopes recebidos, ainda cifrados — prontos para `Core.decryptIncoming`.
+  /// Envelopes recebidos, ainda cifrados — prontos para `Core.receiveIncoming`.
   Stream<Uint8List> get incoming;
 
   /// Como [incoming], no canal `file`.

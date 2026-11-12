@@ -454,11 +454,18 @@ class SessionStateEventDto {
   /// um contador local, sem relação com nenhuma chave.
   final int generation;
 
+  /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+  /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+  /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+  /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+  final bool renewing;
+
   const SessionStateEventDto({
     required this.peerDeviceId,
     this.state,
     required this.needsRehandshake,
     required this.generation,
+    required this.renewing,
   });
 
   @override
@@ -466,7 +473,8 @@ class SessionStateEventDto {
       peerDeviceId.hashCode ^
       state.hashCode ^
       needsRehandshake.hashCode ^
-      generation.hashCode;
+      generation.hashCode ^
+      renewing.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -476,7 +484,8 @@ class SessionStateEventDto {
           peerDeviceId == other.peerDeviceId &&
           state == other.state &&
           needsRehandshake == other.needsRehandshake &&
-          generation == other.generation;
+          generation == other.generation &&
+          renewing == other.renewing;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de

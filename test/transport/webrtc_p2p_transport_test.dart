@@ -61,20 +61,6 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<IncomingMessageDto?> decryptIncoming({
-    required List<int> peerDeviceId,
-    required List<int> envelope,
-  }) =>
-      throw UnimplementedError();
-
-  @override
-  Future<Uint8List?> feedHandshake({
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  }) =>
-      throw UnimplementedError();
-
-  @override
   Future<IncomingResultDto> receiveIncoming({
     required List<int> peerDeviceId,
     required List<int> bytes,

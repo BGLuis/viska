@@ -484,8 +484,12 @@ ou destrancou o app. Os quatro primeiros bytes de um envelope são um contador q
 enquanto os do `REOPEN` são aleatórios: um classificador estatístico do tráfego conseguiria separar os
 dois com alguma confiança. Mesma categoria de vazamento do contador em claro (D4) e não mitigado aqui.
 Quem consegue injetar bytes no canal (o socket TCP local não autentica a conexão além do preâmbulo,
-§9.3) pode forjar INITs: elas nunca derrubam a sessão viva, mas seguram a fila de envio por até 30 s
-cada.
+§9.3) pode forjar INITs. Elas nunca derrubam a sessão viva, mas cada uma segura a fila de envio por
+até 30 s e marca como `unknown` os textos do contato que estavam em `Sending`; repetida a cada 30 s,
+a retenção dura o quanto o atacante quiser. No máximo uma candidata a cada 10 s, o que limita o custo
+de CPU a um encapsulamento ML-KEM por intervalo. O guarda de repetição do `REOPEN` vive na sessão:
+depois que o próprio iniciador reabre, um `REOPEN` gravado nos últimos 3 minutos pode ser repetido
+mais uma vez, ao custo de um handshake.
 
 **Custo de reverter:** voltar à lacuna anterior: reset, reinício e trancamento de um lado só deixam o
 outro com uma sessão que ninguém mais lê, até ele também falhar (8 falhas de AEAD) e a pessoa tocar

@@ -84,9 +84,10 @@ pub fn open_at(key: &Key, dir: Direction, now: u64, bytes: &[u8]) -> Result<[u8;
     if bytes.len() != REOPEN_LEN {
         return Err(Error::AeadFailure);
     }
-    let mut nonce = [0u8; XNONCE_LEN];
-    // Indexação direta: o comprimento exato foi checado logo acima.
-    nonce.copy_from_slice(&bytes[..XNONCE_LEN]);
+    let nonce: [u8; XNONCE_LEN] = bytes
+        .get(..XNONCE_LEN)
+        .and_then(|b| b.try_into().ok())
+        .ok_or(Error::AeadFailure)?;
 
     let mut buffer = bytes.to_vec();
     aead::open_xchacha(key, &aad(dir), &mut buffer)?;

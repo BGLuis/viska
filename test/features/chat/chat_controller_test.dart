@@ -152,9 +152,9 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
       );
 
   /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
-  /// handshake os bytes vão para o handshake (registrados em
-  /// [feedHandshakeCalls]); estabelecida, para a decifragem (registrados em
-  /// [decryptIncomingCalls]); falha, para lugar nenhum.
+  /// handshake os bytes vão para [feedHandshake]; estabelecida, para
+  /// [decryptIncoming]; falha, para lugar nenhum. Os dois são só ganchos do
+  /// dublê, o `Core` real não os expõe.
   @override
   Future<IncomingResultDto> receiveIncoming({
     required List<int> peerDeviceId,
@@ -187,7 +187,6 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
         (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
   }
 
-  @override
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
@@ -218,7 +217,6 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
     );
   }
 
-  @override
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,

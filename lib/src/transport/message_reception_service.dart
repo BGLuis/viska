@@ -20,7 +20,7 @@ sealed class MessageReceptionEvent {
 }
 
 /// Mensagem nova decifrada e persistida no banco, ou metadados de arquivo
-/// gravados no SQLite via `decryptIncoming`.
+/// gravados no SQLite via `receiveIncoming`.
 class MessageReceivedEvent extends MessageReceptionEvent {
   const MessageReceivedEvent(super.contactId, {this.message});
   final IncomingMessageDto? message;
@@ -41,6 +41,7 @@ class SessionStateChangedEvent extends MessageReceptionEvent {
     required this.state,
     required this.needsRehandshake,
     this.generation = 0,
+    this.renewing = false,
   });
   final SessionStateKind? state;
   final bool needsRehandshake;
@@ -49,6 +50,10 @@ class SessionStateChangedEvent extends MessageReceptionEvent {
   /// reabriu e a nossa continuou `established` (docs/protocol.md §11.4). Quem
   /// dependia da sessão anterior compara este valor.
   final int generation;
+
+  /// Uma sessão nova com o contato está sendo confirmada e segura a fila de
+  /// envio (docs/protocol.md §11.4).
+  final bool renewing;
 
   bool get isEstablished => state == SessionStateKind.established;
 }
@@ -99,7 +104,9 @@ class MessageReceptionService {
     Future<String> Function()? tempDirProvider,
     Future<String> Function()? receivedDirProvider,
     TransferForegroundService? foregroundService,
+    Duration renewalHold = defaultRenewalHold,
   })  : _core = core,
+        _renewalHold = renewalHold,
         _router = router,
         _foregroundService = foregroundService ?? TransferForegroundService.shared,
         _appDirPath = appDirPath,
@@ -189,6 +196,7 @@ class MessageReceptionService {
       state: dto.state,
       needsRehandshake: dto.needsRehandshake,
       generation: dto.generation,
+      renewing: dto.renewing,
     );
     final previous = _sessionStates[contactId];
     final wasEstablished = previous?.isEstablished ?? false;
@@ -202,7 +210,23 @@ class MessageReceptionService {
     if (event.isEstablished && (!wasEstablished || renewed)) {
       unawaited(_flushPending(contactId));
     }
+    // O Rust não tem relógio: quando a candidata passa do prazo sem confirmar,
+    // ninguém avisa. Drenar depois do prazo libera a fila pela sessão atual,
+    // e a própria drenagem publica o estado novo.
+    _renewalTimers.remove(contactId)?.cancel();
+    if (event.renewing) {
+      _renewalTimers[contactId] = Timer(_renewalHold, () {
+        _renewalTimers.remove(contactId);
+        if (!_disposed) unawaited(_flushPending(contactId));
+      });
+    }
   }
+
+  /// Prazo de uma sessão candidata (`CANDIDATE_TIMEOUT_SECS` no Rust, 30 s)
+  /// com folga de um segundo, para a drenagem cair depois dele.
+  static const defaultRenewalHold = Duration(seconds: 31);
+  final Duration _renewalHold;
+  final Map<ContactId, Timer> _renewalTimers = {};
 
   void _handleTransferEvent(TransferEventDto dto) {
     if (_disposed) return;
@@ -652,6 +676,10 @@ class MessageReceptionService {
       timer.cancel();
     }
     _retryTimers.clear();
+    for (final timer in _renewalTimers.values) {
+      timer.cancel();
+    }
+    _renewalTimers.clear();
     for (final sub in _incomingSubs.values) {
       await sub.cancel();
     }

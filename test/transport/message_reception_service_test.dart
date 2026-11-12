@@ -115,9 +115,9 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
       );
 
   /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
-  /// handshake os bytes vão para o handshake (registrados em
-  /// [feedHandshakeCalls]); estabelecida, para a decifragem (registrados em
-  /// [decryptIncomingCalls]); falha, para lugar nenhum.
+  /// handshake os bytes vão para [feedHandshake]; estabelecida, para
+  /// [decryptIncoming]; falha, para lugar nenhum. Os dois são só ganchos do
+  /// dublê, o `Core` real não os expõe.
   @override
   Future<IncomingResultDto> receiveIncoming({
     required List<int> peerDeviceId,
@@ -155,7 +155,6 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
         (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
   }
 
-  @override
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
@@ -168,7 +167,6 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     return feedHandshakeResponse;
   }
 
-  @override
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,
@@ -186,8 +184,12 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     );
   }
 
+  /// Como o Rust com uma candidata recente: a fila não sai.
+  var holdQueue = false;
+
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
+    if (holdQueue) return [];
     final list = List<SealedMessageDto>.from(pendingToFlush);
     pendingToFlush.clear();
     return list;
@@ -412,6 +414,31 @@ void main() {
 
       expect(transport.sendCalls.where((b) => listEquals(b, [88])), hasLength(1));
       expect(service.sessionStateFor(contact)?.generation, 1);
+    });
+
+    test('a renewal that expires without confirmation drains the queue after the hold', () async {
+      core.sessionState = SessionStateKind.established;
+      final held = MessageReceptionService(
+        core: core,
+        router: router,
+        renewalHold: const Duration(milliseconds: 50),
+      );
+      addTearDown(held.dispose);
+      await held.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 9, bytes: Uint8List.fromList([90])),
+      ];
+
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), isEmpty);
+
+      // A candidata passa do prazo sem confirmar: o Rust não avisa ninguém.
+      core.holdQueue = false;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), hasLength(1));
     });
 
     test('handshake completion flushes pending messages and marks them sent', () async {
