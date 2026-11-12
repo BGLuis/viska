@@ -41,7 +41,7 @@ Desconhecido.
 # 💻 Como iniciar
 
 ### Requisitos
-- [Flutter SDK](https://flutter.dev/docs/get-started/install) (`>= 3.11.4` no canal estável)
+- [Flutter SDK](https://flutter.dev/docs/get-started/install) **3.47.4** (canal estável), a versão fixada no CI e usada para gerar o `pubspec.lock`
 - [Dart SDK](https://dart.dev/get-dart) (`>= 3.11.4`)
 - [Rust Toolchain](https://www.rust-lang.org/tools/install) (`>= 1.85` estável com componentes `clippy` e `rustfmt`)
 - [flutter_rust_bridge_codegen](https://cjycode.com/flutter_rust_bridge/) (`= 2.13.0`)
