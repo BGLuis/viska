@@ -111,6 +111,11 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
   suportar transferências concorrentes com o mesmo contato. `file_id` é aleatório, sem relação com
   conteúdo, nome ou tamanho; mesma categoria de vazamento necessário que `Counter`/`dh_pub` no canal
   `control` (D4/D14).
+- **Momento de uma reabertura de sessão (D27).** Quando um lado reinicia o app, destranca o cofre ou
+  toca em reconectar, o par volta a trocar INIT (1218 B) e RESP (1122 B), tamanhos que nenhum envelope
+  tem. Quem observa o canal vê quando isso acontece. O sinal `REOPEN` tem o tamanho de um envelope e
+  nenhum byte fixo, mas os quatro primeiros bytes dele são aleatórios, enquanto os de um envelope são
+  um contador quase sempre pequeno. Mesma categoria do contador em claro (D4); aceito, não mitigado.
 - **Detectabilidade do cofre falso (issue #30, achado S-17 da auditoria de 2026-09).** O modo
   "Cofre Falso" do PIN de coação **não é indetectável** para quem examina o armazenamento do
   aparelho (§1.4), e o aplicativo não promete negação plausível da existência de um segundo cofre.

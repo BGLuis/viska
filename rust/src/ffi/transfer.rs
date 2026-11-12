@@ -1112,11 +1112,10 @@ mod tests {
             .feed_handshake(pair.device_id_a.clone(), init)
             .unwrap()
             .expect("respondedor sempre devolve a RESP");
-        let none = pair
-            .core_a
+        // A resposta é o anúncio de suítes (§10.2), que estes testes não usam.
+        pair.core_a
             .feed_handshake(pair.device_id_b.clone(), resp)
             .unwrap();
-        assert!(none.is_none());
 
         pair
     }

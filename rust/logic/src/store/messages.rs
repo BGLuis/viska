@@ -639,6 +639,28 @@ pub fn mark_all_sending_unknown(conn: &rusqlite::Connection) -> Result<usize> {
     .map_err(|_| Error::Store)
 }
 
+/// Como [`mark_all_sending_unknown`], para um único contato. Usada quando o
+/// par reabre a sessão (§11.4): o texto em `Sending` saiu (ou não) pela sessão
+/// que o par provavelmente já perdeu, e recifrá-lo poderia entregá-lo duas vezes.
+pub fn mark_sending_unknown_for_contact(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET delivery_state = ?1
+         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
+           AND packet_type = ?5",
+        rusqlite::params![
+            DeliveryState::Unknown as i64,
+            contact_device_id.as_slice(),
+            Direction::Outgoing as i64,
+            DeliveryState::Sending as i64,
+            PacketType::MsgText.to_u8() as i64
+        ],
+    )
+    .map_err(|_| Error::Store)
+}
+
 /// Devolve à fila um texto `Unknown`, por pedido explícito da pessoa. A linha
 /// (e o `global_id` dentro do corpo) é a mesma, então o par deduplica se a
 /// primeira cópia tinha chegado.
@@ -1394,6 +1416,35 @@ mod tests {
 
         requeue(&conn, id).unwrap();
         assert_eq!(list_pending(&conn, &contact).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mark_sending_unknown_for_contact_touches_only_that_contact() {
+        let contact = [11u8; 16];
+        let other = [12u8; 16];
+        let conn = conn_with_contact(contact);
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, NULL)",
+            rusqlite::params![other.as_slice(), [3u8; 32], [4u8; 32]],
+        )
+        .unwrap();
+        let mine = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
+        let theirs = insert_pending(&conn, &other, PacketType::MsgText, "b", 2).unwrap();
+        mark_sending(&conn, mine).unwrap();
+        mark_sending(&conn, theirs).unwrap();
+
+        assert_eq!(mark_sending_unknown_for_contact(&conn, &contact).unwrap(), 1);
+        let state = |id: &[u8; 16], row| {
+            list_for_contact(&conn, id)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == row)
+                .unwrap()
+                .delivery_state
+        };
+        assert_eq!(state(&contact, mine), DeliveryState::Unknown);
+        assert_eq!(state(&other, theirs), DeliveryState::Sending);
     }
 
     #[test]

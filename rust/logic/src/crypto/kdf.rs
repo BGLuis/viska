@@ -51,6 +51,11 @@ pub mod context {
     pub const MESSAGE_KEY: &str = "viska-msg-key-v1";
     pub const REKEM: &str = "viska-rekem-v1";
     pub const SIGNALING: &str = "viska-signaling-v1";
+    /// Sela o sinal `REOPEN` (§11.4, D27). Mesmo DH estático de `SIGNALING`,
+    /// domínio próprio: o sinal trafega no canal de dados, não no broker, e
+    /// uma chave comum aos dois usos deixaria um payload de sinalização ser
+    /// reaproveitado como `REOPEN` se os formatos um dia coincidirem.
+    pub const REOPEN: &str = "viska-reopen-v1";
     pub const BEACON: &str = "viska-beacon-v1";
     pub const PREAMBLE: &str = "viska-preamble-v1";
     pub const FILE_KEY: &str = "viska-file-key-v1";

@@ -56,20 +56,16 @@ extension ActiveTransportTypeExtension on ActiveTransportType {
 /// dublês de `Core`/`P2PTransportRouter`, sem nenhuma UI — mesmo raciocínio
 /// que motivou extrair `WebrtcP2PTransport` na Fase 3, F5.
 ///
-/// Dono de uma peça que não tinha lar em nenhuma fase anterior: decidir, a
-/// cada byte cru que chega do transporte, se é uma mensagem de handshake
-/// (`Core.feedHandshake`) ou um envelope de sessão já estabelecida
-/// (`Core.decryptIncoming`). F5 devolve bytes crus de propósito — não sabe
-/// nada de sessão viska — e a decisão de qual FFI chamar é puramente “a
-/// sessão já está `Established`?”, a mesma pergunta que `Session` já resolve
-/// internamente no lado Rust (`docs/protocol.md` §11.1), só que agora
-/// respondida do lado Dart para saber qual método FFI chamar.
+/// Os bytes crus que chegam do transporte não passam por aqui: o
+/// `MessageReceptionService` os entrega a `Core.receiveIncoming`, e é o Rust
+/// que decide se são handshake, sinal de reabertura ou envelope
+/// (`docs/protocol.md` §11.4).
 ///
 /// ## Nota de voz — Fase 5
 ///
 /// `FILE_METADATA`/`FILE_FEEDBACK`/`FILE_COMPLETE` (controle da
 /// transferência) já são processados como efeito colateral dentro de
-/// `Core.decryptIncoming` — por isso `_handleIncomingRaw` agora sempre
+/// `Core.receiveIncoming` — por isso `_handleIncomingRaw` agora sempre
 /// atualiza a timeline depois de decifrar, mesmo quando o envelope não
 /// produz um `IncomingMessageDto` (uma oferta de nota de voz nova, por
 /// exemplo, só aparece assim). `AUDIO_CHUNK` contorna `Session` por completo
@@ -754,7 +750,7 @@ class ChatController extends ChangeNotifier {
         if (progress == null || progress.isComplete) return;
         // Emissor esgotou o que tinha para o bloco atual — espera o
         // `FILE_FEEDBACK` do receptor (processado como efeito colateral
-        // dentro de `Core.decryptIncoming`, já dirigido por
+        // dentro de `Core.receiveIncoming`, já dirigido por
         // `_handleIncomingRaw`) liberar o próximo bloco. Espera curta, não
         // *polling* de descoberta — a novidade em si (oferta/conclusão) já
         // chega por evento, isto só dá ritmo ao laço de envio.
@@ -795,24 +791,24 @@ class ChatController extends ChangeNotifier {
   }
 
 
-  /// Abre uma sessão nova com o contato (`Core.resetSession`) e publica a
-  /// INIT se formos o iniciador. O reset é só local: o contato pode precisar
-  /// reconectar também, e o aviso do chat diz isso.
+  /// Abre uma sessão nova com o contato (`Core.resetSession`) e o avisa
+  /// (`Core.connectSignal`): a INIT se formos o iniciador, o sinal de
+  /// reabertura se formos o respondedor (docs/protocol.md §11.4).
   Future<void> reconnectSession() async {
     if (_reconnecting) return;
     _reconnecting = true;
     _sessionError = null;
     notifyListeners();
     try {
-      final status = await _core.resetSession(peerDeviceId: _contactId.deviceId);
-      final handshake = status.outgoingHandshake;
+      await _core.resetSession(peerDeviceId: _contactId.deviceId);
+      final handshake = await _core.connectSignal(peerDeviceId: _contactId.deviceId);
       if (handshake != null) {
         try {
           await _router.sendToContact(_contactId, handshake);
         } catch (e) {
           // A sessão já foi reaberta; sem transporte, o serviço de recepção
-          // publica a INIT quando ele voltar.
-          if (kDebugMode) debugPrint('[ChatController] INIT da sessão nova não enviada: $e');
+          // anuncia a sessão quando ele voltar.
+          if (kDebugMode) debugPrint('[ChatController] Aviso da sessão nova não enviado: $e');
         }
       }
     } catch (e, stack) {

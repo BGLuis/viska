@@ -88,6 +88,27 @@ pub struct SessionStateEventDto {
     /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
     pub state: Option<SessionStateKind>,
     pub needs_rehandshake: bool,
+    /// Muda quando a sessão com o par é trocada por outra, inclusive quando o
+    /// par reabriu e a nossa continuou `Established` (§11.4). Quem precisa
+    /// refazer algo que dependia da sessão anterior compara este valor. É só
+    /// um contador local, sem relação com nenhuma chave.
+    pub generation: u32,
+    /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+    /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+    /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+    /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+    pub renewing: bool,
+}
+
+/// Resultado de `Core::receive_incoming`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingResultDto {
+    /// A mensagem de aplicação decifrada, quando os bytes eram uma.
+    pub message: Option<IncomingMessageDto>,
+    /// Bytes a enviar de volta ao par, sem tocar: RESP, INIT, `REOPEN` ou um
+    /// `CONTROL_SUITES` já cifrado. Material público de handshake ou
+    /// ciphertext, nunca segredo.
+    pub reply: Option<Vec<u8>>,
 }
 
 /// Evento de transferência, empurrado pelo stream de

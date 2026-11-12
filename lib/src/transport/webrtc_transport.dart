@@ -111,7 +111,7 @@ class WebrtcTransport implements RawP2PChannel {
   Stream<RTCIceCandidate> get localIceCandidates => _localIceCandidates.stream;
 
   /// Bytes crus recebidos no canal `control` — envelopes ainda cifrados,
-  /// prontos para `Core.decryptIncoming`. Quem consome decide quando: este
+  /// prontos para `Core.receiveIncoming`. Quem consome decide quando: este
   /// stream só empilha, nunca decifra.
   @override
   Stream<Uint8List> get incoming => _incoming.stream;

@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D26). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D27). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -461,3 +461,39 @@ O manifesto carrega uma única `merkle_root` de 32 B, e autenticar um bloco do m
 O que continua garantido por símbolo: cada `FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `symbol_key` (`SendTransfer::next_sealed_symbol` sela, `ReceiveTransfer::ingest_sealed_symbol` abre; a chave vem de `keys::derive_symbol_key`, derivada do `transfer_secret`, D15; cifra e nonce em D11; em notas de voz o `AUDIO_CHUNK` usa `K_audio_chunk` no lugar de `K_symbol`), com `file_id` como AAD. Adulteração ou forja em trânsito por quem não detém o segredo da transferência falha na abertura. O que **não** é garantido: que o conteúdo bate com a raiz antes do fim. Um par pareado que mande conteúdo errado só é detectado depois de receber o arquivo inteiro, ao custo de banda e de espaço de staging. A autenticação é MAC simétrico, então a deniabilidade não muda.
 
 **Custo de reverter:** acrescentar um CV por bloco ao manifesto (ou a um pacote logo após ele), chamar `merkle::block_chaining_value` (hoje sem chamador) a cada bloco decodificado em `ReceiveTransfer`, e decidir a LAN: ficar sem verificação por bloco ou alinhar o `symbol_size` (reabrindo D23). Muda o wire e o limite de tamanho do manifesto.
+
+---
+
+## D27 — Reabertura de sessão avisada ao par por tamanho e por um sinal `REOPEN` disfarçado de envelope
+**Spec:** sem previsão. A spec original tinha `Packet Type` em claro (removido por D4) e sessão de
+chave única (substituída por D2); não trata de um lado perder a sessão e o outro não.
+**Aqui:** `docs/protocol.md` §11.4. O lado que não reabriu reconhece a INIT pelo tamanho (1218 B,
+que nenhum envelope tem) e responde com uma sessão candidata, promovida só quando o primeiro AEAD sob
+ela abre. Quem reabre como respondedor manda um `REOPEN` de 1076 B, do tamanho de um envelope do
+bucket menor, inteiro saída de XChaCha20-Poly1305 sob uma chave derivada do DH estático entre as duas
+`IK_dh`, com carimbo de tempo e guarda de repetição em memória.
+
+Por que isso não reabre D4: a INIT já saía em claro com `version` e `msg_type` (§4.1), então usar o
+tamanho dela não revela nada novo; e o `REOPEN` não tem nenhum byte fixo, só o tamanho já comum a todo
+envelope pequeno. Por que não fere D1: a autenticação do `REOPEN` é um AEAD sob uma chave que os dois
+lados conhecem, então qualquer um deles poderia ter produzido o sinal.
+
+O que fica exposto: um observador do canal vê uma INIT (1218 B) e uma RESP (1122 B) a cada reabertura,
+como já via na primeira abertura, e pode correlacionar isso com o momento em que um aparelho reiniciou
+ou destrancou o app. Os quatro primeiros bytes de um envelope são um contador quase sempre pequeno,
+enquanto os do `REOPEN` são aleatórios: um classificador estatístico do tráfego conseguiria separar os
+dois com alguma confiança. Mesma categoria de vazamento do contador em claro (D4) e não mitigado aqui.
+Quem consegue injetar bytes no canal (o socket TCP local não autentica a conexão além do preâmbulo,
+§9.3) pode forjar INITs. Elas nunca derrubam a sessão viva, mas cada uma segura a fila de envio por
+até 30 s e marca como `unknown` os textos do contato que estavam em `Sending`; repetida a cada 30 s,
+a retenção dura o quanto o atacante quiser. Pelo mesmo limite de uma candidata a cada 10 s, uma INIT
+forjada também pode fazer o respondedor recusar a INIT verdadeira de uma reabertura; o iniciador a
+reenvia a cada tráfego ilegível, mas quem injeta a cada 10 s consegue atrasar a reabertura enquanto
+continuar injetando. No máximo uma candidata a cada 10 s, o que limita o custo
+de CPU a um encapsulamento ML-KEM por intervalo. O guarda de repetição do `REOPEN` vive na sessão:
+depois que o próprio iniciador reabre, um `REOPEN` gravado nos últimos 3 minutos pode ser repetido
+mais uma vez, ao custo de um handshake.
+
+**Custo de reverter:** voltar à lacuna anterior: reset, reinício e trancamento de um lado só deixam o
+outro com uma sessão que ninguém mais lê, até ele também falhar (8 falhas de AEAD) e a pessoa tocar
+em reconectar nos dois aparelhos. A alternativa com marcador de tipo em claro reabre D4.

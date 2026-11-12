@@ -114,7 +114,47 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
         outgoingHandshake: outgoingHandshake,
       );
 
+  /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
+  /// handshake os bytes vão para [feedHandshake]; estabelecida, para
+  /// [decryptIncoming]; falha, para lugar nenhum. Os dois são só ganchos do
+  /// dublê, o `Core` real não os expõe.
   @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) async {
+    switch (sessionState) {
+      case SessionStateKind.failed:
+        return const IncomingResultDto();
+      case SessionStateKind.handshaking:
+        return IncomingResultDto(
+          reply: await feedHandshake(peerDeviceId: peerDeviceId, bytes: bytes),
+        );
+      case SessionStateKind.established:
+        return IncomingResultDto(
+          message: await decryptIncoming(peerDeviceId: peerDeviceId, envelope: bytes),
+          reply: replyWhenEstablished,
+        );
+    }
+  }
+
+  /// Resposta que o Rust devolveria com a sessão estabelecida: a RESP de uma
+  /// reabertura do par, ou o anúncio de suítes (§11.4).
+  Uint8List? replyWhenEstablished;
+
+  final connectSignalCalls = <List<int>>[];
+
+  /// Bytes que `connectSignal` devolve; sem valor, a INIT pendente enquanto em
+  /// handshake.
+  Uint8List? connectSignalResult;
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) async {
+    connectSignalCalls.add(peerDeviceId);
+    return connectSignalResult ??
+        (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
+  }
+
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
@@ -127,7 +167,6 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     return feedHandshakeResponse;
   }
 
-  @override
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,
@@ -145,8 +184,12 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     );
   }
 
+  /// Como o Rust com uma candidata recente: a fila não sai.
+  var holdQueue = false;
+
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
+    if (holdQueue) return [];
     final list = List<SealedMessageDto>.from(pendingToFlush);
     pendingToFlush.clear();
     return list;
@@ -335,6 +378,86 @@ void main() {
       expect(events.whereType<SessionStateChangedEvent>(), isNotEmpty);
 
       await sub.cancel();
+    });
+
+    test('reply returned with an established session is sent back to the peer', () async {
+      core.sessionState = SessionStateKind.established;
+      core.replyWhenEstablished = Uint8List.fromList([5, 5]);
+      await service.start();
+
+      transport.emitIncoming(Uint8List.fromList([1, 2, 3]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.first, Uint8List.fromList([5, 5]));
+    });
+
+    test('channel opening publishes the connect signal', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.connectSignalResult = Uint8List.fromList([9, 9]);
+      await service.start();
+      await pumpEventQueue();
+
+      expect(core.connectSignalCalls, isNotEmpty);
+      expect(transport.sendCalls.any((b) => listEquals(b, [9, 9])), isTrue);
+    });
+
+    test('session replaced by the peer flushes pending even if it stays established', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 8, bytes: Uint8List.fromList([88])),
+      ];
+
+      core.generation = 1;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [88])), hasLength(1));
+      expect(service.sessionStateFor(contact)?.generation, 1);
+    });
+
+    test('a renewal that expires without confirmation drains the queue after the hold', () async {
+      core.sessionState = SessionStateKind.established;
+      final held = MessageReceptionService(
+        core: core,
+        router: router,
+        renewalHold: const Duration(milliseconds: 50),
+      );
+      addTearDown(held.dispose);
+      await held.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 9, bytes: Uint8List.fromList([90])),
+      ];
+
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), isEmpty);
+
+      // A candidata passa do prazo sem confirmar: o Rust não avisa ninguém.
+      core.holdQueue = false;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), hasLength(1));
+    });
+
+    test('the end of a renewal reported by any event drains the queue', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 11, bytes: Uint8List.fromList([110])),
+      ];
+
+      // Alguma chamada depois do prazo publica `renewing` falso antes do timer.
+      core.holdQueue = false;
+      core.renewing = false;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [110])), hasLength(1));
     });
 
     test('handshake completion flushes pending messages and marks them sent', () async {

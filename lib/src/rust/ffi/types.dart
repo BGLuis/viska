@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -169,6 +169,30 @@ class IncomingMessageDto {
           body == other.body &&
           isTyping == other.isTyping &&
           receivedAtUnixSecs == other.receivedAtUnixSecs;
+}
+
+/// Resultado de `Core::receive_incoming`.
+class IncomingResultDto {
+  /// A mensagem de aplicação decifrada, quando os bytes eram uma.
+  final IncomingMessageDto? message;
+
+  /// Bytes a enviar de volta ao par, sem tocar: RESP, INIT, `REOPEN` ou um
+  /// `CONTROL_SUITES` já cifrado. Material público de handshake ou
+  /// ciphertext, nunca segredo.
+  final Uint8List? reply;
+
+  const IncomingResultDto({this.message, this.reply});
+
+  @override
+  int get hashCode => message.hashCode ^ reply.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IncomingResultDto &&
+          runtimeType == other.runtimeType &&
+          message == other.message &&
+          reply == other.reply;
 }
 
 /// Resultado de alimentar um pacote do canal `file` — Fase 5, D17:
@@ -424,15 +448,33 @@ class SessionStateEventDto {
   final SessionStateKind? state;
   final bool needsRehandshake;
 
+  /// Muda quando a sessão com o par é trocada por outra, inclusive quando o
+  /// par reabriu e a nossa continuou `Established` (§11.4). Quem precisa
+  /// refazer algo que dependia da sessão anterior compara este valor. É só
+  /// um contador local, sem relação com nenhuma chave.
+  final int generation;
+
+  /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+  /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+  /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+  /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+  final bool renewing;
+
   const SessionStateEventDto({
     required this.peerDeviceId,
     this.state,
     required this.needsRehandshake,
+    required this.generation,
+    required this.renewing,
   });
 
   @override
   int get hashCode =>
-      peerDeviceId.hashCode ^ state.hashCode ^ needsRehandshake.hashCode;
+      peerDeviceId.hashCode ^
+      state.hashCode ^
+      needsRehandshake.hashCode ^
+      generation.hashCode ^
+      renewing.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -441,7 +483,9 @@ class SessionStateEventDto {
           runtimeType == other.runtimeType &&
           peerDeviceId == other.peerDeviceId &&
           state == other.state &&
-          needsRehandshake == other.needsRehandshake;
+          needsRehandshake == other.needsRehandshake &&
+          generation == other.generation &&
+          renewing == other.renewing;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de
