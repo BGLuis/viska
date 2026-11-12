@@ -243,15 +243,12 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                 // Só o PIN digitado migra para o formato novo, e o de coação
                 // quase nunca é digitado: sem redefinir, ele continua
                 // recuperável por força bruta a partir do arquivo de config.
-                Semantics(
-                  liveRegion: true,
-                  child: Text(
-                    'Seu PIN de Coação foi salvo num formato antigo, fácil de descobrir por quem copia os arquivos do aparelho. Digite-o de novo abaixo e salve para protegê-lo.',
-                    key: const Key('duress-legacy-warning'),
-                    style: ViskaTypography.bodySmall.copyWith(
-                      color: ViskaColors.dangerDefault,
-                      height: 1.35,
-                    ),
+                Text(
+                  'Seu PIN de Coação foi salvo num formato antigo, fácil de descobrir por quem copia os arquivos do aparelho. Digite-o de novo abaixo e salve para protegê-lo.',
+                  key: const Key('duress-legacy-warning'),
+                  style: ViskaTypography.bodySmall.copyWith(
+                    color: ViskaColors.dangerDefault,
+                    height: 1.35,
                   ),
                 ),
                 const SizedBox(height: ViskaSpacing.spaceSm),
@@ -303,9 +300,15 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
 
               if (_error != null) ...[
                 const SizedBox(height: ViskaSpacing.spaceMd),
-                Text(
-                  _error!,
-                  style: ViskaTypography.bodySmall.copyWith(color: ViskaColors.dangerDefault),
+                // Região viva: o erro aparece depois de uma verificação de
+                // segundos e costuma ficar fora da tela, abaixo das opções.
+                Semantics(
+                  container: true,
+                  liveRegion: true,
+                  child: Text(
+                    _error!,
+                    style: ViskaTypography.bodySmall.copyWith(color: ViskaColors.dangerDefault),
+                  ),
                 ),
               ],
 

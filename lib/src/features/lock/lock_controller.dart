@@ -273,14 +273,14 @@ class LockController with WidgetsBindingObserver {
       }
     }
 
-    final nextNormalHash =
-        normal == null ? _normalPinHash : await _pinHasher.hash(normal);
-    final nextDuressHash =
-        duress == null ? _duressPinHash : await _pinHasher.hash(duress);
+    final newNormalHash = normal == null ? null : await _pinHasher.hash(normal);
+    final newDuressHash = duress == null ? null : await _pinHasher.hash(duress);
 
-    _normalPinHash = nextNormalHash;
+    // O PIN mantido é lido só agora, depois das derivações: uma migração que
+    // terminou nesse meio-tempo não pode ser desfeita pelo valor antigo.
+    _normalPinHash = newNormalHash ?? _normalPinHash;
     _normalPinLength = nextNormalLength;
-    _duressPinHash = nextDuressHash;
+    _duressPinHash = newDuressHash ?? _duressPinHash;
     _duressPinLength = nextDuressLength;
     if (actionMode != null) duressActionMode = actionMode;
     await _saveSecurityConfig();
@@ -463,12 +463,16 @@ class LockController with WidgetsBindingObserver {
     if (pinRetryDelay > Duration.zero) return false;
 
     final trimmed = pin.trim();
+    // Os hashes conferidos, para que a migração só regrave se ninguém os
+    // trocou desde a verificação.
+    final checkedNormal = _normalPinHash;
+    final checkedDuress = _duressPinHash;
     final PinCheckDto result;
     try {
       result = await _pinHasher.check(
         trimmed,
-        normalHash: _normalPinHash,
-        duressHash: _duressPinHash,
+        normalHash: checkedNormal,
+        duressHash: checkedDuress,
       );
     } catch (_) {
       // Falha interna da derivação não é palpite errado do usuário: não conta
@@ -492,7 +496,9 @@ class LockController with WidgetsBindingObserver {
         // legado responderia mais devagar que o normal já migrado.
         await _resetFailedPinAttempts();
         await activateDecoyVault();
-        if (result.needsRehash) await _migratePinHash(PinMatchDto.duress, trimmed);
+        if (result.needsRehash) {
+          await _migratePinHash(trimmed, verified: checkedDuress, isNormal: false);
+        }
         return true;
       }
     }
@@ -501,7 +507,9 @@ class LockController with WidgetsBindingObserver {
       final unlocked = await _unlockWithoutBiometrics();
       if (unlocked) {
         await _resetFailedPinAttempts();
-        if (result.needsRehash) await _migratePinHash(PinMatchDto.normal, trimmed);
+        if (result.needsRehash) {
+          await _migratePinHash(trimmed, verified: checkedNormal, isNormal: true);
+        }
       }
       return unlocked;
     }
@@ -515,23 +523,17 @@ class LockController with WidgetsBindingObserver {
   /// (memória, RNG) não pode impedir o desbloqueio nem o cofre falso; o hash
   /// antigo continua válido e a migração é tentada de novo na próxima vez.
   ///
-  /// Só grava se o hash daquela posição ainda for o que foi conferido: se o
-  /// dono trocou ou removeu os PINs durante a derivação, gravar aqui
-  /// ressuscitaria o PIN antigo.
-  Future<void> _migratePinHash(PinMatchDto slot, String pin) async {
-    final bool isNormal;
-    switch (slot) {
-      case PinMatchDto.normal:
-        isNormal = true;
-      case PinMatchDto.duress:
-        isNormal = false;
-      case PinMatchDto.noMatch:
-        return;
-    }
-    final before = isNormal ? _normalPinHash : _duressPinHash;
+  /// Só grava se o hash daquela posição ainda for [verified], o que foi
+  /// conferido: se o dono trocou ou removeu os PINs desde a verificação,
+  /// gravar aqui ressuscitaria o PIN antigo.
+  Future<void> _migratePinHash(
+    String pin, {
+    required String? verified,
+    required bool isNormal,
+  }) async {
     try {
       final hash = await _pinHasher.hash(pin);
-      if ((isNormal ? _normalPinHash : _duressPinHash) != before) return;
+      if ((isNormal ? _normalPinHash : _duressPinHash) != verified) return;
       if (isNormal) {
         _normalPinHash = hash;
       } else {

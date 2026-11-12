@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart';
@@ -713,6 +714,39 @@ void main() {
       expect(core.unlockCalls, 1);
       expect(controller.isLocked.value, isFalse);
       expect(core.emergencyEraseCalls, 0);
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen lockout message is not clipped at large text scale', (tester) async {
+      final controller = build(_FakeCore(), FakePinHasher());
+      await tester.runAsync(() async {
+        await controller.setNormalPin('1234');
+        await controller.lock();
+        for (var i = 0; i < LockController.freePinAttempts; i++) {
+          await controller.verifyAndUnlockWithPin('0000');
+        }
+      });
+      expect(controller.pinRetryDelay, greaterThan(Duration.zero));
+
+      final semantics = tester.ensureSemantics();
+      await tester.pumpWidget(MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: LockScreen(controller: controller),
+        ),
+      ));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final message = find.textContaining('Muitas tentativas');
+      expect(message, findsOneWidget);
+      final paragraph = tester.renderObject<RenderParagraph>(message);
+      expect(paragraph.didExceedMaxLines, isFalse);
+      // O texto inteiro cabe na área pintada da linha de status.
+      final slot = tester.getRect(find.ancestor(of: message, matching: find.byType(ConstrainedBox)).first);
+      expect(slot.contains(tester.getRect(message).bottomCenter - const Offset(0, 1)), isTrue);
+      // O leitor de tela recebe minutos, não a contagem de segundos.
+      expect(find.bySemanticsLabel(RegExp(r'Muitas tentativas.*minuto')), findsOneWidget);
+      semantics.dispose();
       controller.dispose();
     });
 

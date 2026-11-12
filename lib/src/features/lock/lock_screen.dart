@@ -114,7 +114,13 @@ class _LockScreenState extends State<LockScreen> {
   );
 
   void _onDigitPressed(String digit) {
-    if (_isSubmitting || _controller.pinRetryDelay > Duration.zero) return;
+    // A biometria em andamento também bloqueia: os dois caminhos de
+    // desbloqueio não podem correr em paralelo (ver `_authenticate`).
+    if (_isSubmitting ||
+        _isAuthenticating ||
+        _controller.pinRetryDelay > Duration.zero) {
+      return;
+    }
     if (_pin.length >= _submitLength) return;
     setState(() {
       _pin += digit;
@@ -154,35 +160,67 @@ class _LockScreenState extends State<LockScreen> {
     setState(() => _pin = _pin.substring(0, _pin.length - 1));
   }
 
-  /// Cabe duas linhas de `bodySmall`, o caso das mensagens mais longas.
-  static const double _statusLineHeight = 40;
-
-  Widget _buildStatusLine(bool isWaiting, Duration retryDelay) {
-    final String? text;
-    final Color color;
-    Key? key;
+  /// Linha de status: texto visível e rótulo para leitor de tela. O rótulo da
+  /// espera arredonda para minutos, para que a região viva não anuncie a
+  /// contagem regressiva a cada segundo.
+  ({String text, String label, bool isError, Key? key})? _statusLine(
+    bool isWaiting,
+    Duration retryDelay,
+  ) {
+    final error = _errorMessage;
     if (isWaiting) {
-      text =
-          'Muitas tentativas. Tente novamente em ${_formatRetryDelay(retryDelay)}.';
-      color = ViskaColors.dangerDefault;
-    } else if (_errorMessage != null) {
-      text = _errorMessage;
-      color = ViskaColors.dangerDefault;
-    } else if (_isSubmitting) {
-      text = 'Verificando PIN...';
-      color = ViskaColors.textMuted;
-      key = const Key('pin-verifying');
-    } else {
-      return const SizedBox.shrink();
+      final minutes = (retryDelay.inSeconds / 60).ceil();
+      return (
+        text:
+            'Muitas tentativas. Tente novamente em ${_formatRetryDelay(retryDelay)}.',
+        label: minutes <= 1
+            ? 'Muitas tentativas. Tente novamente em menos de um minuto.'
+            : 'Muitas tentativas. Tente novamente em até $minutes minutos.',
+        isError: true,
+        key: null,
+      );
     }
-    return Text(
-      text!,
-      key: key,
-      textAlign: TextAlign.center,
-      maxLines: 2,
-      style: ViskaTypography.bodySmall.copyWith(
-        color: color,
-        fontWeight: color == ViskaColors.dangerDefault ? FontWeight.w600 : null,
+    if (error != null) {
+      return (text: error, label: error, isError: true, key: null);
+    }
+    if (_isSubmitting) {
+      const text = 'Verificando PIN...';
+      return (text: text, label: text, isError: false, key: const Key('pin-verifying'));
+    }
+    return null;
+  }
+
+  Widget _buildStatusSlot(BuildContext context, bool isWaiting, Duration retryDelay) {
+    final status = _statusLine(isWaiting, retryDelay);
+    // Altura mínima de duas linhas de `bodySmall` na escala de fonte do
+    // usuário: a linha não some nem reaparece entre envios (o teclado ficaria
+    // pulando sob o dedo), mas cresce em vez de cortar o texto.
+    final style = ViskaTypography.bodySmall;
+    final lineHeight = (style.fontSize ?? 12) * (style.height ?? 1.4);
+    final minHeight = MediaQuery.textScalerOf(context).scale(lineHeight) * 2;
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: status?.label,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: minHeight),
+        child: Center(
+          child: status == null
+              ? const SizedBox.shrink()
+              : ExcludeSemantics(
+                  child: Text(
+                    status.text,
+                    key: status.key,
+                    textAlign: TextAlign.center,
+                    style: style.copyWith(
+                      color: status.isError
+                          ? ViskaColors.dangerDefault
+                          : ViskaColors.textMuted,
+                      fontWeight: status.isError ? FontWeight.w600 : null,
+                    ),
+                  ),
+                ),
+        ),
       ),
     );
   }
@@ -259,25 +297,17 @@ class _LockScreenState extends State<LockScreen> {
                   const SizedBox(height: ViskaSpacing.spaceSm),
                 ],
 
-                // Uma só linha de status, de altura fixa: espera, erro ou
-                // verificação. Linhas que aparecem e somem deslocariam o
-                // teclado sob o dedo a cada envio.
-                Semantics(
-                  liveRegion: true,
-                  child: SizedBox(
-                    height: _statusLineHeight,
-                    child: Center(
-                      child: _buildStatusLine(isWaiting, retryDelay),
-                    ),
-                  ),
-                ),
+                // Uma só linha de status (espera, erro ou verificação), com
+                // altura mínima estável: ver `_buildStatusSlot`.
+                _buildStatusSlot(context, isWaiting, retryDelay),
                 const SizedBox(height: ViskaSpacing.spaceSm),
 
                 if (hasPin) ...[
-                  // Esmaecido enquanto o PIN é verificado: dígitos são
-                  // ignorados nesse intervalo e o teclado não pode parecer ativo.
+                  // Esmaecido enquanto o PIN ou a biometria são verificados:
+                  // dígitos são ignorados nesse intervalo e o teclado não pode
+                  // parecer ativo.
                   AnimatedOpacity(
-                    opacity: _isSubmitting ? 0.5 : 1,
+                    opacity: _isSubmitting || _isAuthenticating ? 0.5 : 1,
                     duration: const Duration(milliseconds: 150),
                     child: PinPad(
                       keySize: 52.0,
