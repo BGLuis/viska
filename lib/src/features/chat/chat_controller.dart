@@ -405,7 +405,6 @@ class ChatController extends ChangeNotifier {
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
       case MessageReceivedEvent(:final message):
-        unawaited(loadUnconfirmedOffers());
         if (message != null && message.messageId != null) {
           _fetchIncrementalMessages();
         } else {
@@ -415,6 +414,9 @@ class ChatController extends ChangeNotifier {
         break;
       case SessionStateChangedEvent(:final state, :final needsRehandshake):
         _applySessionState(state, needsRehandshake, fromStream: true);
+      case OffersChangedEvent():
+        // O Rust avisa quando a lista muda; não há mais releitura a cada mensagem.
+        unawaited(loadUnconfirmedOffers());
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
         _fetchIncrementalMessages();

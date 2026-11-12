@@ -10,8 +10,10 @@
 //! Única exceção: [`Core::subscribe_session_events`]. O estado de uma sessão
 //! muda dentro do Rust sem que o Dart tenha chamado nada (o limiar de falhas
 //! de AEAD leva a `Failed`, §11.1), então aqui há algo que só o Rust sabe e
-//! precisa empurrar. É o único `StreamSink` do crate; não o replique para o
-//! que o Dart já consegue descobrir perguntando.
+//! precisa empurrar. O mesmo vale para [`Core::subscribe_transfer_events`]
+//! (`ffi/transfer.rs`): só o Rust sabe quando uma oferta de arquivo chega. Não
+//! crie outro `StreamSink` para o que o Dart já consegue descobrir perguntando;
+//! eventos novos de transferência entram como variantes de `TransferEventKind`.
 
 use std::collections::HashMap;
 use std::sync::MutexGuard;
@@ -344,8 +346,9 @@ impl Core {
     /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
     /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
     /// deste método para acomodar isso quebraria `chat_controller.dart`
-    /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
-    /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+    /// sem necessidade. Uma oferta retida para confirmação chega pelo stream de
+    /// `Core::subscribe_transfer_events`; não é preciso consultar nada depois
+    /// de cada pacote. Falha ao processar um desses três
     /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
     /// política de silêncio de qualquer corpo malformado nesta fronteira, e
     /// nunca deveria acontecer vindo de um par honesto.

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1995392573;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1015574605;
 
 // Section: executor
 
@@ -3428,6 +3428,62 @@ fn wire__crate__ffi__core__Core_subscribe_session_events_impl(
         },
     )
 }
+fn wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_subscribe_transfer_events",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::ffi::types::TransferEventDto,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::subscribe_transfer_events(
+                        &*api_that_guard,
+                        api_sink,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__ffi__core__Core_sweep_expired_messages_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -3823,6 +3879,19 @@ impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpa
 impl SseDecode
     for StreamSink<
         crate::ffi::types::SessionStateEventDto,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<
+        crate::ffi::types::TransferEventDto,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -4387,6 +4456,32 @@ impl SseDecode for crate::ffi::types::SignalingTopicsDto {
     }
 }
 
+impl SseDecode for crate::ffi::types::TransferEventDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_peerDeviceId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_fileId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_kind = <crate::ffi::types::TransferEventKind>::sse_decode(deserializer);
+        return crate::ffi::types::TransferEventDto {
+            peer_device_id: var_peerDeviceId,
+            file_id: var_fileId,
+            kind: var_kind,
+        };
+    }
+}
+
+impl SseDecode for crate::ffi::types::TransferEventKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::ffi::types::TransferEventKind::OfferAppeared,
+            1 => crate::ffi::types::TransferEventKind::OfferGone,
+            _ => unreachable!("Invalid variant for TransferEventKind: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::ffi::types::TransferProgressDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4646,36 +4741,42 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
+        65 => wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => {
+        66 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        67 => {
             wire__crate__ffi__core__Core_transfer_progress_impl(port, ptr, rust_vec_len, data_len)
         }
-        67 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
+        68 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        68 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
-        69 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
+        69 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
+        70 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
+        71 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        71 => wire__crate__ffi__framing__frame_for_local_socket_impl(
+        72 => wire__crate__ffi__framing__frame_for_local_socket_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => {
+        73 => {
             wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -5147,6 +5248,49 @@ impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::SignalingTopicsDto>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::TransferEventDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.peer_device_id.into_into_dart().into_dart(),
+            self.file_id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::TransferEventDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::TransferEventDto>
+    for crate::ffi::types::TransferEventDto
+{
+    fn into_into_dart(self) -> crate::ffi::types::TransferEventDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::TransferEventKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::OfferAppeared => 0.into_dart(),
+            Self::OfferGone => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::TransferEventKind
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::TransferEventKind>
+    for crate::ffi::types::TransferEventKind
+{
+    fn into_into_dart(self) -> crate::ffi::types::TransferEventKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::ffi::types::TransferProgressDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5199,6 +5343,18 @@ impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpa
 impl SseEncode
     for StreamSink<
         crate::ffi::types::SessionStateEventDto,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
+impl SseEncode
+    for StreamSink<
+        crate::ffi::types::TransferEventDto,
         flutter_rust_bridge::for_generated::SseCodec,
     >
 {
@@ -5658,6 +5814,31 @@ impl SseEncode for crate::ffi::types::SignalingTopicsDto {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.publish_topic, serializer);
         <Vec<String>>::sse_encode(self.subscribe_topics, serializer);
+    }
+}
+
+impl SseEncode for crate::ffi::types::TransferEventDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.peer_device_id, serializer);
+        <Vec<u8>>::sse_encode(self.file_id, serializer);
+        <crate::ffi::types::TransferEventKind>::sse_encode(self.kind, serializer);
+    }
+}
+
+impl SseEncode for crate::ffi::types::TransferEventKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::ffi::types::TransferEventKind::OfferAppeared => 0,
+                crate::ffi::types::TransferEventKind::OfferGone => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

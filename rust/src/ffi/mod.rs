@@ -27,5 +27,6 @@ pub use error::FfiError;
 pub use types::{
     ContactDto, DeliveryStateDto, DiscoveryBeaconsDto, FileOfferDto, IncomingMessageDto,
     MessageDirectionDto, MessageDto, SafetyNumberDto, SealedMessageDto, SendFileStartedDto,
-    SessionStateEventDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto, TransferProgressDto,
+    SessionStateEventDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto, TransferEventDto,
+    TransferEventKind, TransferProgressDto,
 };

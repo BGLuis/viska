@@ -5,6 +5,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
@@ -14,6 +15,7 @@ import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'lib.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -69,7 +71,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1995392573;
+  int get rustContentHash => 1015574605;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -396,6 +398,10 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Stream<SessionStateEventDto> crateFfiCoreCoreSubscribeSessionEvents({
+    required Core that,
+  });
+
+  Stream<TransferEventDto> crateFfiCoreCoreSubscribeTransferEvents({
     required Core that,
   });
 
@@ -2869,6 +2875,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Stream<TransferEventDto> crateFfiCoreCoreSubscribeTransferEvents({
+    required Core that,
+  }) {
+    final sink = RustStreamSink<TransferEventDto>();
+    unawaited(
+      handler.executeNormal(
+        NormalTask(
+          callFfi: (port_) {
+            final serializer = SseSerializer(generalizedFrbRustBinding);
+            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerCore(
+              that,
+              serializer,
+            );
+            sse_encode_StreamSink_transfer_event_dto_Sse(sink, serializer);
+            pdeCallFfi(
+              generalizedFrbRustBinding,
+              serializer,
+              funcId: 65,
+              port: port_,
+            );
+          },
+          codec: SseCodec(
+            decodeSuccessData: sse_decode_unit,
+            decodeErrorData: sse_decode_ffi_error,
+          ),
+          constMeta: kCrateFfiCoreCoreSubscribeTransferEventsConstMeta,
+          argValues: [that, sink],
+          apiImpl: this,
+        ),
+      ),
+    );
+    return sink.stream;
+  }
+
+  TaskConstMeta get kCrateFfiCoreCoreSubscribeTransferEventsConstMeta =>
+      const TaskConstMeta(
+        debugName: "Core_subscribe_transfer_events",
+        argNames: ["that", "sink"],
+      );
+
+  @override
   Future<int> crateFfiCoreCoreSweepExpiredMessages({required Core that}) {
     return handler.executeNormal(
       NormalTask(
@@ -2881,7 +2928,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 65,
+            funcId: 66,
             port: port_,
           );
         },
@@ -2919,7 +2966,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 66,
+            funcId: 67,
             port: port_,
           );
         },
@@ -2957,7 +3004,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 67,
+            funcId: 68,
             port: port_,
           );
         },
@@ -2991,7 +3038,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 68,
+            funcId: 69,
             port: port_,
           );
         },
@@ -3028,7 +3075,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 69,
+            funcId: 70,
             port: port_,
           );
         },
@@ -3062,7 +3109,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 70,
+            funcId: 71,
             port: port_,
           );
         },
@@ -3097,7 +3144,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 71,
+            funcId: 72,
             port: port_,
           );
         },
@@ -3127,7 +3174,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 72,
+            funcId: 73,
             port: port_,
           );
         },
@@ -3189,6 +3236,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   RustStreamSink<SessionStateEventDto>
   dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    throw UnimplementedError();
+  }
+
+  @protected
+  RustStreamSink<TransferEventDto> dco_decode_StreamSink_transfer_event_dto_Sse(
+    dynamic raw,
+  ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     throw UnimplementedError();
   }
@@ -3625,6 +3680,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  TransferEventDto dco_decode_transfer_event_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return TransferEventDto(
+      peerDeviceId: dco_decode_list_prim_u_8_strict(arr[0]),
+      fileId: dco_decode_list_prim_u_8_strict(arr[1]),
+      kind: dco_decode_transfer_event_kind(arr[2]),
+    );
+  }
+
+  @protected
+  TransferEventKind dco_decode_transfer_event_kind(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return TransferEventKind.values[raw as int];
+  }
+
+  @protected
   TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -3720,6 +3794,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @protected
   RustStreamSink<SessionStateEventDto>
   sse_decode_StreamSink_session_state_event_dto_Sse(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    throw UnimplementedError('Unreachable ()');
+  }
+
+  @protected
+  RustStreamSink<TransferEventDto> sse_decode_StreamSink_transfer_event_dto_Sse(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -4290,6 +4372,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  TransferEventDto sse_decode_transfer_event_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_peerDeviceId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_fileId = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_kind = sse_decode_transfer_event_kind(deserializer);
+    return TransferEventDto(
+      peerDeviceId: var_peerDeviceId,
+      fileId: var_fileId,
+      kind: var_kind,
+    );
+  }
+
+  @protected
+  TransferEventKind sse_decode_transfer_event_kind(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return TransferEventKind.values[inner];
+  }
+
+  @protected
   TransferProgressDto sse_decode_transfer_progress_dto(
     SseDeserializer deserializer,
   ) {
@@ -4400,6 +4504,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.setupAndSerialize(
         codec: SseCodec(
           decodeSuccessData: sse_decode_session_state_event_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+      ),
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_StreamSink_transfer_event_dto_Sse(
+    RustStreamSink<TransferEventDto> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(
+      self.setupAndSerialize(
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_transfer_event_dto,
           decodeErrorData: sse_decode_AnyhowException,
         ),
       ),
@@ -4937,6 +5058,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_transfer_event_dto(
+    TransferEventDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.peerDeviceId, serializer);
+    sse_encode_list_prim_u_8_strict(self.fileId, serializer);
+    sse_encode_transfer_event_kind(self.kind, serializer);
+  }
+
+  @protected
+  void sse_encode_transfer_event_kind(
+    TransferEventKind self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_transfer_progress_dto(
     TransferProgressDto self,
     SseSerializer serializer,
@@ -5088,8 +5229,9 @@ class CoreImpl extends RustOpaque implements Core {
   /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
   /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
   /// deste método para acomodar isso quebraria `chat_controller.dart`
-  /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
-  /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+  /// sem necessidade. Uma oferta retida para confirmação chega pelo stream de
+  /// `Core::subscribe_transfer_events`; não é preciso consultar nada depois
+  /// de cada pacote. Falha ao processar um desses três
   /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
   /// política de silêncio de qualquer corpo malformado nesta fronteira, e
   /// nunca deveria acontecer vindo de um par honesto.
@@ -5644,6 +5786,12 @@ class CoreImpl extends RustOpaque implements Core {
   /// a anterior.
   Stream<SessionStateEventDto> subscribeSessionEvents() =>
       RustLib.instance.api.crateFfiCoreCoreSubscribeSessionEvents(that: this);
+
+  /// Passa a receber os eventos de oferta de arquivo, a partir das ofertas já
+  /// retidas (replay): um evento emitido antes da assinatura não se perderia
+  /// para o Dart. Uma nova assinatura substitui a anterior.
+  Stream<TransferEventDto> subscribeTransferEvents() =>
+      RustLib.instance.api.crateFfiCoreCoreSubscribeTransferEvents(that: this);
 
   /// Varre e destrói chaves de mensagens efêmeras expiradas.
   Future<int> sweepExpiredMessages() =>

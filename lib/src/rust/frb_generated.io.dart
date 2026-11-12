@@ -6,6 +6,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
+
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
@@ -13,6 +14,7 @@ import 'ffi/jitter.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'lib.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -50,6 +52,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<SessionStateEventDto>
   dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<TransferEventDto> dco_decode_StreamSink_transfer_event_dto_Sse(
+    dynamic raw,
+  );
 
   @protected
   String dco_decode_String(dynamic raw);
@@ -210,6 +217,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SignalingTopicsDto dco_decode_signaling_topics_dto(dynamic raw);
 
   @protected
+  TransferEventDto dco_decode_transfer_event_dto(dynamic raw);
+
+  @protected
+  TransferEventKind dco_decode_transfer_event_kind(dynamic raw);
+
+  @protected
   TransferProgressDto dco_decode_transfer_progress_dto(dynamic raw);
 
   @protected
@@ -254,6 +267,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   RustStreamSink<SessionStateEventDto>
   sse_decode_StreamSink_session_state_event_dto_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  RustStreamSink<TransferEventDto> sse_decode_StreamSink_transfer_event_dto_Sse(
     SseDeserializer deserializer,
   );
 
@@ -458,6 +476,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  TransferEventDto sse_decode_transfer_event_dto(SseDeserializer deserializer);
+
+  @protected
+  TransferEventKind sse_decode_transfer_event_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   TransferProgressDto sse_decode_transfer_progress_dto(
     SseDeserializer deserializer,
   );
@@ -510,6 +536,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_StreamSink_session_state_event_dto_Sse(
     RustStreamSink<SessionStateEventDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_transfer_event_dto_Sse(
+    RustStreamSink<TransferEventDto> self,
     SseSerializer serializer,
   );
 
@@ -777,6 +809,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_signaling_topics_dto(
     SignalingTopicsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transfer_event_dto(
+    TransferEventDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transfer_event_kind(
+    TransferEventKind self,
     SseSerializer serializer,
   );
 

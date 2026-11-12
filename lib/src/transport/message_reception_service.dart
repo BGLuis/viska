@@ -46,6 +46,15 @@ class SessionStateChangedEvent extends MessageReceptionEvent {
   bool get isEstablished => state == SessionStateKind.established;
 }
 
+/// O Rust avisou que uma oferta de arquivo retida para confirmação apareceu ou
+/// deixou de existir. É só um aviso de "releia": o nome e o tamanho continuam
+/// vindo de `unconfirmedFileOffers`, nunca do evento.
+class OffersChangedEvent extends MessageReceptionEvent {
+  const OffersChangedEvent(super.contactId, {required this.fileId, required this.kind});
+  final Uint8List fileId;
+  final TransferEventKind kind;
+}
+
 /// Arquivo genérico recebido, verificado por Merkle root e salvo em disco.
 class FileReceivedEvent extends MessageReceptionEvent {
   const FileReceivedEvent(
@@ -99,6 +108,14 @@ class MessageReceptionService {
         if (kDebugMode) debugPrint('[MessageReceptionService] Erro no stream de sessões: $e');
       },
     );
+    // Mesmo contrato do stream de sessões: um só destinatário no Rust, e a
+    // assinatura repete as ofertas já retidas.
+    _transferEventsSub = _core.subscribeTransferEvents().listen(
+      _handleTransferEvent,
+      onError: (Object e) {
+        if (kDebugMode) debugPrint('[MessageReceptionService] Erro no stream de transferências: $e');
+      },
+    );
     // Garante que qualquer transporte criado no roteador (por envio,
     // reconexão ou consulta) passe imediatamente a ser escutado por este serviço.
     _router.onTransportCreated = ensureListening;
@@ -128,6 +145,7 @@ class MessageReceptionService {
   /// laço apertado de reconexão quando o par está simplesmente offline.
   static const _retryDelay = Duration(seconds: 5);
   StreamSubscription<SessionStateEventDto>? _sessionEventsSub;
+  StreamSubscription<TransferEventDto>? _transferEventsSub;
   final Map<ContactId, SessionStateChangedEvent> _sessionStates = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingSubs = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingFileSubs = {};
@@ -173,6 +191,13 @@ class MessageReceptionService {
     if (event.isEstablished && !wasEstablished) {
       unawaited(_flushPending(contactId));
     }
+  }
+
+  void _handleTransferEvent(TransferEventDto dto) {
+    if (_disposed) return;
+    _eventsController.add(
+      OffersChangedEvent(ContactId(dto.peerDeviceId), fileId: dto.fileId, kind: dto.kind),
+    );
   }
 
   /// Stream de eventos filtrada para um contato específico.
@@ -620,6 +645,7 @@ class MessageReceptionService {
   Future<void> dispose() async {
     _disposed = true;
     unawaited(_sessionEventsSub?.cancel());
+    unawaited(_transferEventsSub?.cancel());
     for (final timer in _retryTimers.values) {
       timer.cancel();
     }

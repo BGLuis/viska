@@ -266,6 +266,9 @@ class _FakeCore implements Core {
   Stream<SessionStateEventDto> subscribeSessionEvents() => throw UnimplementedError();
 
   @override
+  Stream<TransferEventDto> subscribeTransferEvents() => throw UnimplementedError();
+
+  @override
   Future<int> sweepExpiredMessages() => throw UnimplementedError();
 
   @override
