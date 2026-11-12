@@ -682,8 +682,10 @@ negociação de papel, então não há handshake "simultâneo" a resolver, só o
 chamar `Session::open` antes do outro ver o resultado.
 
 Não há marcador de tipo no fio para distinguir "isto é handshake" de "isto é um envelope de sessão"
-— isso contradiria D4. A distinção é puramente o estado local: enquanto a sessão não é
-`Established`, todo byte recebido é tratado como mensagem de handshake.
+— isso contradiria D4. A distinção é o estado local mais o tamanho: INIT (1218 B) e RESP (1122 B)
+nunca têm o tamanho de um envelope (§6.3), então uma sessão em `AwaitingResponse` só tenta a RESP
+com bytes do tamanho dela e ignora o resto, e uma sessão `Established` reconhece a INIT de uma
+reabertura do par (§11.4).
 
 **Política de erro do handshake:** uma INIT malformada ou de tipo errado, recebida em
 `AwaitingPeerInit`, não muda o estado — `respond` é uma função livre que não consome nada do lado
@@ -703,7 +705,9 @@ reiniciou) em vez de continuar tentando indefinidamente.
 
 **Recuperação de uma sessão `Failed` (reset local):** `Failed` só sai de cena com uma sessão nova, e
 quem decide abri-la é a pessoa, pelo aviso do chat — nunca uma tentativa automática, que viraria laço
-de handshake depois de 8 falhas de AEAD. `Core::reset_session` descarta a sessão e abre outra com o
+de handshake depois de 8 falhas de AEAD. A exceção é a reabertura vinda do par (§11.4): uma sessão
+`Failed` aceita a INIT ou o `REOPEN` dele e volta a `Established` sem toque, porque o gatilho é ação
+do outro lado, nunca uma falha local. `Core::reset_session` descarta a sessão e abre outra com o
 mesmo par (não repete o pareamento, só o AKE de §4). Só age em `Failed` ou depois do limiar de §11.2;
 com a sessão `Established` sã ou em handshake não faz nada. Mensagens de texto que estavam em
 `Sending` voltam à fila (`pending`) e são cifradas de novo na sessão nova; a sessão que as selou foi
@@ -724,13 +728,8 @@ de existir (aceita, recusada, cancelada ou descartada no bloqueio do cofre); nom
 segredo continuam no Rust. A assinatura repete as ofertas já retidas, para o Dart não perder o que
 chegou antes dela.
 
-**Lacuna conhecida:** o reset é unilateral. Sem marcador de tipo no fio (D4), o par não é avisado:
-se ele seguir `Established`, a INIT nova é lida lá como envelope inválido e descartada em silêncio, e
-só passa a valer depois que a sessão dele também falhar (8 falhas) e for reaberta. Quem reabre como
-respondedor (`AwaitingPeerInit`) não envia nada, e uma INIT que o iniciador tenha enviado enquanto
-ele ainda estava `Failed` foi descartada: com os dois lados reabrindo em instantes diferentes, a INIT
-só é publicada de novo quando o transporte for recriado ou o iniciador reconectar de novo. Um sinal para o par depende de decisão de projeto
-compatível com D4 e com a deniabilidade (issue #78).
+O reset avisa o par: depois de `reset_session`, o app publica o que `connect_signal` devolver (a INIT
+ou um `REOPEN`, §11.4), e o par acompanha sem ação da pessoa.
 
 ### 11.2 Política de rotação do contador
 
@@ -755,3 +754,67 @@ AEAD), e uma segunda, só depois que o AEAD confirma a mensagem, com os valores 
 conhecidos — para que o commit aplique o estado correto. `receiving_key` já era idempotente em
 relação ao estado de confiança por desenho do próprio módulo `ratchet` (§5, ver o doc-comment de
 `crypto/ratchet.rs`); a camada de sessão só usa essa propriedade, não introduz nenhuma nova.
+
+### 11.4 Reabertura avisada ao par (D27)
+
+As sessões vivem só em memória: reiniciar o app, trancar o cofre ou tocar em reconectar descarta a
+sessão de um lado só. Sem aviso, o outro lado seguiria `Established` e leria a INIT nova como um
+envelope inválido; e quem reabre como respondedor não manda nada. Esta seção define como o par fica
+sabendo, sem marcador de tipo em claro (D4) e sem assinatura (D1).
+
+**Quem reabre como iniciador** publica a INIT ao conectar o canal, como em qualquer abertura.
+
+**Quem reabre como respondedor** publica um `REOPEN`:
+
+```
+REOPEN (1076 B, o tamanho de um envelope do bucket menor)
+= XChaCha20-Poly1305(K_reopen, nonce aleatório de 24 B,
+                     AAD = "viska-reopen-v1" ‖ dir,
+                     plaintext = u64_be(unix_time) ‖ padding CSPRNG até 1036 B)
+  no formato nonce ‖ ciphertext ‖ tag
+
+K_reopen = derive_key("viska-reopen-v1", X25519(IK_dh_local, IK_dh_peer))
+dir      = direção do emissor, como em §8.1 ("a2b" ou "b2a")
+```
+
+O receptor aceita o carimbo de tempo na mesma janela de §8.2 (120 s no passado, 60 s no futuro) e
+guarda em memória o nonce de cada sinal aceito enquanto a janela dura: o mesmo sinal não é aceito
+duas vezes. A direção no AAD impede que o sinal de um lado seja refletido de volta a ele. Só o
+iniciador aceita `REOPEN`; só o respondedor aceita INIT de reabertura.
+
+O respondedor emite `REOPEN` (a) uma vez quando o canal conecta com uma sessão recém-aberta em
+`AwaitingPeerInit`, e (b) de novo quando recebe algo que não é INIT enquanto espera, no máximo um a
+cada 10 s. Um iniciador em `AwaitingResponse` que recebe um `REOPEN` válido reenvia a sua INIT, com o
+mesmo limite.
+
+**O lado que não reabriu** (`Established` ou `Failed`) nunca derruba a sessão atual por causa de um
+sinal. Ele negocia uma **sessão candidata** ao lado dela:
+
+- recebeu uma INIT (somos respondedor): responde a RESP e guarda a candidata;
+- recebeu um `REOPEN` válido (somos iniciador): manda uma INIT nova e guarda a candidata; ao receber
+  a RESP, manda sob ela o primeiro envelope (`CONTROL_SUITES`).
+
+A candidata só substitui a sessão atual quando o primeiro AEAD sob ela abre (confirmação de chave,
+§4.4). A INIT não é autenticada e uma RESP também não prova nada sozinha, então uma INIT forjada custa
+uma RESP e nunca troca a sessão viva. Há uma candidata por contato; a mais nova substitui a anterior.
+Bytes recebidos são testados nesta ordem: INIT ou RESP pelo tamanho, a sessão atual, a candidata e,
+por último, `REOPEN`. Um sinal válido não conta para o limiar de 8 falhas de §11.1; um inválido conta.
+
+Enquanto a candidata tem menos de 30 s, nada de aplicação é cifrado: o texto fica `pending` e sai
+pela sessão nova assim que ela é promovida. Passado o prazo, a fila volta a sair pela sessão atual
+(a candidata continua podendo ser promovida se a confirmação chegar depois). Textos que estavam em
+`Sending` quando a candidata abriu viram `unknown` (mesma regra do trancamento, §11.1).
+
+**Confirmação nos dois sentidos.** Cada lado manda o seu `CONTROL_SUITES` (§10.2) uma vez por sessão,
+o mais cedo que puder: o iniciador logo depois de processar a RESP, o respondedor ao decifrar a
+primeira mensagem do iniciador (que é quando ganha cadeia de envio, §5.1). Esse par de anúncios é o
+que confirma a chave para os dois lados mesmo sem nenhuma mensagem da pessoa.
+
+**Geração.** Cada sessão tem um contador local de geração, incrementado quando a sessão é aberta no
+lugar de outra e quando uma candidata é promovida. Ele vai no evento de estado da sessão ao Dart, e é
+como quem dependia da sessão anterior (retomada de arquivo, issue #82) descobre que o par tem uma
+sessão nova mesmo quando o estado continua `Established`.
+
+**Interface.** `Core::receive_incoming` é a entrada única dos bytes do par e devolve a mensagem
+decifrada e, se houver, os bytes a mandar de volta (RESP, INIT, `REOPEN` ou `CONTROL_SUITES`).
+`Core::connect_signal` devolve o que publicar quando o canal conecta. Nenhum dos dois expõe segredo.
