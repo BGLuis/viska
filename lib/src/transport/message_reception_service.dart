@@ -212,6 +212,10 @@ class MessageReceptionService {
     final holdEnded = (previous?.renewing ?? false) && !event.renewing;
     if (event.isEstablished && (!wasEstablished || renewed || holdEnded)) {
       unawaited(_flushPending(contactId));
+      // Transferências paradas por bloqueio, reinício ou troca de sessão voltam
+      // a andar (docs/protocol.md §7.5). Com a sessão nova ainda segurando o
+      // envio, o Rust devolve vazio e o evento da promoção chama de novo.
+      if (!event.renewing) unawaited(resumeTransfers(contactId));
     }
     // O Rust não tem relógio: quando a candidata passa do prazo sem confirmar,
     // ninguém avisa. Drenar depois do prazo libera a fila pela sessão atual,
@@ -637,6 +641,103 @@ class MessageReceptionService {
         // Fica `Sending` até a Core reabrir ou travar; só dá para registrar.
         if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao devolver ${message.messageId} à fila: $e');
       }
+    }
+  }
+
+  /// Bombeamentos de envio em curso, por `file_id`: a retomada e a tela de
+  /// conversa podem pedir o mesmo envio, e dois laços sobre o mesmo emissor
+  /// mandariam cada símbolo duas vezes.
+  final Map<String, Future<void>> _pumps = {};
+
+  /// Manda os pedaços do envio `fileId` pelo canal `file` até o emissor
+  /// completar, esperando o `FILE_FEEDBACK` do par entre um bloco e outro. Se o
+  /// envio já está sendo bombeado, devolve o mesmo laço. Lança
+  /// [TransportUnavailableException] quando o transporte do contato cai.
+  Future<void> pumpOutgoing(ContactId contactId, Uint8List fileId) {
+    final hexId = _hex(fileId);
+    final running = _pumps[hexId];
+    if (running != null) return running;
+    // Corpo em bloco de propósito: `remove` devolve o próprio laço, e um
+    // `whenComplete` que recebe um `Future` espera por ele — esperaria a si mesmo.
+    final pump = _pumpOutgoing(contactId, fileId).whenComplete(() {
+      _pumps.remove(hexId);
+    });
+    _pumps[hexId] = pump;
+    return pump;
+  }
+
+  Future<void> _pumpOutgoing(ContactId contactId, Uint8List fileId) async {
+    // O roteador esquece o transporte que falhou, então trocar de instância (ou
+    // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
+    // `FILE_FEEDBACK` que não vem mais por um socket morto.
+    final transport = _router.transportFor(contactId);
+    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
+    // na checagem abaixo para sempre.
+    if (transport == null) throw const TransportUnavailableException();
+    while (true) {
+      // Sair em silêncio deixaria quem chamou marcar o envio como concluído.
+      if (_disposed || !identical(_router.transportFor(contactId), transport)) {
+        throw const TransportUnavailableException();
+      }
+      final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
+      if (chunk == null) {
+        final progress = await _core.transferProgress(fileId: fileId);
+        if (progress == null || progress.isComplete) return;
+        // Emissor esgotou o que tinha para o bloco atual — espera o
+        // `FILE_FEEDBACK` do receptor (processado como efeito colateral
+        // dentro de `Core.receiveIncoming`, já dirigido por
+        // `_handleIncomingRaw`) liberar o próximo bloco. Espera curta, não
+        // *polling* de descoberta — a novidade em si (oferta/conclusão) já
+        // chega por evento, isto só dá ritmo ao laço de envio.
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        continue;
+      }
+      await _router.sendFileToContact(contactId, chunk);
+    }
+  }
+
+  /// Retoma as transferências com o contato (docs/protocol.md §7.5): reenvia a
+  /// oferta que ainda não teve resposta, volta a bombear os envios e a mandar
+  /// `FILE_FEEDBACK` dos recebimentos. Pode ser chamada de novo sem efeito
+  /// colateral: o Rust mantém o que já está em memória e o bombeamento é
+  /// deduplicado por `file_id`.
+  Future<void> resumeTransfers(ContactId contactId) async {
+    if (_isPaused || _disposed) return;
+    final List<ResumedTransferDto> resumed;
+    try {
+      resumed = await _core.resumeTransfers(peerDeviceId: contactId.deviceId);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao retomar transferências de $contactId: $e');
+      return;
+    }
+    if (resumed.isEmpty) return;
+    // A mensagem do envio pode ter voltado de `failed` a `pending`.
+    _eventsController.add(MessageReceivedEvent(contactId));
+    for (final transfer in resumed) {
+      switch (transfer.direction) {
+        case ResumedDirectionDto.send:
+          unawaited(_resumeSend(contactId, transfer));
+        case ResumedDirectionDto.receive:
+          unawaited(watchIncomingTransfer(contactId, transfer.fileId));
+      }
+    }
+  }
+
+  Future<void> _resumeSend(ContactId contactId, ResumedTransferDto transfer) async {
+    final lease = await _foregroundService.acquire();
+    try {
+      final offer = transfer.sealedMetadata;
+      if (offer != null) await _router.sendToContact(contactId, offer);
+      await pumpOutgoing(contactId, transfer.fileId);
+      final messageId = transfer.messageId;
+      if (messageId != null) await _core.markMessageSent(messageId: messageId);
+      _eventsController.add(MessageReceivedEvent(contactId));
+    } catch (e) {
+      // A transferência continua no banco: a próxima sessão estabelecida
+      // tenta de novo, até concluir ou vencer o prazo de retenção.
+      if (kDebugMode) debugPrint('[MessageReceptionService] Envio retomado parou para $contactId: $e');
+    } finally {
+      await lease.release();
     }
   }
 

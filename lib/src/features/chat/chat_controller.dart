@@ -732,34 +732,11 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  Future<void> _pumpOutgoingChunks(Uint8List fileId) async {
-    // O roteador esquece o transporte que falhou, então trocar de instância (ou
-    // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
-    // `FILE_FEEDBACK` que não vem mais por um socket morto.
-    final transport = _router.transportFor(_contactId);
-    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
-    // na checagem abaixo para sempre.
-    if (transport == null) throw const TransportUnavailableException();
-    while (true) {
-      if (!identical(_router.transportFor(_contactId), transport)) {
-        throw const TransportUnavailableException();
-      }
-      final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
-      if (chunk == null) {
-        final progress = await _core.transferProgress(fileId: fileId);
-        if (progress == null || progress.isComplete) return;
-        // Emissor esgotou o que tinha para o bloco atual — espera o
-        // `FILE_FEEDBACK` do receptor (processado como efeito colateral
-        // dentro de `Core.receiveIncoming`, já dirigido por
-        // `_handleIncomingRaw`) liberar o próximo bloco. Espera curta, não
-        // *polling* de descoberta — a novidade em si (oferta/conclusão) já
-        // chega por evento, isto só dá ritmo ao laço de envio.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        continue;
-      }
-      await _router.sendFileToContact(_contactId, chunk);
-    }
-  }
+  /// O bombeamento mora no serviço de recepção, que também retoma envios
+  /// parados (docs/protocol.md §7.5): um laço só por `file_id`, mesmo que a
+  /// retomada e esta tela peçam o mesmo envio.
+  Future<void> _pumpOutgoingChunks(Uint8List fileId) =>
+      _receptionService.pumpOutgoing(_contactId, fileId);
 
   /// Toca uma nota de voz já pronta ([isVoiceNoteReady]) — remontagem em
   /// memória já aconteceu (D18); nada aqui grava em disco.

@@ -41,11 +41,8 @@ abstract class Core implements RustOpaqueInterface {
   Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
-  /// memória e o registro em `store`. Do lado receptor, também apaga o
-  /// `.staging` — mesma garantia de "abortar destrói a chave" de
-  /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
-  /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
-  /// foi fechado a cada bloco completado). Ver §7.5/D15.
+  /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
+  /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
   Future<void> cancelTransfer({required List<int> fileId});
 
   /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
@@ -180,8 +177,10 @@ abstract class Core implements RustOpaqueInterface {
   });
 
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-  /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
-  /// limpa a chave mestra nativa injetada.
+  /// memória, descarta os handles de transferência (e com eles as chaves em
+  /// RAM), fecha a conexão do SQLCipher e limpa a chave mestra nativa
+  /// injetada. As transferências continuam no banco, no `.staging` e em
+  /// `outgoing/`, cifradas, e retomam depois do desbloqueio (§7.5).
   ///
   /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
   /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
@@ -313,15 +312,32 @@ abstract class Core implements RustOpaqueInterface {
   /// provar a chave.
   ///
   /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-  /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
-  /// andamento com este contato são cancelados e marcados como falha, porque
-  /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+  /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+  /// arquivo não são tocados: não dependem da sessão (D15), e
+  /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
+  /// nova (§7.5).
   Future<SessionStatusDto> resetSession({required List<int> peerDeviceId});
 
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
     required String mnemonic,
+  });
+
+  /// Reconstrói e devolve as transferências com o contato que podem continuar
+  /// (§7.5). Chamar quando a sessão com ele chega a `Established`, inclusive
+  /// depois de trocada por outra (§11.4): pode ser chamada quantas vezes for,
+  /// pois um handle que já está em memória fica como está. Enquanto uma
+  /// sessão candidata segura o envio (§11.4), devolve vazio: a oferta selada
+  /// agora sairia pela sessão que o par acabou de perder.
+  ///
+  /// Um envio cuja cópia em `outgoing/` sumiu ou não bate mais com a raiz, e
+  /// um recebimento cujo `.staging` não reabre, são encerrados como falha em
+  /// vez de devolvidos. Um envio sem resposta volta com o `FILE_METADATA`
+  /// selado de novo na sessão atual, porque o original pode ter se perdido
+  /// com a anterior. Sem sessão estabelecida, devolve vazio e não mexe em nada.
+  Future<List<ResumedTransferDto>> resumeTransfers({
+    required List<int> peerDeviceId,
   });
 
   /// Safety number entre esta identidade e um contato já pareado.
@@ -453,7 +469,9 @@ abstract class Core implements RustOpaqueInterface {
   });
 
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
-  /// mestre e reabre a conexão do SQLCipher.
+  /// mestre e reabre a conexão do SQLCipher. As transferências só voltam a
+  /// andar em `Core::resume_transfers`, quando a sessão com o contato estiver
+  /// de pé; aqui só se aplicam os prazos de retenção.
   Future<void> unlock();
 
   /// Define se o contato foi verificado (true/false) após conferência do Safety Number.

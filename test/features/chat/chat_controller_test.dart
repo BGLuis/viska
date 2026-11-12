@@ -501,6 +501,11 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
   Future<TransferProgressDto?> transferProgress({required List<int> fileId}) async =>
       transferProgressHandler?.call(Uint8List.fromList(fileId));
 
+  /// O serviço de recepção retoma ao ver a sessão estabelecida; estes testes
+  /// não têm nada a retomar.
+  @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async => [];
+
   @override
   Future<Uint8List> finishReceiveAudio({
     required List<int> peerDeviceId,

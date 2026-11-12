@@ -262,6 +262,26 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
   @override
   Future<void> markMessageDelivered({required int messageId}) async {}
 
+  /// O que `resumeTransfers` devolve, como o Rust depois de reconstruir.
+  List<ResumedTransferDto> resumable = [];
+  final resumeCalls = <Uint8List>[];
+
+  @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async {
+    resumeCalls.add(Uint8List.fromList(peerDeviceId));
+    return resumable;
+  }
+
+  /// Pedaços que o emissor ainda tem a mandar, na ordem.
+  final outgoingChunks = <Uint8List>[];
+  final nextChunkCalls = <Uint8List>[];
+
+  @override
+  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) async {
+    nextChunkCalls.add(Uint8List.fromList(fileId));
+    return outgoingChunks.isEmpty ? null : outgoingChunks.removeAt(0);
+  }
+
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -458,6 +478,112 @@ void main() {
       await pumpEventQueue();
 
       expect(transport.sendCalls.where((b) => listEquals(b, [110])), hasLength(1));
+    });
+
+    group('resuming transfers (§7.5)', () {
+      final fileId = Uint8List.fromList(List.filled(16, 0xF1));
+
+      ResumedTransferDto send({Uint8List? offer, int? messageId = 5}) => ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.send,
+            sealedMetadata: offer,
+            messageId: messageId,
+          );
+
+      test('established session resends the offer, pumps the send and marks it sent', () async {
+        core.resumable = [send(offer: Uint8List.fromList([0x0F]))];
+        core.outgoingChunks.addAll([Uint8List.fromList([1]), Uint8List.fromList([2])]);
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.resumeCalls, isNotEmpty);
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), hasLength(1));
+        expect(transport.sendFileCalls, [Uint8List.fromList([1]), Uint8List.fromList([2])]);
+        expect(core.markSentCalls, contains(5));
+      });
+
+      test('a resumed receive starts sending FILE_FEEDBACK again', () async {
+        core.resumable = [
+          ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.receive,
+            sealedMetadata: null,
+            messageId: null,
+          ),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 2,
+          bytesDone: BigInt.from(10),
+          isComplete: false,
+        );
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.fileFeedbackCalls, greaterThan(0));
+      });
+
+      test('nothing resumes while a renewal holds the queue, and the promotion resumes', () async {
+        core.sessionState = SessionStateKind.established;
+        core.renewing = true;
+        await service.start();
+        await pumpEventQueue();
+        core.resumeCalls.clear();
+
+        core.renewing = false;
+        core.generation = 1;
+        await pumpEventQueue();
+
+        expect(core.resumeCalls, isNotEmpty);
+      });
+
+      test('a session drop and a new establishment resume again', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        final before = core.resumeCalls.length;
+
+        // Bloqueio do cofre: a sessão some e a geração recomeça do zero.
+        core.dropSession();
+        core.sessionState = SessionStateKind.established;
+        await pumpEventQueue();
+
+        expect(core.resumeCalls.length, greaterThan(before));
+      });
+
+      test('a send that stops with the transport is not marked sent', () async {
+        core.resumable = [send()];
+        core.outgoingChunks.add(Uint8List.fromList([1]));
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 0,
+          totalBlocks: 2,
+          bytesDone: BigInt.zero,
+          isComplete: false,
+        );
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        // O emissor espera feedback; o transporte cai nesse meio-tempo.
+        await router.closeContact(contact);
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+
+        expect(core.markSentCalls, isNot(contains(5)));
+      });
+
+      test('pumpOutgoing shares one loop per file_id', () async {
+        core.outgoingChunks.addAll([Uint8List.fromList([7]), Uint8List.fromList([8])]);
+        await service.start();
+        await pumpEventQueue();
+
+        final first = service.pumpOutgoing(contact, fileId);
+        final second = service.pumpOutgoing(contact, fileId);
+        expect(identical(first, second), isTrue);
+        await Future.wait([first, second]);
+
+        expect(transport.sendFileCalls, [Uint8List.fromList([7]), Uint8List.fromList([8])]);
+      });
     });
 
     test('handshake completion flushes pending messages and marks them sent', () async {

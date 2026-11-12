@@ -919,19 +919,27 @@ pub fn open_outgoing_copy(
     manifest: &Manifest,
     transfer_secret: &[u8],
 ) -> Result<StagingReader> {
-    let open = || {
-        StagingReader::open(
-            outgoing_dir,
-            manifest.file_id,
-            keys::derive_outgoing_staging_key(transfer_secret, &manifest.file_id),
-            manifest.file_size,
-        )
-    };
-    let mut check = open()?;
+    let mut check = read_outgoing_copy(outgoing_dir, manifest, transfer_secret)?;
     // O leitor para em `file_size`, então a raiz cobre exatamente o que será
     // enviado; bytes sobrando no fim do arquivo nunca saem.
     merkle::verify_root(&merkle::merkle_root(&mut check)?, &manifest.merkle_root)?;
-    open()
+    read_outgoing_copy(outgoing_dir, manifest, transfer_secret)
+}
+
+/// Abre a cópia sem conferir a raiz — só para quem acabou de gravá-la com
+/// [`stage_outgoing_copy`] e já tem a raiz dela em mãos. Uma página adulterada
+/// ainda falha na leitura, pelo AEAD.
+pub fn read_outgoing_copy(
+    outgoing_dir: &Path,
+    manifest: &Manifest,
+    transfer_secret: &[u8],
+) -> Result<StagingReader> {
+    StagingReader::open(
+        outgoing_dir,
+        manifest.file_id,
+        keys::derive_outgoing_staging_key(transfer_secret, &manifest.file_id),
+        manifest.file_size,
+    )
 }
 
 /// Lê de `inner` e grava cada pedaço lido na cópia cifrada — o que permite

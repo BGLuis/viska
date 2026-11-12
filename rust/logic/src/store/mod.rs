@@ -488,6 +488,16 @@ impl Store {
         self.with_conn(|conn| transfers::find(conn, file_id))
     }
 
+    /// Todas as transferências persistidas, das mais antigas para as mais novas.
+    pub fn list_all_file_transfers(&self) -> Result<Vec<transfers::StoredTransfer>> {
+        self.with_conn(transfers::list_all)
+    }
+
+    /// Registra que a oferta da transferência foi respondida (§7.7 item 5).
+    pub fn mark_file_transfer_answered(&self, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| transfers::mark_answered(conn, file_id))
+    }
+
     /// Transferências de um contato numa direção.
     pub fn list_file_transfers_for_contact(
         &self,

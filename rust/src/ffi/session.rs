@@ -30,7 +30,6 @@ use crate::session_events::{PublishOnExit, SessionEventSink, SessionView};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
 use viska_proto::wire::plaintext::InnerPlaintext;
-use viska_proto::store::transfers::Direction as TransferDirection;
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
 
@@ -75,9 +74,10 @@ impl Core {
     /// provar a chave.
     ///
     /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-    /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
-    /// andamento com este contato são cancelados e marcados como falha, porque
-    /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+    /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+    /// arquivo não são tocados: não dependem da sessão (D15), e
+    /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
+    /// nova (§7.5).
     pub fn reset_session(&self, peer_device_id: Vec<u8>) -> Result<SessionStatusDto, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
@@ -97,7 +97,6 @@ impl Core {
         // velha continua lá e a pessoa pode tentar de novo, em vez de ficar com
         // uma sessão nova e textos presos em `Sending`.
         if had_session {
-            self.abort_outgoing_transfers(&device_id)?;
             self.store.requeue_sending_messages_for_contact(&device_id)?;
         }
 
@@ -118,39 +117,6 @@ impl Core {
         self.open_session(&mut sessions, device_id, generation)
     }
 
-    /// Cancela os envios de arquivo e voz deste contato e falha as mensagens.
-    fn abort_outgoing_transfers(&self, device_id: &[u8; DEVICE_ID_LEN]) -> Result<(), FfiError> {
-        let outgoing = self
-            .store
-            .list_file_transfers_for_contact(device_id, TransferDirection::Sending)?;
-        {
-            let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
-            for transfer in &outgoing {
-                transfers.remove(&transfer.file_id);
-            }
-        }
-        {
-            let mut unanswered = self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?;
-            for transfer in &outgoing {
-                unanswered.remove(&transfer.file_id);
-            }
-        }
-        // Antes de apagar as linhas, e por `file_id` delas: a mensagem de um envio
-        // concluído também fica `Sent` e sem linha, então só a linha ainda
-        // existente prova que este envio foi cortado. A mensagem é marcada logo antes
-        // de a sua linha ser apagada: se uma etapa falhar, as linhas que sobraram
-        // deixam o reset repetido refazer o resto.
-        for transfer in &outgoing {
-            self.store
-                .mark_message_failed_by_file_id(&transfer.file_id, device_id)?;
-            self.store.delete_file_transfer(&transfer.file_id)?;
-        }
-        let active: std::collections::HashSet<_> =
-            self.store.list_active_file_transfer_ids()?.into_iter().collect();
-        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &active)?;
-        self.store.fail_pending_transfers_for_contact(device_id)?;
-        Ok(())
-    }
 
     /// Passa a receber os eventos de mudança de estado das sessões, a partir
     /// do estado atual de cada uma (replay): um evento emitido antes da
@@ -630,7 +596,7 @@ impl Core {
         let device_id = to_device_id(peer_device_id)?;
         // A expiração não tem timer: quem olha a timeline é quem a dispara.
         // Falha da varredura não pode esconder a timeline.
-        let _ = self.expire_unanswered_offers();
+        let _ = self.enforce_transfer_deadlines();
         let stored = self.store.list_messages_paginated(&device_id, since_id, limit)?;
         Ok(stored.into_iter().map(message_dto).collect())
     }

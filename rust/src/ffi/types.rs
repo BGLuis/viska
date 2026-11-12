@@ -243,6 +243,31 @@ pub struct SendFileStartedDto {
     pub message_id: i64,
 }
 
+/// De que lado está este aparelho numa transferência retomada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumedDirectionDto {
+    /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
+    Send,
+    /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
+    Receive,
+}
+
+/// Uma transferência pronta para continuar com o contato — `Core::resume_transfers`
+/// (§7.5). Nada aqui é segredo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumedTransferDto {
+    pub file_id: Vec<u8>,
+    pub direction: ResumedDirectionDto,
+    /// O `FILE_METADATA` selado na sessão atual, para reenviar pelo canal
+    /// `control` — só num envio cuja oferta ainda não teve resposta, que pode
+    /// ter se perdido junto com a sessão anterior. O receptor ignora a cópia
+    /// de uma oferta que já conhece.
+    pub sealed_metadata: Option<Vec<u8>>,
+    /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
+    /// bombeamento terminar. `None` no recebimento.
+    pub message_id: Option<i64>,
+}
+
 /// Como [`SendFileStartedDto`], para `Core::start_send_audio` — carrega
 /// também o `message_id` da linha `Pending` já inserida na timeline única
 /// (Fase 5), para quem chama poder marcá-la `Sent` depois
