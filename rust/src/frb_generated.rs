@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1015574605;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1763982849;
 
 // Section: executor
 
@@ -3809,6 +3809,78 @@ fn wire__crate__ffi__framing__frame_for_local_socket_impl(
         },
     )
 }
+fn wire__crate__ffi__pin__pin_check_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "pin_check",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_pin = <String>::sse_decode(&mut deserializer);
+            let api_normal_hash = <Option<String>>::sse_decode(&mut deserializer);
+            let api_duress_hash = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>(crate::ffi::pin::pin_check(
+                        api_pin,
+                        api_normal_hash,
+                        api_duress_hash,
+                    ))?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__ffi__pin__pin_hash_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "pin_hash",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_pin = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let output_ok = crate::ffi::pin::pin_hash(api_pin)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4330,6 +4402,31 @@ impl SseDecode for Option<Vec<u8>> {
     }
 }
 
+impl SseDecode for crate::ffi::pin::PinCheckDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_matched = <crate::ffi::pin::PinMatchDto>::sse_decode(deserializer);
+        let mut var_needsRehash = <bool>::sse_decode(deserializer);
+        return crate::ffi::pin::PinCheckDto {
+            matched: var_matched,
+            needs_rehash: var_needsRehash,
+        };
+    }
+}
+
+impl SseDecode for crate::ffi::pin::PinMatchDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::ffi::pin::PinMatchDto::NoMatch,
+            1 => crate::ffi::pin::PinMatchDto::Normal,
+            2 => crate::ffi::pin::PinMatchDto::Duress,
+            _ => unreachable!("Invalid variant for PinMatchDto: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for (Option<Vec<u8>>, Vec<u8>) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4776,7 +4873,9 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        73 => {
+        73 => wire__crate__ffi__pin__pin_check_impl(port, ptr, rust_vec_len, data_len),
+        74 => wire__crate__ffi__pin__pin_hash_impl(port, ptr, rust_vec_len, data_len),
+        75 => {
             wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -5050,6 +5149,43 @@ impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::MessageKindDto>
     for crate::ffi::types::MessageKindDto
 {
     fn into_into_dart(self) -> crate::ffi::types::MessageKindDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::pin::PinCheckDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.matched.into_into_dart().into_dart(),
+            self.needs_rehash.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::ffi::pin::PinCheckDto {}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::pin::PinCheckDto>
+    for crate::ffi::pin::PinCheckDto
+{
+    fn into_into_dart(self) -> crate::ffi::pin::PinCheckDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::pin::PinMatchDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::NoMatch => 0.into_dart(),
+            Self::Normal => 1.into_dart(),
+            Self::Duress => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::ffi::pin::PinMatchDto {}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::pin::PinMatchDto>
+    for crate::ffi::pin::PinMatchDto
+{
+    fn into_into_dart(self) -> crate::ffi::pin::PinMatchDto {
         self
     }
 }
@@ -5721,6 +5857,31 @@ impl SseEncode for Option<Vec<u8>> {
         if let Some(value) = self {
             <Vec<u8>>::sse_encode(value, serializer);
         }
+    }
+}
+
+impl SseEncode for crate::ffi::pin::PinCheckDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::ffi::pin::PinMatchDto>::sse_encode(self.matched, serializer);
+        <bool>::sse_encode(self.needs_rehash, serializer);
+    }
+}
+
+impl SseEncode for crate::ffi::pin::PinMatchDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::ffi::pin::PinMatchDto::NoMatch => 0,
+                crate::ffi::pin::PinMatchDto::Normal => 1,
+                crate::ffi::pin::PinMatchDto::Duress => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

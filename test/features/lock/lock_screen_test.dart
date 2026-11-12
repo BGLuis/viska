@@ -5,6 +5,8 @@ import 'package:viska/src/features/lock/lock_controller.dart';
 import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 
+import 'fake_pin_hasher.dart';
+
 class _FakeCore implements Core {
   @override
   Future<void> unlock() async {}
@@ -48,6 +50,7 @@ void main() {
   ) async {
     final localAuth = _FakeLocalAuthentication(shouldSucceed: false);
     final controller = LockController(
+      pinHasher: FakePinHasher(),
       core: _FakeCore(),
       appDirPath: '/tmp/viska_test',
       localAuth: localAuth,
@@ -81,6 +84,7 @@ void main() {
   ) async {
     final localAuth = _FakeLocalAuthentication(shouldSucceed: false);
     final controller = LockController(
+      pinHasher: FakePinHasher(),
       core: _FakeCore(),
       appDirPath: '/tmp/viska_test_pin6',
       localAuth: localAuth,

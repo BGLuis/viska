@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:path/path.dart' as p;
+import 'package:viska/src/features/lock/pin_hasher.dart';
 import 'package:viska/src/features/lock/security_channel.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
@@ -32,8 +32,10 @@ class LockController with WidgetsBindingObserver {
     this.exitFn,
     this.sendLockNotices,
     DateTime Function()? clock,
+    PinHasher pinHasher = const RustPinHasher(),
   })  : _localAuth = localAuth ?? LocalAuthentication(),
-        _clock = clock ?? DateTime.now {
+        _clock = clock ?? DateTime.now,
+        _pinHasher = pinHasher {
     instance = this;
     WidgetsBinding.instance.addObserver(this);
     _resetInactivityTimer();
@@ -66,6 +68,7 @@ class LockController with WidgetsBindingObserver {
 
   final LocalAuthentication _localAuth;
   final DateTime Function() _clock;
+  final PinHasher _pinHasher;
 
   /// Hook para simulação/interceptação de encerramento do processo em testes.
   void Function(int code)? exitFn;
@@ -149,19 +152,29 @@ class LockController with WidgetsBindingObserver {
   bool get hasNormalPin => _normalPinHash != null;
   bool get hasDuressPin => _duressPinHash != null;
 
-  static String _hashPin(String pin) {
-    return sha256.convert(utf8.encode('viska-pin-v1:$pin')).toString();
+  /// O PIN de Coação ainda está no formato legado (SHA-256 sem sal nem custo).
+  /// Só o PIN digitado pode ser migrado, e o de coação quase nunca é digitado:
+  /// a tela de Ajustes usa isto para pedir que o dono o redefina.
+  bool get duressPinNeedsReset {
+    final hash = _duressPinHash;
+    return hash != null && isLegacyPinHash(hash);
   }
 
-  bool isNormalPin(String pin) {
-    if (_normalPinHash == null) return false;
-    return _normalPinHash == _hashPin(pin);
+  Future<PinMatchDto> _matchPin(String pin) async {
+    final result = await _pinHasher.check(
+      pin,
+      normalHash: _normalPinHash,
+      duressHash: _duressPinHash,
+    );
+    return result.matched;
   }
 
-  bool isDuressPin(String pin) {
-    if (_duressPinHash == null) return false;
-    return _duressPinHash == _hashPin(pin);
-  }
+  Future<bool> isNormalPin(String pin) async =>
+      _normalPinHash != null && await _matchPin(pin) == PinMatchDto.normal;
+
+  @visibleForTesting
+  Future<bool> isDuressPin(String pin) async =>
+      _duressPinHash != null && await _matchPin(pin) == PinMatchDto.duress;
 
   Future<void> _loadSecurityConfig() async {
     try {
@@ -233,21 +246,14 @@ class LockController with WidgetsBindingObserver {
     final normal = normalPin == null ? null : _validatedPin(normalPin);
     final duress = duressPin == null ? null : _validatedPin(duressPin);
 
-    final nextNormalHash = normal == null ? _normalPinHash : _hashPin(normal);
+    final hasNextNormal = normal != null || _normalPinHash != null;
+    final hasNextDuress = duress != null || _duressPinHash != null;
     final nextNormalLength = normal == null ? _normalPinLength : normal.length;
-    final nextDuressHash = duress == null ? _duressPinHash : _hashPin(duress);
     final nextDuressLength = duress == null ? _duressPinLength : duress.length;
 
-    if (nextDuressHash != null) {
-      if (nextNormalHash == null) {
+    if (hasNextDuress) {
+      if (!hasNextNormal) {
         throw const PinConfigException('Configure primeiro o PIN Normal.');
-      }
-      // Coação igual ao Normal faria o próprio PIN do dono disparar a defesa
-      // (a coação é testada primeiro no desbloqueio).
-      if (nextDuressHash == nextNormalHash) {
-        throw const PinConfigException(
-          'O PIN de Coação não pode ser igual ao PIN Normal.',
-        );
       }
       // A tela de bloqueio envia o PIN sozinha ao atingir o tamanho esperado;
       // com tamanhos diferentes o mais longo nunca chegaria a ser digitado, e
@@ -257,14 +263,43 @@ class LockController with WidgetsBindingObserver {
           'O PIN de Coação precisa ter a mesma quantidade de dígitos do PIN Normal.',
         );
       }
+      // Coação igual ao Normal faria o próprio PIN do dono disparar a defesa
+      // (a coação prevalece no desbloqueio). Com sal por hash, a igualdade não
+      // aparece comparando hashes: o PIN novo é verificado contra o gravado.
+      if (await _pinsCollide(normal: normal, duress: duress)) {
+        throw const PinConfigException(
+          'O PIN de Coação não pode ser igual ao PIN Normal.',
+        );
+      }
     }
 
-    _normalPinHash = nextNormalHash;
+    final newNormalHash = normal == null ? null : await _pinHasher.hash(normal);
+    final newDuressHash = duress == null ? null : await _pinHasher.hash(duress);
+
+    // O PIN mantido é lido só agora, depois das derivações: uma migração que
+    // terminou nesse meio-tempo não pode ser desfeita pelo valor antigo.
+    _normalPinHash = newNormalHash ?? _normalPinHash;
     _normalPinLength = nextNormalLength;
-    _duressPinHash = nextDuressHash;
+    _duressPinHash = newDuressHash ?? _duressPinHash;
     _duressPinLength = nextDuressLength;
     if (actionMode != null) duressActionMode = actionMode;
     await _saveSecurityConfig();
+  }
+
+  /// Cada verificação aqui é uma checagem completa (duas derivações Argon2id);
+  /// salvar uma troca na tela de Ajustes custa alguns segundos por isso, o que
+  /// é aceitável numa operação rara e com indicador de progresso.
+  Future<bool> _pinsCollide({String? normal, String? duress}) async {
+    if (normal != null && duress != null) return normal == duress;
+    if (duress != null) {
+      final r = await _pinHasher.check(duress, normalHash: _normalPinHash);
+      return r.matched == PinMatchDto.normal;
+    }
+    if (normal != null && _duressPinHash != null) {
+      final r = await _pinHasher.check(normal, duressHash: _duressPinHash);
+      return r.matched == PinMatchDto.duress;
+    }
+    return false;
   }
 
   /// Remove o PIN Normal e o de Coação.
@@ -299,7 +334,8 @@ class LockController with WidgetsBindingObserver {
   /// Verdadeiro quando [pin] coincide com algum PIN configurado. A tela de
   /// bloqueio usa isso para não enviar cedo um PIN mais curto que o outro em
   /// configurações antigas, gravadas antes de os tamanhos serem igualados.
-  bool matchesAnyPin(String pin) => isNormalPin(pin) || isDuressPin(pin);
+  Future<bool> matchesAnyPin(String pin) async =>
+      await _matchPin(pin) != PinMatchDto.noMatch;
 
   Future<void> _registerFailedPinAttempt() async {
     _failedPinAttempts++;
@@ -427,8 +463,24 @@ class LockController with WidgetsBindingObserver {
     if (pinRetryDelay > Duration.zero) return false;
 
     final trimmed = pin.trim();
+    // Os hashes conferidos, para que a migração só regrave se ninguém os
+    // trocou desde a verificação.
+    final checkedNormal = _normalPinHash;
+    final checkedDuress = _duressPinHash;
+    final PinCheckDto result;
+    try {
+      result = await _pinHasher.check(
+        trimmed,
+        normalHash: checkedNormal,
+        duressHash: checkedDuress,
+      );
+    } catch (_) {
+      // Falha interna da derivação não é palpite errado do usuário: não conta
+      // tentativa, só recusa.
+      return false;
+    }
 
-    if (isDuressPin(trimmed)) {
+    if (result.matched == PinMatchDto.duress) {
       if (duressActionMode == 0) {
         // Destruição Silenciosa: crypto-shredding imediato e término inesperado
         await emergencyErase();
@@ -439,21 +491,56 @@ class LockController with WidgetsBindingObserver {
         }
         return false;
       } else {
-        // Modo 2: Alterna para o cofre falso (Decoy Vault)
+        // Modo 2: Alterna para o cofre falso (Decoy Vault). A migração vem
+        // depois da troca de tela, como no PIN normal: antes, o PIN de coação
+        // legado responderia mais devagar que o normal já migrado.
         await _resetFailedPinAttempts();
         await activateDecoyVault();
+        if (result.needsRehash) {
+          await _migratePinHash(trimmed, verified: checkedDuress, isNormal: false);
+        }
         return true;
       }
     }
 
-    if (isNormalPin(trimmed)) {
+    if (result.matched == PinMatchDto.normal) {
       final unlocked = await _unlockWithoutBiometrics();
-      if (unlocked) await _resetFailedPinAttempts();
+      if (unlocked) {
+        await _resetFailedPinAttempts();
+        if (result.needsRehash) {
+          await _migratePinHash(trimmed, verified: checkedNormal, isNormal: true);
+        }
+      }
       return unlocked;
     }
 
     await _registerFailedPinAttempt();
     return false;
+  }
+
+  /// Migração sob demanda (formato legado ou custo abaixo do atual): o PIN em
+  /// claro só está disponível no desbloqueio. Melhor esforço — uma falha aqui
+  /// (memória, RNG) não pode impedir o desbloqueio nem o cofre falso; o hash
+  /// antigo continua válido e a migração é tentada de novo na próxima vez.
+  ///
+  /// Só grava se o hash daquela posição ainda for [verified], o que foi
+  /// conferido: se o dono trocou ou removeu os PINs desde a verificação,
+  /// gravar aqui ressuscitaria o PIN antigo.
+  Future<void> _migratePinHash(
+    String pin, {
+    required String? verified,
+    required bool isNormal,
+  }) async {
+    try {
+      final hash = await _pinHasher.hash(pin);
+      if ((isNormal ? _normalPinHash : _duressPinHash) != verified) return;
+      if (isNormal) {
+        _normalPinHash = hash;
+      } else {
+        _duressPinHash = hash;
+      }
+      await _saveSecurityConfig();
+    } catch (_) {}
   }
 
   /// Ativa o cofre falso com histórico inócuo.

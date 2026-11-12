@@ -116,38 +116,47 @@ rede (`wire/`, `crypto/ratchet.rs`) precisa nunca entrar em pânico nem corrompe
   aparelho (§1.4), e o aplicativo não promete negação plausível da existência de um segundo cofre.
   O que é observável hoje, sem decifrar nada:
   - `<app_dir>/security_config.json` é JSON em texto claro. A presença de `duress_pin_hash` e
-    `duress_pin_length` indica que há PIN de coação configurado (`lock_controller.dart:188-193`).
-    `duress_action_mode` é gravada sempre, mesmo sem PIN de coação (`lock_controller.dart:193`),
+    `duress_pin_length` indica que há PIN de coação configurado (`lock_controller.dart:203-205`).
+    `duress_action_mode` é gravada sempre, mesmo sem PIN de coação (`lock_controller.dart:206`),
     então por si só não distingue aparelhos; qualquer valor diferente de 0 (na prática 1) escolhe o
-    cofre falso (`lock_controller.dart:442-446`), e só tem efeito se houver PIN de coação.
+    cofre falso (`lock_controller.dart:479-497`), e só tem efeito se houver PIN de coação.
   - `<app_dir>/decoy/` guarda um `Core` próprio, com banco independente do real
     (`decoy/viska.sqlite3`, `rust/src/ffi/core.rs:24`; sem chave injetada pelo KeyStore, também um
     `decoy/master.key`, `rust/logic/src/store/keyring.rs:24,71`), aberto por `Core.open(appDir: decoyDir)`
-    (`lock_controller.dart:462,469`). O diretório é criado de forma preguiçosa, em
+    (`lock_controller.dart:532,539`). O diretório é criado de forma preguiçosa, em
     `activateDecoyVault`, chamada quando o PIN de coação é aceito com o modo cofre falso
-    (`lock_controller.dart:460-466`).
+    (`lock_controller.dart:530-536`).
   - **O que isso prova:** `decoy/` presente indica que o cofre falso foi ativado alguma vez neste
     aparelho. Ele persiste mesmo depois de o PIN de coação ser removido (`clearPins`,
-    `lock_controller.dart:271-279`, não o apaga), então não prova que há PIN de coação *hoje*. Pode
-    existir vazio se `Core.open` falhar (o erro é engolido, `lock_controller.dart:468-474`).
+    `lock_controller.dart:306-314`, não o apaga), então não prova que há PIN de coação *hoje*. Pode
+    existir vazio se `Core.open` falhar (o erro é engolido, `lock_controller.dart:538-544`).
     `duress_pin_hash` presente prova que existe um PIN de coação configurado.
   - **O que isso não prova:** `decoy/` ausente **não** prova que não há cofre falso configurado
     (basta o PIN de coação nunca ter sido digitado); `duress_*` ausente também não prova que nunca
     houve PIN de coação, porque `clearPins` os remove. Os arquivos não dizem, por si, o conteúdo de
     nenhum dos dois cofres.
-  - **Agravante já existente:** os PINs ficam em `security_config.json` como SHA-256 com prefixo
-    constante `viska-pin-v1:` (separação de domínio, não sal) e sem custo de derivação
-    (`_hashPin`, `lock_controller.dart:152-154`). Com PIN de 4 a 8 dígitos
-    (`lock_controller.dart:104-105`), quem lê o arquivo recupera os PINs por força bruta offline,
-    inclusive qual deles é o de coação, e pode editar `failed_pin_attempts` e
-    `pin_retry_not_before_ms`. O PIN é um portão de interface (a chave mestra fica fora desse
-    arquivo), então isso não abre o conteúdo cifrado, mas agrava a detectabilidade. Problema
-    próprio, **não corrigido aqui**.
+  - **Hash dos PINs (issue #90):** os PINs ficam em `security_config.json` como string PHC
+    Argon2id (m=64 MiB, t=3, p=1), com sal aleatório de 16 bytes por hash vindo do CSPRNG do SO
+    (`rust/logic/src/crypto/pin.rs`). A derivação roda no Rust; o PIN cruza o FFI só no sentido
+    Dart→Rust, por decisão explícita. O desbloqueio sempre faz duas derivações (PIN normal e de
+    coação, com uma de enchimento quando falta um deles), para que o tempo de resposta não denuncie
+    qual PIN foi digitado. Com PIN de 4 a 8 dígitos, a força bruta offline continua **possível**,
+    só mais cara: o ganho é de custo, não de impossibilidade. Os parâmetros não foram medidos em
+    aparelho Android modesto (teste `#[ignore]` `pin_kdf_benchmark`).
+  - **Hash legado:** instalações antigas guardam SHA-256 de `viska-pin-v1:<pin>`, sem sal nem custo.
+    Cada PIN migra para Argon2id quando é digitado e aceito no desbloqueio; até lá, continua
+    recuperável em segundos. Como o PIN de coação quase nunca é digitado, a tela de PIN e Coação
+    avisa o dono para redefini-lo enquanto ele estiver no formato legado.
+  - **Contador de tentativas editável:** `failed_pin_attempts` e `pin_retry_not_before_ms` continuam
+    em claro no mesmo arquivo, e quem o edita anula o atraso progressivo. Não mitigado.
   - **Não mitigado:** renomear as chaves `duress_*` ou o diretório `decoy/` só atrapalharia um
     examinador que não conhece o app; enquanto os dois cofres forem distinguíveis pela estrutura
-    de arquivos, o ganho é nulo contra um que conheça. O apagamento de emergência remove
+    de arquivos, o ganho é nulo contra um que conheça. Criar `decoy/` sempre, com ou sem PIN de coação, também
+    não foi feito (decisão da issue #90): só teria efeito junto de um `security_config.json` sem
+    chaves que denunciem a coação (por exemplo, sempre duas strings PHC, uma delas aleatória), e
+    fica como trabalho futuro, ligado à issue #29. O apagamento de emergência remove
     `security_config.json` e `decoy/` em melhor esforço (falhas são engolidas,
-    `lock_controller.dart:510-536`), só depois de acionado (modo 0 do PIN de coação ou apagamento manual em Ajustes,
+    `lock_controller.dart:580-606`), só depois de acionado (modo 0 do PIN de coação ou apagamento manual em Ajustes,
     `settings_screen.dart:258`), e não ajuda
     a esconder o cofre falso.
 - **Comprometimento do aparelho antes do primeiro uso.** Se o aparelho já estiver comprometido (malware,
