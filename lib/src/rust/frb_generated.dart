@@ -5,17 +5,16 @@
 
 import 'dart:async';
 import 'dart:convert';
-
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
+import 'ffi/pin.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'lib.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -71,7 +70,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1015574605;
+  int get rustContentHash => -1763982849;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -431,6 +430,14 @@ abstract class RustLibApi extends BaseApi {
   Future<Uint8List> crateFfiFramingFrameForLocalSocket({
     required List<int> envelope,
   });
+
+  Future<PinCheckDto> crateFfiPinPinCheck({
+    required String pin,
+    String? normalHash,
+    String? duressHash,
+  });
+
+  Future<String> crateFfiPinPinHash({required String pin});
 
   Future<BigInt> crateFfiJitterSampleJitterDelayMs();
 
@@ -3166,6 +3173,70 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<PinCheckDto> crateFfiPinPinCheck({
+    required String pin,
+    String? normalHash,
+    String? duressHash,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(pin, serializer);
+          sse_encode_opt_String(normalHash, serializer);
+          sse_encode_opt_String(duressHash, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 73,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_pin_check_dto,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateFfiPinPinCheckConstMeta,
+        argValues: [pin, normalHash, duressHash],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiPinPinCheckConstMeta => const TaskConstMeta(
+    debugName: "pin_check",
+    argNames: ["pin", "normalHash", "duressHash"],
+  );
+
+  @override
+  Future<String> crateFfiPinPinHash({required String pin}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(pin, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 74,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_ffi_error,
+        ),
+        constMeta: kCrateFfiPinPinHashConstMeta,
+        argValues: [pin],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateFfiPinPinHashConstMeta =>
+      const TaskConstMeta(debugName: "pin_hash", argNames: ["pin"]);
+
+  @override
   Future<BigInt> crateFfiJitterSampleJitterDelayMs() {
     return handler.executeNormal(
       NormalTask(
@@ -3174,7 +3245,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 73,
+            funcId: 75,
             port: port_,
           );
         },
@@ -3557,6 +3628,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
+  }
+
+  @protected
+  PinCheckDto dco_decode_pin_check_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return PinCheckDto(
+      matched: dco_decode_pin_match_dto(arr[0]),
+      needsRehash: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
+  PinMatchDto dco_decode_pin_match_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return PinMatchDto.values[raw as int];
   }
 
   @protected
@@ -4257,6 +4346,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  PinCheckDto sse_decode_pin_check_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_matched = sse_decode_pin_match_dto(deserializer);
+    var var_needsRehash = sse_decode_bool(deserializer);
+    return PinCheckDto(matched: var_matched, needsRehash: var_needsRehash);
+  }
+
+  @protected
+  PinMatchDto sse_decode_pin_match_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return PinMatchDto.values[inner];
+  }
+
+  @protected
   (Uint8List?, Uint8List)
   sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
     SseDeserializer deserializer,
@@ -4952,6 +5056,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     if (self != null) {
       sse_encode_list_prim_u_8_strict(self, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_pin_check_dto(PinCheckDto self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_pin_match_dto(self.matched, serializer);
+    sse_encode_bool(self.needsRehash, serializer);
+  }
+
+  @protected
+  void sse_encode_pin_match_dto(PinMatchDto self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

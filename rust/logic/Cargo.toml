@@ -10,7 +10,7 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 # Hashing, KDF e Merkle
 blake3 = "1.8"
-sha2 = { version = "0.11", default-features = false }
+sha2 = { version = "0.11", default-features = false, features = ["zeroize"] }
 # Codificação hex do tópico de sinalização (§8.1) — sem dependências próprias
 hex = "0.4"
 # AEAD
@@ -38,6 +38,7 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 raptorq = "2.0.1"
 # Decodificador Opus 100% puro em Rust (sem unsafe, sem C/FFI, D18)
 opus-decoder = "0.1.1"
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "zeroize"] }
 
 [dev-dependencies]
 proptest = "1"

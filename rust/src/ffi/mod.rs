@@ -17,6 +17,7 @@ pub mod discovery;
 pub mod error;
 pub mod framing;
 pub mod jitter;
+pub mod pin;
 pub mod session;
 pub mod signaling;
 pub mod transfer;

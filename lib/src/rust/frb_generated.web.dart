@@ -8,15 +8,14 @@
 
 import 'dart:async';
 import 'dart:convert';
-
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
 import 'ffi/jitter.dart';
+import 'ffi/pin.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'lib.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -186,6 +185,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  PinCheckDto dco_decode_pin_check_dto(dynamic raw);
+
+  @protected
+  PinMatchDto dco_decode_pin_match_dto(dynamic raw);
 
   @protected
   (Uint8List?, Uint8List)
@@ -435,6 +440,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  PinCheckDto sse_decode_pin_check_dto(SseDeserializer deserializer);
+
+  @protected
+  PinMatchDto sse_decode_pin_match_dto(SseDeserializer deserializer);
 
   @protected
   (Uint8List?, Uint8List)
@@ -753,6 +764,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     Uint8List? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_pin_check_dto(PinCheckDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_pin_match_dto(PinMatchDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
