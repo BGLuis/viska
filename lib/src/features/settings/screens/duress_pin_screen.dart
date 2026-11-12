@@ -44,9 +44,15 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
 
   /// Quem pega o aparelho desbloqueado não pode trocar nem apagar os PINs sem
   /// saber o atual.
-  bool _currentPinMatches() {
+  /// A verificação é uma derivação cara (issue #90); falha nela conta como
+  /// PIN incorreto, nunca como liberação.
+  Future<bool> _currentPinMatches() async {
     if (!_controller.hasNormalPin) return true;
-    return _controller.isNormalPin(_currentPinController.text.trim());
+    try {
+      return await _controller.isNormalPin(_currentPinController.text.trim());
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _save() async {
@@ -54,10 +60,6 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
     final normalConfirm = _normalPinConfirmController.text.trim();
     final duress = _duressPinController.text.trim();
 
-    if (!_currentPinMatches()) {
-      setState(() => _error = 'PIN atual incorreto.');
-      return;
-    }
     if (normal != normalConfirm) {
       setState(() => _error = 'A confirmação não coincide com o novo PIN Normal.');
       return;
@@ -67,6 +69,15 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
       _saving = true;
       _error = null;
     });
+
+    if (!await _currentPinMatches()) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = 'PIN atual incorreto.';
+      });
+      return;
+    }
 
     try {
       await _controller.configurePins(
@@ -93,7 +104,12 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
   }
 
   Future<void> _clearPins() async {
-    if (!_currentPinMatches()) {
+    if (_saving) return;
+    setState(() => _saving = true);
+    final matches = await _currentPinMatches();
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (!matches) {
       setState(() => _error = 'Digite o PIN atual para remover os PINs.');
       return;
     }
@@ -216,6 +232,20 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
               ),
               const SizedBox(height: ViskaSpacing.spaceLg),
 
+              if (_controller.duressPinNeedsReset) ...[
+                // Só o PIN digitado migra para o formato novo, e o de coação
+                // quase nunca é digitado: sem redefinir, ele continua
+                // recuperável por força bruta a partir do arquivo de config.
+                Text(
+                  'Seu PIN de Coação foi salvo num formato antigo, fácil de descobrir por quem copia os arquivos do aparelho. Digite-o de novo abaixo e salve para protegê-lo.',
+                  key: const Key('duress-legacy-warning'),
+                  style: ViskaTypography.bodySmall.copyWith(
+                    color: ViskaColors.dangerDefault,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: ViskaSpacing.spaceSm),
+              ],
               ViskaTextField(
                 controller: _duressPinController,
                 labelText: 'PIN de Coação (Duress PIN)',
@@ -253,7 +283,7 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Cofre Falso (Decoy Vault)', style: ViskaTypography.titleMedium),
                       subtitle: Text(
-                        'Abre uma tela inicial vazia simulando uma conta recém-instalada, sem apagar os dados reais.',
+                        'Abre uma conta vazia, sem apagar os dados reais. Engana quem olha a tela, mas uma perícia nos arquivos do aparelho consegue perceber que existe um segundo cofre.',
                         style: ViskaTypography.bodySmall.copyWith(color: ViskaColors.textSecondary),
                       ),
                     ),

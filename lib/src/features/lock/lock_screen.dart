@@ -113,10 +113,30 @@ class _LockScreenState extends State<LockScreen> {
     final len = _pin.length;
     final reachesShorterPin = len == _controller.normalPinLength ||
         len == _controller.duressPinLength;
-    if (len == _submitLength ||
-        (reachesShorterPin && _controller.matchesAnyPin(_pin))) {
+    if (len == _submitLength) {
       _submitPin();
+    } else if (reachesShorterPin) {
+      _submitIfShorterPinMatches();
     }
+  }
+
+  /// Configurações antigas, com PINs de tamanhos diferentes: no tamanho do mais
+  /// curto só envia se ele coincidir. A verificação agora é uma derivação cara
+  /// (issue #90), então a digitação fica bloqueada enquanto ela roda, para que
+  /// o PIN conferido seja o mesmo que vai ser enviado.
+  Future<void> _submitIfShorterPinMatches() async {
+    final candidate = _pin;
+    _isSubmitting = true;
+    var matches = false;
+    try {
+      matches = await _controller.matchesAnyPin(candidate);
+    } catch (_) {
+      // Falha na derivação equivale a não coincidir: o dono ainda alcança o
+      // tamanho maior e o PIN é avaliado de novo no envio.
+    } finally {
+      _isSubmitting = false;
+    }
+    if (mounted && matches && _pin == candidate) await _submitPin();
   }
 
   void _onBackspacePressed() {
