@@ -110,10 +110,11 @@
 //!   mínima que §7.3 exige. Um token bucket de verdade (ritmo de envio, não
 //!   só parar/continuar) fica para quando houver número real de rede para
 //!   calibrar; não modelado aqui.
-//! - **`transfer_secret` (D15) só vive em RAM** enquanto o valor Rust
-//!   existir. Persisti-lo cifrado no banco local para sobreviver a um
-//!   reinício do app é responsabilidade de quem constrói `SendTransfer`/
-//!   `ReceiveTransfer` (a camada FFI, via `store`), não deste módulo.
+//! - **Persistir `transfer_secret` (D15)** para sobreviver a bloqueio e
+//!   reinício é responsabilidade de quem constrói `SendTransfer`/
+//!   `ReceiveTransfer` (a camada FFI, via `store`). Este módulo só sabe
+//!   recompor o estado do disco: [`ReceiveTransfer::resume`] a partir do
+//!   `.staging`, e [`open_outgoing_copy`] a cópia do emissor (§7.5, D28).
 
 use std::collections::HashSet;
 use std::io::{Read, Write};

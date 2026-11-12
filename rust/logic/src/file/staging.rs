@@ -14,11 +14,9 @@
 //! de conseguir *rederivar* a mesma chave — ou seja, enquanto o
 //! `session_secret` usado em [`derive_staging_key`] também for esquecido do
 //! lado de quem orquestra a transferência. Este módulo deriva e usa a chave;
-//! ele não decide por quanto tempo o `session_secret` de origem continua
-//! vivo, nem como uma transferência retomada volta a obter a mesma chave
-//! depois de uma queda de conexão — isso é responsabilidade de
-//! `file::transfer` (F4), que ainda não existe, e fica registrado aqui como
-//! pendência em aberto, não resolvido em silêncio.
+//! por quanto tempo o segredo de origem continua vivo é decidido em
+//! `file::transfer` e na camada FFI (§7.5, D28). [`StagingWriter::resume`]
+//! é o que deixa uma transferência retomada reabrir o mesmo arquivo.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
