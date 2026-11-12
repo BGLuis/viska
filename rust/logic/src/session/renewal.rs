@@ -233,12 +233,11 @@ impl Session {
             });
         }
         // Qualquer outra coisa é ignorada sem consumir o `Initiator`: um
-        // envelope de uma sessão anterior do par levaria a `Failed` à toa.
-        if bytes.len() == reopen::REOPEN_LEN
-            && self.admit_reopen(bytes, now)
-            && self.signal_allowed(now)
-        {
-            // O par reabriu depois de a nossa INIT ter saído (ou ela se perdeu).
+        // envelope de uma sessão anterior do par levaria a `Failed` à toa. Mas
+        // ela prova que o par não está respondendo à nossa INIT (perdeu-a,
+        // reabriu depois dela, ou a recusou pelo limite de taxa): reenviamos a
+        // mesma, sem inundar. Um `REOPEN` cai aqui também.
+        if self.signal_allowed(now) {
             if let Some(init) = self.pending_outgoing_handshake.clone() {
                 return Ok(Received::reply(init));
             }
@@ -283,6 +282,9 @@ impl Session {
 
         if bytes.len() == reopen::REOPEN_LEN && we_initiate && self.admit_reopen(bytes, now) {
             let (init, opened) = self.open_initiator_candidate(local, now)?;
+            // A INIT que sai agora conta para o limite: o tráfego ilegível logo
+            // em seguida não deve repeti-la.
+            self.last_signal_at = Some(now);
             return Ok(Received {
                 reply: Some(init),
                 candidate_opened: opened,
@@ -291,6 +293,20 @@ impl Session {
         }
 
         self.count_failure();
+        // Tráfego ilegível com handshake pendente: o outro lado não está na
+        // sessão que estamos negociando. Repetir o que nos cabe (a INIT da
+        // candidata, ou o `REOPEN` do respondedor sem confirmação) é o que
+        // destrava; nenhum dos dois responde a INIT ou RESP com um sinal, então
+        // não há pingue-pongue.
+        if self.candidate_awaits_response() && self.signal_allowed(now) {
+            if let Some(Candidate {
+                stage: CandidateStage::AwaitingResponse { init, .. },
+                ..
+            }) = &self.candidate
+            {
+                return Ok(Received::reply(init.clone()));
+            }
+        }
         if self.unconfirmed_responder() && self.signal_allowed(now) {
             return self.reopen_signal(now).map(Received::reply);
         }
@@ -505,6 +521,12 @@ impl Session {
     /// Troca a sessão atual pela candidata, que acabou de provar a chave.
     /// Vale mesmo depois do prazo de [`CANDIDATE_TIMEOUT_SECS`]: o prazo só
     /// libera a fila, e uma confirmação tardia continua sendo prova de chave.
+    ///
+    /// Campo novo em `Session` precisa de decisão aqui. Ficam de propósito:
+    /// `peer`, `min_suite`, `reopen_key`, `direction`, `reopen_seen` (o par e o
+    /// guarda não mudam), `last_signal_at` e `last_candidate_at` (limites de
+    /// taxa valem através da troca), `answered_init` (é a INIT desta
+    /// candidata) e `peer_confirmed`, que quem chama (`accept`) acerta.
     fn promote_candidate(&mut self) {
         let Some(Candidate {
             stage: CandidateStage::Established { ratchet, suite, suites_sent },
@@ -763,6 +785,32 @@ mod tests {
     }
 
     #[test]
+    fn init_dropped_by_the_rate_limit_is_sent_again_on_stale_traffic() {
+        let (alice, _old_alice, bob, mut bob_session) = established_pair();
+        // Antigo o bastante para a retenção já ter passado no relógio real.
+        let t = now() - CANDIDATE_TIMEOUT_SECS - SIGNAL_INTERVAL_SECS - 5;
+        let (_first_alice, init1) = Session::open(&alice, bob.public(), 1).unwrap();
+        recv_at(&mut bob_session, &bob, &init1.unwrap(), t);
+
+        // Alice reabre de novo 5 s depois: a INIT nova cai no limite de taxa.
+        let (mut alice_session, init2) = Session::open(&alice, bob.public(), 1).unwrap();
+        let init2 = init2.unwrap();
+        assert!(recv_at(&mut bob_session, &bob, &init2, t + 5).reply.is_none());
+
+        // Bob escreve pela sessão antiga; Alice não lê e repete a INIT.
+        let stale = text(&mut bob_session, b"pela sessao velha");
+        let later = t + SIGNAL_INTERVAL_SECS + 5;
+        let again = recv_at(&mut alice_session, &alice, &stale, later).reply.unwrap();
+        assert_eq!(again, init2);
+
+        let resp = recv_at(&mut bob_session, &bob, &again, later).reply.unwrap();
+        let suites = recv(&mut alice_session, &alice, &resp).reply.unwrap();
+        let back = recv(&mut bob_session, &bob, &suites).reply.unwrap();
+        recv(&mut alice_session, &alice, &back);
+        assert_talks(&alice, &mut alice_session, &bob, &mut bob_session);
+    }
+
+    #[test]
     fn candidate_creation_is_rate_limited() {
         let (_alice, _alice_session, bob, mut bob_session) = established_pair();
         let t = now();
@@ -906,13 +954,14 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_response_ignores_stale_envelopes_instead_of_failing() {
+    fn awaiting_response_answers_stale_envelopes_with_its_init_instead_of_failing() {
         let (alice, _old_alice, bob, mut bob_session) = established_pair();
         let stale = text(&mut bob_session, b"da sessao velha");
 
         let (mut alice_session, init) = Session::open(&alice, bob.public(), 1).unwrap();
         let got = recv(&mut alice_session, &alice, &stale);
-        assert!(got.reply.is_none() && got.message.is_none());
+        assert!(got.message.is_none());
+        assert_eq!(got.reply, init, "o par não está na nossa sessão: repete a INIT");
         assert!(!alice_session.is_failed());
         assert_eq!(alice_session.pending_outgoing_handshake(), init.as_deref());
     }

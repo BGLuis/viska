@@ -290,8 +290,16 @@ impl Core {
         )?;
 
         let mut sessions = self.lock_sessions()?;
+        // Texto mais antigo ainda na fila (por exemplo, retido durante uma
+        // renovação, §11.4): este espera atrás dele, senão sairia fora de ordem.
+        // Listado sob o lock de sessões, como em `flush_pending`.
+        let queued_ahead = self
+            .store
+            .list_pending_messages(&device_id)
+            .map(|pending| pending.iter().any(|m| m.id < message_id))
+            .unwrap_or(true);
         let bytes = match sessions.get_mut(&device_id) {
-            Some(session) if session.is_established() => {
+            Some(session) if session.is_established() && !queued_ahead => {
                 let ciphertext = session
                     .encrypt_outgoing(PacketType::MsgText, body.into_bytes(), Transport::DataChannel)
                     .ok()
@@ -350,9 +358,16 @@ impl Core {
         if received.candidate_opened {
             let _ = self.store.mark_sending_messages_unknown_for_contact(&device_id);
         }
-        let message = received
-            .message
-            .and_then(|inner| self.handle_incoming_plaintext(device_id, inner, &bytes).ok().flatten());
+        let message = match received.message {
+            Some(inner) => match self.handle_incoming_plaintext(device_id, inner, &bytes) {
+                Ok(message) => message,
+                // Sem resposta a entregar, o erro sobe como antes; com uma, ela
+                // vale mais que o aviso de falha de banco.
+                Err(err) if received.reply.is_none() => return Err(err),
+                Err(_) => None,
+            },
+            None => None,
+        };
         Ok(IncomingResultDto {
             message,
             reply: received.reply,
@@ -1379,7 +1394,7 @@ mod tests {
 
         // 1. Cria contagens diferentes de mensagens prévias nos dois bancos
         for i in 1..=2 {
-            p.core_a.store.insert_pending_message(
+            p.core_a.store.insert_incoming_message(
                 &dev_b,
                 PacketType::MsgText,
                 &format!("msg prévia A {}", i),
@@ -1388,7 +1403,7 @@ mod tests {
         }
 
         for i in 1..=5 {
-            p.core_b.store.insert_pending_message(
+            p.core_b.store.insert_incoming_message(
                 &dev_a,
                 PacketType::MsgText,
                 &format!("msg prévia B {}", i),
@@ -1718,14 +1733,29 @@ mod tests {
         panic!("troca de sinais não terminou");
     }
 
+    /// Escreve `body` e entrega ao par tudo que a fila soltar, na ordem —
+    /// o que o app faz com `seal_outgoing_text` seguido de `flush_pending`.
+    fn deliver(from: &Core, from_peer: &[u8], to: &Core, to_peer: &[u8], body: &str) -> Vec<String> {
+        let sealed = from.seal_outgoing_text(from_peer.to_vec(), body.to_owned()).unwrap();
+        let mut out: Vec<Vec<u8>> = sealed.bytes.into_iter().collect();
+        out.extend(
+            from.flush_pending(from_peer.to_vec())
+                .unwrap()
+                .into_iter()
+                .filter_map(|m| m.bytes),
+        );
+        out.into_iter()
+            .filter_map(|bytes| to.receive_incoming(to_peer.to_vec(), bytes).unwrap().message)
+            .map(|m| m.body)
+            .collect()
+    }
+
     /// Texto nas duas direções, pelo caminho que o app usa.
     fn assert_talks(p: &PairedCores) {
-        let a = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "oi b".to_owned()).unwrap();
-        let got = p.core_b.receive_incoming(p.device_id_a.clone(), a.bytes.unwrap()).unwrap();
-        assert_eq!(got.message.unwrap().body, "oi b");
-        let b = p.core_b.seal_outgoing_text(p.device_id_a.clone(), "oi a".to_owned()).unwrap();
-        let got = p.core_a.receive_incoming(p.device_id_b.clone(), b.bytes.unwrap()).unwrap();
-        assert_eq!(got.message.unwrap().body, "oi a");
+        let got = deliver(&p.core_a, &p.device_id_b, &p.core_b, &p.device_id_a, "oi b");
+        assert_eq!(got.last().map(String::as_str), Some("oi b"));
+        let got = deliver(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b, "oi a");
+        assert_eq!(got.last().map(String::as_str), Some("oi a"));
     }
 
     fn state(core: &Core, peer: &[u8]) -> SessionStateKind {
@@ -1861,5 +1891,20 @@ mod tests {
             .find(|m| m.id == in_flight.message_id)
             .unwrap();
         assert_eq!(row.delivery_state, DeliveryStateDto::Unknown);
+    }
+
+    #[test]
+    fn new_text_waits_behind_an_older_pending_one() {
+        let p = paired_pair();
+        // Sem sessão estabelecida, o primeiro fica na fila.
+        let first = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "1".to_owned()).unwrap();
+        assert!(first.bytes.is_none());
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+
+        let second = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "2".to_owned()).unwrap();
+        assert!(second.bytes.is_none(), "não pode passar na frente do primeiro");
+        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        let ids: Vec<_> = flushed.iter().map(|m| m.message_id).collect();
+        assert_eq!(ids, vec![first.message_id, second.message_id]);
     }
 }

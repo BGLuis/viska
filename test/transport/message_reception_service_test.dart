@@ -441,6 +441,25 @@ void main() {
       expect(transport.sendCalls.where((b) => listEquals(b, [90])), hasLength(1));
     });
 
+    test('the end of a renewal reported by any event drains the queue', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 11, bytes: Uint8List.fromList([110])),
+      ];
+
+      // Alguma chamada depois do prazo publica `renewing` falso antes do timer.
+      core.holdQueue = false;
+      core.renewing = false;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [110])), hasLength(1));
+    });
+
     test('handshake completion flushes pending messages and marks them sent', () async {
       core.sessionState = SessionStateKind.handshaking;
       core.establishOnFeedHandshake = true;

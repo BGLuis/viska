@@ -207,7 +207,10 @@ class MessageReceptionService {
     // vazia. Cobre também o respondedor, cuja cadeia de envio só nasce no
     // primeiro pacote recebido (§5.1).
     final renewed = previous != null && previous.generation != event.generation;
-    if (event.isEstablished && (!wasEstablished || renewed)) {
+    // A retenção pode acabar sem promoção: o próximo evento depois do prazo
+    // traz `renewing` falso e cancela o timer abaixo, então a drenagem fica aqui.
+    final holdEnded = (previous?.renewing ?? false) && !event.renewing;
+    if (event.isEstablished && (!wasEstablished || renewed || holdEnded)) {
       unawaited(_flushPending(contactId));
     }
     // O Rust não tem relógio: quando a candidata passa do prazo sem confirmar,

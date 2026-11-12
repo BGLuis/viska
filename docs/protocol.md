@@ -786,8 +786,17 @@ O respondedor emite `REOPEN` (a) uma vez quando o canal conecta com uma sessão 
 `AwaitingPeerInit`, ou `Established` mas ainda sem nada decifrado do par, e (b) de novo quando recebe
 algo que não consegue ler nesses mesmos estados, no máximo um a cada 10 s. O caso "estabelecido sem
 confirmação" existe porque o iniciador nunca repete a INIT sozinho: se a RESP dele se perdeu, ou uma
-RESP forjada matou a candidata dele, só um `REOPEN` novo destrava. Um iniciador em
-`AwaitingResponse` que recebe um `REOPEN` válido reenvia a sua INIT, com o mesmo limite.
+RESP forjada matou a candidata dele, só um `REOPEN` novo destrava. Simetricamente, um iniciador com
+INIT sem resposta (em `AwaitingResponse`, ou com uma candidata nesse ponto) que recebe qualquer coisa
+além da RESP — um `REOPEN`, um envelope de uma sessão anterior — reenvia a mesma INIT, com o mesmo
+limite: o par não está na sessão que ele negocia, seja porque a INIT se perdeu, seja porque o par a
+recusou pelo limite de taxa abaixo. Nenhum dos dois lados responde a INIT ou RESP com um sinal, então
+não há pingue-pongue.
+
+Limite conhecido: uma RESP inválida recebida pela sessão principal em `AwaitingResponse` ainda leva a
+`Failed` (§11.1). O respondedor, sem confirmação, só repete o `REOPEN` quando recebe algo, e um
+iniciador `Failed` não manda nada; quem destrava é a reconexão do canal (o `REOPEN` de
+`connect_signal`) ou a pessoa tocando em reconectar.
 
 **O lado que não reabriu** (`Established` ou `Failed`) nunca derruba a sessão atual por causa de um
 sinal. Ele negocia uma **sessão candidata** ao lado dela:
@@ -817,7 +826,9 @@ sessão nova assim que ela é promovida. Pacotes de controle (recibo, `FILE_FEED
 sessão que o par já não lê. Passado o prazo, a fila volta a sair pela sessão atual. O Rust não tem
 relógio próprio, então o evento de estado da sessão leva `renewing`, e o app drena a fila depois do
 prazo. Um relógio que volta para trás não estende o prazo. Textos que estavam em `Sending` quando a
-candidata abriu viram `unknown` (mesma regra do trancamento, §11.1).
+candidata abriu viram `unknown` (mesma regra do trancamento, §11.1). Um texto novo nunca passa na
+frente de um mais antigo ainda na fila: enquanto houver um `pending` anterior, ele também fica
+`pending` e sai na drenagem, na ordem.
 
 **Confirmação nos dois sentidos.** Cada lado manda o seu `CONTROL_SUITES` (§10.2) uma vez por sessão,
 o mais cedo que puder: o iniciador logo depois de processar a RESP, o respondedor ao decifrar a

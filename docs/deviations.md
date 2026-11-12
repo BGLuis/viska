@@ -486,7 +486,10 @@ dois com alguma confiança. Mesma categoria de vazamento do contador em claro (D
 Quem consegue injetar bytes no canal (o socket TCP local não autentica a conexão além do preâmbulo,
 §9.3) pode forjar INITs. Elas nunca derrubam a sessão viva, mas cada uma segura a fila de envio por
 até 30 s e marca como `unknown` os textos do contato que estavam em `Sending`; repetida a cada 30 s,
-a retenção dura o quanto o atacante quiser. No máximo uma candidata a cada 10 s, o que limita o custo
+a retenção dura o quanto o atacante quiser. Pelo mesmo limite de uma candidata a cada 10 s, uma INIT
+forjada também pode fazer o respondedor recusar a INIT verdadeira de uma reabertura; o iniciador a
+reenvia a cada tráfego ilegível, mas quem injeta a cada 10 s consegue atrasar a reabertura enquanto
+continuar injetando. No máximo uma candidata a cada 10 s, o que limita o custo
 de CPU a um encapsulamento ML-KEM por intervalo. O guarda de repetição do `REOPEN` vive na sessão:
 depois que o próprio iniciador reabre, um `REOPEN` gravado nos últimos 3 minutos pode ser repetido
 mais uma vez, ao custo de um handshake.

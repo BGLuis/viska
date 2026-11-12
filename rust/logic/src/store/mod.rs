@@ -289,7 +289,10 @@ impl Store {
     }
 
     /// Marca como `Unknown` os textos em `Sending` de um contato (§11.4).
-    pub fn mark_sending_messages_unknown_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+    pub fn mark_sending_messages_unknown_for_contact(
+        &self,
+        contact_device_id: &[u8; 16],
+    ) -> Result<usize> {
         self.with_conn(|conn| messages::mark_sending_unknown_for_contact(conn, contact_device_id))
     }
 
