@@ -66,15 +66,21 @@ class _LockScreenState extends State<LockScreen> {
       _errorMessage = null;
     });
 
-    final success = await _controller.unlock();
-
-    if (!mounted) return;
-    setState(() {
-      _isAuthenticating = false;
-      if (!success) {
-        _errorMessage = 'Falha na autenticação ou cofre indisponível.';
+    // `finally`: o flag também trava o teclado de PIN, então uma exceção aqui
+    // não pode deixá-lo ligado e a tela sem nenhuma entrada.
+    var success = false;
+    try {
+      success = await _controller.unlock();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAuthenticating = false;
+          if (!success) {
+            _errorMessage = 'Falha na autenticação ou cofre indisponível.';
+          }
+        });
       }
-    });
+    }
   }
 
   Future<void> _submitPin() async {
@@ -91,17 +97,17 @@ class _LockScreenState extends State<LockScreen> {
       if (!mounted) return;
       if (!success) {
         setState(() {
-          _errorMessage = 'PIN incorreto';
+          // Se a falha abriu uma espera, o aviso de espera já diz tudo; um
+          // "PIN incorreto" guardado reapareceria sozinho (e seria anunciado
+          // pela região viva) quando a espera acabasse.
+          _errorMessage =
+              _controller.pinRetryDelay > Duration.zero ? null : 'PIN incorreto';
           _pin = '';
         });
         _syncRetryTicker();
       }
     } finally {
-      if (mounted) {
-        setState(() => _isSubmitting = false);
-      } else {
-        _isSubmitting = false;
-      }
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -196,8 +202,12 @@ class _LockScreenState extends State<LockScreen> {
     // usuário: a linha não some nem reaparece entre envios (o teclado ficaria
     // pulando sob o dedo), mas cresce em vez de cortar o texto.
     final style = ViskaTypography.bodySmall;
-    final lineHeight = (style.fontSize ?? 12) * (style.height ?? 1.4);
-    final minHeight = MediaQuery.textScalerOf(context).scale(lineHeight) * 2;
+    // O Flutter escala o tamanho da fonte e só depois aplica `height`; com
+    // escala não linear (Android 14) escalar o produto daria menos que duas
+    // linhas reais.
+    final minHeight = MediaQuery.textScalerOf(context).scale(style.fontSize ?? 12) *
+        (style.height ?? 1.4) *
+        2;
     return Semantics(
       container: true,
       liveRegion: true,

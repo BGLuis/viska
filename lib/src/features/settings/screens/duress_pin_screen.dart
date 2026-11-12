@@ -300,8 +300,8 @@ class _DuressPinScreenState extends State<DuressPinScreen> {
 
               if (_error != null) ...[
                 const SizedBox(height: ViskaSpacing.spaceMd),
-                // Região viva: o erro aparece depois de uma verificação de
-                // segundos e costuma ficar fora da tela, abaixo das opções.
+                // Região viva: o erro só aparece depois de uma verificação que
+                // leva segundos, quando o foco do leitor de tela já saiu dali.
                 Semantics(
                   container: true,
                   liveRegion: true,

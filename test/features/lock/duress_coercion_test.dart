@@ -672,6 +672,31 @@ void main() {
       controller.dispose();
     });
 
+    test('configurePins does not undo a migration that finishes meanwhile', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      final gate = Completer<void>();
+      hasher.hashGate = gate;
+      final configuring = controller.configurePins(duressPin: '9999', actionMode: 1);
+      while (hasher.hashCalls == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      hasher.hashGate = null;
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      final migrated = readConfig()['normal_pin_hash'] as String;
+      expect(migrated, startsWith('fake\$'));
+
+      gate.complete();
+      await configuring;
+      expect(readConfig()['normal_pin_hash'], migrated);
+      expect(await controller.isDuressPin('9999'), isTrue);
+      controller.dispose();
+    });
+
     test('failed migration still opens the decoy vault', () async {
       writeLegacyConfig(duress: '9999', mode: 1);
       final hasher = FakePinHasher()..throwOnHash = true;
@@ -747,6 +772,40 @@ void main() {
       // O leitor de tela recebe minutos, não a contagem de segundos.
       expect(find.bySemanticsLabel(RegExp(r'Muitas tentativas.*minuto')), findsOneWidget);
       semantics.dispose();
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen does not bring back a stale wrong-PIN error when the wait ends', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final controller = LockController(
+        pinHasher: FakePinHasher(),
+        core: _FakeCore(),
+        appDirPath: tempDir.path,
+        localAuth: _FakeLocalAuthentication(shouldSucceed: false),
+        clock: () => now,
+      );
+      await tester.runAsync(() async {
+        await controller.setNormalPin('1234');
+        await controller.lock();
+        for (var i = 0; i < LockController.freePinAttempts - 1; i++) {
+          await controller.verifyAndUnlockWithPin('0000');
+        }
+      });
+
+      await tester.pumpWidget(MaterialApp(home: LockScreen(controller: controller)));
+      await tester.pump(const Duration(milliseconds: 300));
+      for (final d in ['0', '0', '0', '0']) {
+        await tester.tap(find.text(d).last);
+        await tester.pump();
+      }
+      await tester.pump();
+      expect(controller.pinRetryDelay, greaterThan(Duration.zero));
+      expect(find.text('PIN incorreto'), findsNothing);
+
+      now = now.add(const Duration(minutes: 1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(controller.pinRetryDelay, Duration.zero);
+      expect(find.text('PIN incorreto'), findsNothing);
       controller.dispose();
     });
 
