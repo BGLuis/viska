@@ -133,13 +133,12 @@ impl Session {
 
     /// Como [`Self::connect_signal`], com o instante explícito.
     pub fn connect_signal_at(&mut self, now: u64) -> Result<Option<Vec<u8>>> {
-        // A INIT publicada aqui conta para o limite, como o `REOPEN`: o sinal
-        // que o par manda ao conectar não deve fazê-la sair de novo na hora.
+        // A INIT publicada aqui não conta para o limite, ao contrário do
+        // `REOPEN`: se o par a recusar, o sinal dele logo em seguida precisa
+        // fazê-la sair de novo. O custo é uma INIT repetida, que o par responde
+        // com a RESP de antes.
         match &self.state {
-            SessionState::AwaitingResponse(_) => {
-                self.last_signal_at = Some(now);
-                Ok(self.pending_outgoing_handshake.clone())
-            }
+            SessionState::AwaitingResponse(_) => Ok(self.pending_outgoing_handshake.clone()),
             SessionState::AwaitingPeerInit => self.reopen_signal(now).map(Some),
             SessionState::Established(_) | SessionState::Failed => {
                 if let Some(Candidate {
@@ -147,9 +146,7 @@ impl Session {
                     ..
                 }) = &self.candidate
                 {
-                    let init = init.clone();
-                    self.last_signal_at = Some(now);
-                    return Ok(Some(init));
+                    return Ok(Some(init.clone()));
                 }
                 if self.is_established() && self.unconfirmed_responder() {
                     return self.reopen_signal(now).map(Some);
@@ -719,11 +716,8 @@ mod tests {
         let init = alice_session.connect_signal_at(t).unwrap().unwrap();
         let signal = bob_session.connect_signal_at(t).unwrap().unwrap();
         let resp = recv_at(&mut bob_session, &bob, &init, t).reply.unwrap();
-        // Logo depois de publicar, a INIT não sai de novo por causa do sinal.
-        let early = bob_session.connect_signal_at(t + 1).unwrap().unwrap();
-        assert!(recv_at(&mut alice_session, &alice, &early, t + 1).reply.is_none());
-        // Um sinal que chega depois do intervalo a faz sair de novo, igual.
-        let later = t + SIGNAL_INTERVAL_SECS;
+        // O sinal de Bob faz a mesma INIT sair de novo.
+        let later = t + 1;
         let init_again = recv_at(&mut alice_session, &alice, &signal, later).reply.unwrap();
         assert_eq!(init_again, init);
 

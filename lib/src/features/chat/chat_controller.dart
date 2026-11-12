@@ -451,7 +451,9 @@ class ChatController extends ChangeNotifier {
         body: payload,
       );
       await _refreshMessages();
-      await _sendOrDrain(sealed);
+      if (sealed.bytes != null) {
+        await _trySendSealed(sealed.messageId, sealed.bytes!);
+      }
     } finally {
       _sending = false;
       notifyListeners();
@@ -481,19 +483,8 @@ class ChatController extends ChangeNotifier {
       body: payload,
     );
     await _refreshMessages();
-    await _sendOrDrain(sealed);
-  }
-
-  /// Envia o que o Rust cifrou. Sem bytes com a sessão pronta, há texto mais
-  /// antigo na fila (por exemplo, um envio que falhou e voltou a ela): drena a
-  /// fila inteira, na ordem, em vez de esperar o próximo pacote do contato.
-  Future<void> _sendOrDrain(SealedMessageDto sealed) async {
-    final bytes = sealed.bytes;
-    if (bytes != null) {
-      await _trySendSealed(sealed.messageId, bytes);
-    } else if (isEstablished) {
-      await _receptionService.flushPendingFor(_contactId);
-      await _refreshMessages();
+    if (sealed.bytes != null) {
+      await _trySendSealed(sealed.messageId, sealed.bytes!);
     }
   }
 

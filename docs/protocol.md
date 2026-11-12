@@ -790,8 +790,8 @@ RESP forjada matou a candidata dele, só um `REOPEN` novo destrava. Simetricamen
 INIT sem resposta (em `AwaitingResponse`, ou com uma candidata nesse ponto) que recebe qualquer coisa
 além da RESP — um `REOPEN`, um envelope de uma sessão anterior — reenvia a mesma INIT, com o mesmo
 limite: o par não está na sessão que ele negocia, seja porque a INIT se perdeu, seja porque o par a
-recusou pelo limite de taxa abaixo. A INIT publicada ao conectar o canal também conta para esse
-limite. O reenvio não tem prazo: uma candidata de iniciador sem resposta segue reenviando a cada
+recusou pelo limite de taxa abaixo. A INIT publicada ao conectar o canal não conta para esse limite:
+se o par a recusar, o sinal dele logo depois precisa fazê-la sair de novo. O reenvio não tem prazo: uma candidata de iniciador sem resposta segue reenviando a cada
 tráfego ilegível até receber uma RESP ou ser trocada. Nenhum dos dois lados responde a INIT ou RESP
 com um sinal, então não há pingue-pongue.
 
@@ -828,9 +828,10 @@ sessão nova assim que ela é promovida. Pacotes de controle (recibo, `FILE_FEED
 sessão que o par já não lê. Passado o prazo, a fila volta a sair pela sessão atual. O Rust não tem
 relógio próprio, então o evento de estado da sessão leva `renewing`, e o app drena a fila depois do
 prazo. Um relógio que volta para trás não estende o prazo. Textos que estavam em `Sending` quando a
-candidata abriu viram `unknown` (mesma regra do trancamento, §11.1). Um texto novo nunca passa na
-frente de um mais antigo ainda na fila: enquanto houver um `pending` anterior, ele também fica
-`pending` e sai na drenagem, na ordem.
+candidata abriu viram `unknown` (mesma regra do trancamento, §11.1). Um texto escrito no instante
+entre o fim do prazo e a drenagem pode sair antes dos retidos; a ordem de exibição vem do
+`global_id` e do horário, e prender o texto novo atrás da fila custaria uma cifragem da fila inteira
+a cada envio sem conexão.
 
 **Confirmação nos dois sentidos.** Cada lado manda o seu `CONTROL_SUITES` (§10.2) uma vez por sessão,
 o mais cedo que puder: o iniciador logo depois de processar a RESP, o respondedor ao decifrar a
