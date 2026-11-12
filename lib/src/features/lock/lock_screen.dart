@@ -51,8 +51,14 @@ class _LockScreenState extends State<LockScreen> {
     if (_controller.pinRetryDelay == Duration.zero) return;
     _retryTicker = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
-      setState(() {});
-      if (_controller.pinRetryDelay == Duration.zero) timer.cancel();
+      final ended = _controller.pinRetryDelay == Duration.zero;
+      setState(() {
+        // Um erro guardado durante a espera (PIN ou biometria cancelada)
+        // reapareceria sozinho, e seria anunciado pela região viva, quando o
+        // aviso de espera saísse.
+        if (ended) _errorMessage = null;
+      });
+      if (ended) timer.cancel();
     });
   }
 
@@ -71,6 +77,9 @@ class _LockScreenState extends State<LockScreen> {
     var success = false;
     try {
       success = await _controller.unlock();
+    } catch (_) {
+      // `success` continua falso e o `finally` mostra a falha: a exceção não
+      // pode escapar, porque os chamadores (pós-frame e botões) não a esperam.
     } finally {
       if (mounted) {
         setState(() {
@@ -97,11 +106,7 @@ class _LockScreenState extends State<LockScreen> {
       if (!mounted) return;
       if (!success) {
         setState(() {
-          // Se a falha abriu uma espera, o aviso de espera já diz tudo; um
-          // "PIN incorreto" guardado reapareceria sozinho (e seria anunciado
-          // pela região viva) quando a espera acabasse.
-          _errorMessage =
-              _controller.pinRetryDelay > Duration.zero ? null : 'PIN incorreto';
+          _errorMessage = 'PIN incorreto';
           _pin = '';
         });
         _syncRetryTicker();
