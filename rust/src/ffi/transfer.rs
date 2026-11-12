@@ -81,8 +81,10 @@ use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
-    TransferProgressDto,
+    TransferEventDto, TransferEventKind, TransferProgressDto,
 };
+use crate::transfer_events::TransferEventSink;
+use crate::frb_generated::StreamSink;
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
 use viska_proto::file::merkle;
@@ -598,7 +600,7 @@ impl Core {
     /// foi fechado a cada bloco completado). Ver §7.5/D15.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
-        self.lock_unconfirmed_offers()?.remove(&file_id);
+        self.remove_unconfirmed_offer(&file_id)?;
         self.lock_transfers()?.remove(&file_id);
         self.lock_unanswered_offers()?.remove(&file_id);
         self.store.delete_file_transfer(&file_id)?;
@@ -701,6 +703,69 @@ impl Core {
         self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)
     }
 
+    /// Passa a receber os eventos de oferta de arquivo, a partir das ofertas já
+    /// retidas (replay): um evento emitido antes da assinatura não se perderia
+    /// para o Dart. Uma nova assinatura substitui a anterior.
+    pub fn subscribe_transfer_events(
+        &self,
+        sink: StreamSink<TransferEventDto>,
+    ) -> Result<(), FfiError> {
+        self.set_transfer_event_sink(Box::new(move |event| {
+            // Erro aqui é o Dart já ter fechado o stream: nada a fazer.
+            let _ = sink.add(event);
+        }))
+    }
+
+    /// Núcleo de [`Self::subscribe_transfer_events`], sem o `StreamSink`, para
+    /// que os testes observem os eventos sem subir a ponte.
+    pub(crate) fn set_transfer_event_sink(&self, sink: TransferEventSink) -> Result<(), FfiError> {
+        let offers = self.lock_unconfirmed_offers()?;
+        let mut events = self.transfer_events.lock().map_err(|_| FfiError::Internal)?;
+        events.set_sink(
+            sink,
+            offers.iter().map(|(file_id, offer)| {
+                offer_event(TransferEventKind::OfferAppeared, offer.contact_device_id, *file_id)
+            }),
+        );
+        Ok(())
+    }
+
+    /// Chamar com a trava de `unconfirmed_offers` em mãos (ver `Core`).
+    fn emit_offer_event(
+        &self,
+        kind: TransferEventKind,
+        contact: [u8; DEVICE_ID_LEN],
+        file_id: [u8; FILE_ID_LEN],
+    ) {
+        // Trava envenenada: o aviso se perde, e o Dart ainda relê a lista na
+        // próxima ação da pessoa.
+        if let Ok(events) = self.transfer_events.lock() {
+            events.emit(offer_event(kind, contact, file_id));
+        }
+    }
+
+    /// Tira uma oferta retida e avisa o Dart, sem evento se ela não existia.
+    fn remove_unconfirmed_offer(
+        &self,
+        file_id: &[u8; FILE_ID_LEN],
+    ) -> Result<Option<UnconfirmedOffer>, FfiError> {
+        let mut offers = self.lock_unconfirmed_offers()?;
+        let removed = offers.remove(file_id);
+        if let Some(offer) = &removed {
+            self.emit_offer_event(TransferEventKind::OfferGone, offer.contact_device_id, *file_id);
+        }
+        Ok(removed)
+    }
+
+    /// Descarta todas as ofertas retidas, avisando cada uma (bloqueio do cofre).
+    pub(super) fn clear_unconfirmed_offers(&self) -> Result<(), FfiError> {
+        let mut offers = self.lock_unconfirmed_offers()?;
+        for (file_id, offer) in offers.drain() {
+            self.emit_offer_event(TransferEventKind::OfferGone, offer.contact_device_id, file_id);
+        }
+        Ok(())
+    }
+
     /// Lista as ofertas de arquivo pendentes de confirmação do usuário para
     /// o contato especificado (Issue #23, U-08).
     pub fn unconfirmed_file_offers(
@@ -765,7 +830,7 @@ impl Core {
             received_at,
         )?;
 
-        self.lock_unconfirmed_offers()?.remove(&fid);
+        self.remove_unconfirmed_offer(&fid)?;
         Ok(())
     }
 
@@ -781,8 +846,7 @@ impl Core {
         self.ensure_not_locked()?;
         let fid = to_file_id(file_id)?;
         let offer = self
-            .lock_unconfirmed_offers()?
-            .remove(&fid)
+            .remove_unconfirmed_offer(&fid)?
             .ok_or(FfiError::OfferNotFound)?;
 
         let _publish = self.publish_on_exit(offer.contact_device_id);
@@ -869,6 +933,7 @@ impl Core {
                 return Ok(());
             }
 
+            let manifest_file_id = manifest.file_id;
             unconfirmed.insert(
                 manifest.file_id,
                 UnconfirmedOffer {
@@ -879,6 +944,12 @@ impl Core {
                     manifest_cbor,
                     received_at,
                 },
+            );
+            // Sob a trava das ofertas, como em `remove_unconfirmed_offer`.
+            self.emit_offer_event(
+                TransferEventKind::OfferAppeared,
+                contact_device_id,
+                manifest_file_id,
             );
             return Ok(());
         }
@@ -969,6 +1040,14 @@ impl Core {
         self.store.delete_file_transfer(&file_id)?;
         Ok(())
     }
+}
+
+fn offer_event(
+    kind: TransferEventKind,
+    contact: [u8; DEVICE_ID_LEN],
+    file_id: [u8; FILE_ID_LEN],
+) -> TransferEventDto {
+    TransferEventDto { peer_device_id: contact.to_vec(), file_id: file_id.to_vec(), kind }
 }
 
 #[cfg(test)]
@@ -2889,5 +2968,132 @@ mod tests {
         assert!(result.is_err());
         let offers = pair.core_a.lock_unanswered_offers().unwrap();
         assert!(ids.iter().all(|id| offers.contains_key(id)));
+    }
+
+    type SeenOffers = std::sync::Arc<std::sync::Mutex<Vec<TransferEventDto>>>;
+
+    fn watch_offers(core: &Core) -> SeenOffers {
+        let seen: SeenOffers = Default::default();
+        let sink_seen = std::sync::Arc::clone(&seen);
+        core.set_transfer_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+        seen
+    }
+
+    /// Par com B recebendo ofertas retidas (limite de auto-aceite baixo) e uma
+    /// oferta de A para B já entregue.
+    fn pair_with_retained_offer(dir: &tempfile::TempDir) -> (EstablishedPair, SendFileStartedDto) {
+        let pair = established_pair();
+        pair.core_b.set_auto_accept_file_size_limit(1_000).unwrap();
+        let path = write_temp_file(dir, "grande.bin", &vec![7u8; 5_000]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), path, false)
+            .unwrap();
+        (pair, started)
+    }
+
+    #[test]
+    fn retained_offer_emits_appeared_with_only_file_id_and_contact() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_retained_offer(&dir);
+        let seen = watch_offers(&pair.core_b);
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            *seen,
+            vec![TransferEventDto {
+                peer_device_id: pair.device_id_a.clone(),
+                file_id: started.file_id.clone(),
+                kind: TransferEventKind::OfferAppeared,
+            }]
+        );
+    }
+
+    #[test]
+    fn auto_accepted_offer_emits_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_retained_offer(&dir);
+        pair.core_b.set_auto_accept_file_size_limit(1_000_000).unwrap();
+        let seen = watch_offers(&pair.core_b);
+
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subscribing_after_the_offer_arrived_replays_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_retained_offer(&dir);
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+
+        let seen = watch_offers(&pair.core_b);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].kind, TransferEventKind::OfferAppeared);
+        assert_eq!(seen[0].file_id, started.file_id);
+    }
+
+    #[test]
+    fn accept_reject_and_cancel_each_emit_gone_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for action in ["accept", "reject", "cancel"] {
+            let (pair, started) = pair_with_retained_offer(&dir);
+            pair.core_b
+                .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
+                .unwrap();
+            let seen = watch_offers(&pair.core_b);
+            seen.lock().unwrap().clear();
+
+            match action {
+                "accept" => pair.core_b.accept_file_offer(started.file_id.clone()).unwrap(),
+                "reject" => {
+                    pair.core_b.reject_file_offer(started.file_id.clone()).unwrap();
+                }
+                _ => pair.core_b.cancel_transfer(started.file_id.clone()).unwrap(),
+            }
+            // Repetir não pode avisar de novo: a oferta já não existe.
+            let _ = pair.core_b.cancel_transfer(started.file_id.clone());
+
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "{action}");
+            assert_eq!(seen[0].kind, TransferEventKind::OfferGone, "{action}");
+            assert_eq!(seen[0].file_id, started.file_id, "{action}");
+        }
+    }
+
+    #[test]
+    fn failed_reject_of_unknown_offer_emits_nothing() {
+        let pair = established_pair();
+        let seen = watch_offers(&pair.core_b);
+        assert!(pair.core_b.reject_file_offer(vec![3; FILE_ID_LEN]).is_err());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lock_emits_gone_for_every_retained_offer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_retained_offer(&dir);
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
+            .unwrap();
+        let seen = watch_offers(&pair.core_b);
+        seen.lock().unwrap().clear();
+
+        pair.core_b.lock().unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].kind, TransferEventKind::OfferGone);
     }
 }

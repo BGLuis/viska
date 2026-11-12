@@ -15,6 +15,7 @@ use crate::ffi::error::FfiError;
 use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
 use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
 use crate::session_events::SessionEvents;
+use crate::transfer_events::TransferEvents;
 use viska_proto::crypto::identity::LocalIdentity;
 use viska_proto::crypto::pairing;
 use viska_proto::crypto::safety_number::SafetyNumber;
@@ -56,6 +57,11 @@ pub struct Core {
     /// Ofertas de arquivo recebidas com tamanho acima do limite de auto-aceite,
     /// aguardando confirmação do usuário (Issue #23, U-08).
     pub(super) unconfirmed_offers: Mutex<HashMap<[u8; 16], UnconfirmedOffer>>,
+    /// Destinatário dos eventos de transferência. Ordem de travas:
+    /// `unconfirmed_offers` antes de `transfer_events`, sempre — a oferta muda e
+    /// o evento sai sob a mesma trava, para o replay da assinatura não perder
+    /// nem duplicar uma mudança concorrente.
+    pub(super) transfer_events: Mutex<TransferEvents>,
     /// Quando cada oferta de arquivo enviada saiu (segundos Unix) e ainda não
     /// teve resposta. Só em RAM, como a própria transferência (U-03).
     pub(super) unanswered_offers: Mutex<HashMap<[u8; 16], i64>>,
@@ -110,6 +116,7 @@ impl Core {
             transfers: Mutex::new(HashMap::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
+            transfer_events: Mutex::new(TransferEvents::default()),
             unanswered_offers: Mutex::new(HashMap::new()),
             staging_dir,
             app_dir: dir.to_path_buf(),
@@ -127,7 +134,7 @@ impl Core {
         self.sessions.lock().map_err(|_| FfiError::Internal)?.clear();
         // O Dart não pode seguir achando que há sessão estabelecida.
         self.publish_all_sessions();
-        self.unconfirmed_offers.lock().map_err(|_| FfiError::Internal)?.clear();
+        self.clear_unconfirmed_offers()?;
         self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?.clear();
         {
             let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;

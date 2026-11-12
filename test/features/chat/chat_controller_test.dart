@@ -94,7 +94,7 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
 /// Só implementa o que `ChatController` de fato chama — o resto arremessa
 /// `UnimplementedError` de propósito (ver o mesmo padrão em
 /// `webrtc_p2p_transport_test.dart`).
-class _FakeCore with FakeSessionEvents implements Core {
+class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
   _FakeCore() {
     peerDeviceId = List.generate(16, (i) => i);
     sessionState = SessionStateKind.handshaking;
@@ -1839,6 +1839,37 @@ void main() {
 
       expect(controller.fileError, isNull);
       expect(controller.connectionError, isNull);
+    });
+
+    test('offer events from Rust reload the unconfirmed list', () async {
+      final service = MessageReceptionService(core: core, router: router);
+      controller = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: service,
+        recorder: recorder,
+        player: player,
+      );
+      await controller.initialize();
+      expect(controller.unconfirmedOffers, isEmpty);
+
+      final fileId = Uint8List.fromList(List.filled(16, 6));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(fileId: fileId, name: 'novo.bin', fileSize: BigInt.from(200 * 1024 * 1024)),
+      ];
+      // Sem evento do Rust a lista não é relida, mesmo que ela tenha mudado.
+      await pumpEventQueue();
+      expect(controller.unconfirmedOffers, isEmpty);
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: fileId,
+        kind: TransferEventKind.offerAppeared,
+      ));
+      await pumpEventQueue();
+      expect(controller.unconfirmedOffers, hasLength(1));
+      await service.dispose();
     });
 
     test('loadUnconfirmedOffers loads unconfirmed file offers into state', () async {

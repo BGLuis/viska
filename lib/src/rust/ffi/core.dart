@@ -6,7 +6,9 @@
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'error.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `reset_inflight_state`
@@ -71,8 +73,9 @@ abstract class Core implements RustOpaqueInterface {
   /// que está em `Core::transfers`/`store::transfers` — e sempre devolvem
   /// `Ok(None)`: não há DTO de mensagem para eles, e mudar a assinatura
   /// deste método para acomodar isso quebraria `chat_controller.dart`
-  /// sem necessidade. Quem quer saber de uma oferta de arquivo nova chama
-  /// `Core::pending_file_offers` depois. Falha ao processar um desses três
+  /// sem necessidade. Uma oferta retida para confirmação chega pelo stream de
+  /// `Core::subscribe_transfer_events`; não é preciso consultar nada depois
+  /// de cada pacote. Falha ao processar um desses três
   /// (CBOR malformado, `file_id` desconhecido) é silenciada — mesma
   /// política de silêncio de qualquer corpo malformado nesta fronteira, e
   /// nunca deveria acontecer vindo de um par honesto.
@@ -447,6 +450,11 @@ abstract class Core implements RustOpaqueInterface {
   /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
   /// a anterior.
   Stream<SessionStateEventDto> subscribeSessionEvents();
+
+  /// Passa a receber os eventos de oferta de arquivo, a partir das ofertas já
+  /// retidas (replay): um evento emitido antes da assinatura não se perderia
+  /// para o Dart. Uma nova assinatura substitui a anterior.
+  Stream<TransferEventDto> subscribeTransferEvents();
 
   /// Varre e destrói chaves de mensagens efêmeras expiradas.
   Future<int> sweepExpiredMessages();

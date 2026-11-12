@@ -48,3 +48,13 @@ mixin FakeSessionEvents {
     yield* _sessionEvents.stream;
   }
 }
+
+/// Reproduz, num `Core` falso, `Core.subscribeTransferEvents`: eventos de
+/// oferta empurrados por [emitTransferEvent].
+mixin FakeTransferEvents {
+  final _transferEvents = StreamController<TransferEventDto>.broadcast(sync: true);
+
+  void emitTransferEvent(TransferEventDto event) => _transferEvents.add(event);
+
+  Stream<TransferEventDto> subscribeTransferEvents() => _transferEvents.stream;
+}

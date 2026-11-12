@@ -718,6 +718,11 @@ Só entram os envios que ainda têm linha em `file_transfers` e mensagem ainda n
 concluído (sem linha) e os estados finais `Delivered`, `Rejected` e `Expired` não mudam. O estado de cada sessão é empurrado ao
 Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
 segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
+As ofertas de arquivo retidas para confirmação (§7.6) seguem o mesmo princípio em
+`Core::subscribe_transfer_events`: o evento diz só `file_id`, contato e se a oferta apareceu ou deixou
+de existir (aceita, recusada, cancelada ou descartada no bloqueio do cofre); nome, tamanho e qualquer
+segredo continuam no Rust. A assinatura repete as ofertas já retidas, para o Dart não perder o que
+chegou antes dela.
 
 **Lacuna conhecida:** o reset é unilateral. Sem marcador de tipo no fio (D4), o par não é avisado:
 se ele seguir `Established`, a INIT nova é lida lá como envelope inválido e descartada em silêncio, e

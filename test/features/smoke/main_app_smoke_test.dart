@@ -108,6 +108,9 @@ class _MockSmokeCore implements Core {
   Stream<SessionStateEventDto> subscribeSessionEvents() => const Stream.empty();
 
   @override
+  Stream<TransferEventDto> subscribeTransferEvents() => const Stream.empty();
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 

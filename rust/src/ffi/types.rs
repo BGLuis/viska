@@ -90,6 +90,26 @@ pub struct SessionStateEventDto {
     pub needs_rehandshake: bool,
 }
 
+/// Evento de transferência, empurrado pelo stream de
+/// `Core::subscribe_transfer_events`. Só avisa que algo mudou: nome, tamanho e
+/// qualquer segredo da oferta ficam no Rust, o Dart os lê pelas consultas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEventDto {
+    pub peer_device_id: Vec<u8>,
+    pub file_id: Vec<u8>,
+    pub kind: TransferEventKind,
+}
+
+/// O que aconteceu. Novos eventos de transferência entram aqui como variantes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferEventKind {
+    /// Oferta retida aguardando confirmação (`unconfirmed_file_offers`).
+    OfferAppeared,
+    /// A oferta deixou de estar pendente: aceita, recusada, cancelada ou
+    /// descartada no bloqueio do cofre.
+    OfferGone,
+}
+
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão
 /// já estava pronta na hora da chamada.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -54,7 +54,7 @@ class _FakeP2PTransport implements P2PTransport {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
-class _FakeReceptionCore with FakeSessionEvents implements Core {
+class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements Core {
   _FakeReceptionCore() {
     peerDeviceId = List.generate(16, (i) => i);
   }
@@ -420,6 +420,26 @@ void main() {
 
       expect(events.last.state, SessionStateKind.failed);
       expect(service.sessionStateFor(contact)?.state, SessionStateKind.failed);
+      await sub.cancel();
+    });
+
+    test('republishes Rust offer events as OffersChangedEvent for the right contact', () async {
+      await service.start();
+      final events = <OffersChangedEvent>[];
+      final sub = service.events.where((e) => e is OffersChangedEvent).cast<OffersChangedEvent>().listen(events.add);
+      final fileId = Uint8List.fromList(List.filled(16, 4));
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: fileId,
+        kind: TransferEventKind.offerAppeared,
+      ));
+      await pumpEventQueue();
+
+      expect(events, hasLength(1));
+      expect(events.single.contactId, contact);
+      expect(events.single.fileId, fileId);
+      expect(events.single.kind, TransferEventKind.offerAppeared);
       await sub.cancel();
     });
 

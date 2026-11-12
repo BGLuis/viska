@@ -68,7 +68,7 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
   }
 }
 
-class _FakeCore with FakeSessionEvents implements Core {
+class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
   _FakeCore() {
     peerDeviceId = List.filled(16, 1);
     sessionState = SessionStateKind.established;
