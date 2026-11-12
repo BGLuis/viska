@@ -47,11 +47,9 @@ class SessionHealth {
     final cause = isFailed
         ? 'A sessão segura com este contato falhou.'
         : 'Esta sessão enviou mensagens demais e precisa ser renovada.';
-    // O reset é local (docs/protocol.md §11.1): se o contato seguir com a
-    // sessão dele no ar, ou já tiver reconectado antes, é preciso que ele
-    // também toque em reconectar.
-    return '$cause Reconectar abre uma sessão nova; o contato também pode precisar '
-        'reconectar do aparelho dele, e se os dois reconectarem em instantes '
-        'diferentes pode ser preciso tocar de novo. Mensagens de texto ficam na fila até lá.';
+    // O contato é avisado e acompanha sozinho (docs/protocol.md §11.4), mas
+    // só quando os dois estiverem conectados.
+    return '$cause Reconectar abre uma sessão nova e avisa o contato quando vocês '
+        'estiverem conectados. Mensagens de texto ficam na fila até lá.';
   }
 }

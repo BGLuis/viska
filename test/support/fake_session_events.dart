@@ -14,6 +14,7 @@ mixin FakeSessionEvents {
   SessionStateKind _state = SessionStateKind.handshaking;
   var _gone = false;
   var _needsRehandshake = false;
+  var _generation = 0;
   final _sessionEvents = StreamController<SessionStateEventDto>.broadcast(sync: true);
 
   SessionStateKind get sessionState => _state;
@@ -35,12 +36,21 @@ mixin FakeSessionEvents {
     _emitSessionState();
   }
 
+  int get generation => _generation;
+
+  /// A sessão foi trocada por outra (o par reabriu, §11.4) sem mudar de estado.
+  set generation(int value) {
+    _generation = value;
+    _emitSessionState();
+  }
+
   void _emitSessionState() => _sessionEvents.add(_snapshot());
 
   SessionStateEventDto _snapshot() => SessionStateEventDto(
         peerDeviceId: Uint8List.fromList(peerDeviceId),
         state: _gone ? null : _state,
         needsRehandshake: _needsRehandshake,
+        generation: _generation,
       );
 
   Stream<SessionStateEventDto> subscribeSessionEvents() async* {

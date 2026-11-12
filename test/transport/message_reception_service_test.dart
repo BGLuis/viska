@@ -114,6 +114,47 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
         outgoingHandshake: outgoingHandshake,
       );
 
+  /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
+  /// handshake os bytes vão para o handshake (registrados em
+  /// [feedHandshakeCalls]); estabelecida, para a decifragem (registrados em
+  /// [decryptIncomingCalls]); falha, para lugar nenhum.
+  @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) async {
+    switch (sessionState) {
+      case SessionStateKind.failed:
+        return const IncomingResultDto();
+      case SessionStateKind.handshaking:
+        return IncomingResultDto(
+          reply: await feedHandshake(peerDeviceId: peerDeviceId, bytes: bytes),
+        );
+      case SessionStateKind.established:
+        return IncomingResultDto(
+          message: await decryptIncoming(peerDeviceId: peerDeviceId, envelope: bytes),
+          reply: replyWhenEstablished,
+        );
+    }
+  }
+
+  /// Resposta que o Rust devolveria com a sessão estabelecida: a RESP de uma
+  /// reabertura do par, ou o anúncio de suítes (§11.4).
+  Uint8List? replyWhenEstablished;
+
+  final connectSignalCalls = <List<int>>[];
+
+  /// Bytes que `connectSignal` devolve; sem valor, a INIT pendente enquanto em
+  /// handshake.
+  Uint8List? connectSignalResult;
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) async {
+    connectSignalCalls.add(peerDeviceId);
+    return connectSignalResult ??
+        (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
+  }
+
   @override
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
@@ -335,6 +376,42 @@ void main() {
       expect(events.whereType<SessionStateChangedEvent>(), isNotEmpty);
 
       await sub.cancel();
+    });
+
+    test('reply returned with an established session is sent back to the peer', () async {
+      core.sessionState = SessionStateKind.established;
+      core.replyWhenEstablished = Uint8List.fromList([5, 5]);
+      await service.start();
+
+      transport.emitIncoming(Uint8List.fromList([1, 2, 3]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.first, Uint8List.fromList([5, 5]));
+    });
+
+    test('channel opening publishes the connect signal', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.connectSignalResult = Uint8List.fromList([9, 9]);
+      await service.start();
+      await pumpEventQueue();
+
+      expect(core.connectSignalCalls, isNotEmpty);
+      expect(transport.sendCalls.any((b) => listEquals(b, [9, 9])), isTrue);
+    });
+
+    test('session replaced by the peer flushes pending even if it stays established', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 8, bytes: Uint8List.fromList([88])),
+      ];
+
+      core.generation = 1;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [88])), hasLength(1));
+      expect(service.sessionStateFor(contact)?.generation, 1);
     });
 
     test('handshake completion flushes pending messages and marks them sent', () async {

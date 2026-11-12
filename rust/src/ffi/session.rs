@@ -21,13 +21,15 @@ use std::sync::MutexGuard;
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
-    DeliveryStateDto, IncomingMessageDto, MessageDirectionDto, MessageDto, MessageKindDto,
+    DeliveryStateDto, IncomingMessageDto, IncomingResultDto, MessageDirectionDto, MessageDto,
+    MessageKindDto,
     SealedMessageDto, SessionStateEventDto, SessionStateKind, SessionStatusDto,
 };
 use crate::frb_generated::StreamSink;
 use crate::session_events::{PublishOnExit, SessionEventSink};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
+use viska_proto::wire::plaintext::InnerPlaintext;
 use viska_proto::store::transfers::Direction as TransferDirection;
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
@@ -57,7 +59,7 @@ impl Core {
             return Ok(status_dto(session));
         }
 
-        self.open_session(&mut sessions, device_id)
+        self.open_session(&mut sessions, device_id, 0)
     }
 
     /// Descarta a sessão `Failed` (ou que passou do limiar de §11.2) e abre
@@ -67,9 +69,10 @@ impl Core {
     /// em handshake, devolve o status atual sem tocar em nada, para um toque
     /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
     ///
-    /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
-    /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
-    /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+    /// O par fica sabendo pelo que o Dart publica a seguir com
+    /// [`Self::connect_signal`]: a INIT, se formos iniciador, ou um `REOPEN`,
+    /// se formos respondedor (§11.4). A sessão dele segue viva até a nova
+    /// provar a chave.
     ///
     /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
     /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
@@ -107,8 +110,12 @@ impl Core {
                 return Ok(status_dto(session));
             }
         }
-        sessions.remove(&device_id);
-        self.open_session(&mut sessions, device_id)
+        // A geração continua da sessão descartada: a troca precisa aparecer no
+        // evento mesmo que o estado novo seja igual ao antigo.
+        let generation = sessions
+            .remove(&device_id)
+            .map_or(0, |old| old.generation().wrapping_add(1));
+        self.open_session(&mut sessions, device_id, generation)
     }
 
     /// Cancela os envios de arquivo e voz deste contato e falha as mensagens.
@@ -208,6 +215,7 @@ impl Core {
         &self,
         sessions: &mut HashMap<[u8; 16], Session>,
         device_id: [u8; DEVICE_ID_LEN],
+        generation: u32,
     ) -> Result<SessionStatusDto, FfiError> {
         let (peer, _, _, _) = self
             .store
@@ -220,7 +228,8 @@ impl Core {
             .ok()
             .and_then(|mut m| m.remove(&device_id));
         let id = self.identity.read().map_err(|_| FfiError::Internal)?;
-        let (session, _) = Session::open_with_upgrade(&id, peer, suite_id, upgrade_suite)?;
+        let (mut session, _) = Session::open_with_upgrade(&id, peer, suite_id, upgrade_suite)?;
+        session.set_generation(generation);
         let status = status_dto(&session);
         sessions.insert(device_id, session);
         Ok(status)
@@ -229,6 +238,9 @@ impl Core {
     /// Alimenta a sessão com uma mensagem de handshake recebida via
     /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
     /// de resposta a publicar, se houver.
+    ///
+    /// O app usa [`Self::receive_incoming`]; este caminho não trata uma sessão
+    /// já estabelecida que recebe a INIT de uma reabertura (§11.4).
     ///
     /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
     /// sido chamado antes para este contato — este método nunca cria uma
@@ -336,6 +348,10 @@ impl Core {
 
     /// Decifra um envelope recebido no `DataChannel`.
     ///
+    /// O app usa [`Self::receive_incoming`], que também trata handshake e
+    /// reabertura (§11.4); este caminho só serve a quem já sabe que os bytes
+    /// são um envelope da sessão atual, e não considera uma sessão candidata.
+    ///
     /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
     /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
     /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
@@ -369,18 +385,7 @@ impl Core {
             .get_mut(&device_id)
             .ok_or(FfiError::NoActiveSession)?;
         let inner = session.decrypt_incoming(&envelope, Transport::DataChannel)?;
-        if let Some(upgrade) = session.agreed_upgrade_suite() {
-            if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
-                upgrades.insert(device_id, upgrade);
-            }
-        }
-        let should_upgrade = session.should_upgrade_contact(
-            self.store.get_contact_suite_id(&device_id).unwrap_or(0),
-        );
-        let current_suite = session.current_suite();
-        if should_upgrade {
-            let _ = self.store.set_contact_suite_id(&device_id, current_suite);
-        }
+        self.record_suite_progress(&device_id, session);
 
         let Some(inner) = inner else {
             return Ok(None);
@@ -389,7 +394,102 @@ impl Core {
         // não precisam do mesmo lock, e segurar um enquanto se espera o
         // outro é desnecessário.
         drop(sessions);
+        self.handle_incoming_plaintext(device_id, inner, &envelope)
+    }
 
+    /// Entrada única dos bytes que chegam do par — `docs/protocol.md` §11.4.
+    ///
+    /// O Rust decide o que os bytes são (INIT, RESP, `REOPEN` ou envelope),
+    /// pelo estado da sessão e pelo tamanho; o Dart só envia `reply` de volta,
+    /// se vier. Abre a sessão se ela ainda não existir, com o papel de §4.
+    /// Falha de decifragem devolve tudo `None`, sem distinguir a causa.
+    ///
+    /// Quando o par reabre (uma candidata é aberta), os textos deste contato
+    /// que estavam em `Sending` viram `Unknown`: saíram pela sessão que o par
+    /// provavelmente perdeu, e recifrá-los poderia entregá-los duas vezes.
+    pub fn receive_incoming(
+        &self,
+        peer_device_id: Vec<u8>,
+        bytes: Vec<u8>,
+    ) -> Result<IncomingResultDto, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
+        let mut sessions = self.lock_sessions()?;
+        if !sessions.contains_key(&device_id) {
+            self.open_session(&mut sessions, device_id, 0)?;
+        }
+        let session = sessions
+            .get_mut(&device_id)
+            .ok_or(FfiError::NoActiveSession)?;
+
+        let received = {
+            let id = self.identity.read().map_err(|_| FfiError::Internal)?;
+            session.receive(&id, &bytes, Transport::DataChannel)?
+        };
+        self.record_suite_progress(&device_id, session);
+        drop(sessions);
+
+        if received.candidate_opened {
+            self.store.mark_sending_messages_unknown_for_contact(&device_id)?;
+        }
+        let message = match received.message {
+            Some(inner) => self.handle_incoming_plaintext(device_id, inner, &bytes)?,
+            None => None,
+        };
+        Ok(IncomingResultDto {
+            message,
+            reply: received.reply,
+        })
+    }
+
+    /// Bytes a publicar quando o canal com o contato conecta (§11.4): a INIT se
+    /// formos iniciador esperando a RESP, um `REOPEN` novo se formos
+    /// respondedor esperando a INIT, `None` se não há nada a anunciar. Abre a
+    /// sessão se ela ainda não existir.
+    ///
+    /// Separado de `ensure_session` de propósito: cada `REOPEN` tem nonce e
+    /// carimbo próprios, então gerá-lo numa simples consulta de status faria
+    /// toda leitura produzir um sinal novo.
+    pub fn connect_signal(&self, peer_device_id: Vec<u8>) -> Result<Option<Vec<u8>>, FfiError> {
+        let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
+        let mut sessions = self.lock_sessions()?;
+        if !sessions.contains_key(&device_id) {
+            self.open_session(&mut sessions, device_id, 0)?;
+        }
+        let session = sessions
+            .get_mut(&device_id)
+            .ok_or(FfiError::NoActiveSession)?;
+        Ok(session.connect_signal()?)
+    }
+
+    /// Guarda a suíte acordada para a próxima sessão e eleva a do contato
+    /// quando a sessão atual já a confirmou (§10, D24).
+    fn record_suite_progress(&self, device_id: &[u8; DEVICE_ID_LEN], session: &Session) {
+        if let Some(upgrade) = session.agreed_upgrade_suite() {
+            if let Ok(mut upgrades) = self.agreed_upgrades.lock() {
+                upgrades.insert(*device_id, upgrade);
+            }
+        }
+        let should_upgrade = session.should_upgrade_contact(
+            self.store.get_contact_suite_id(device_id).unwrap_or(0),
+        );
+        if should_upgrade {
+            let _ = self.store.set_contact_suite_id(device_id, session.current_suite());
+        }
+    }
+
+    /// Aplica um pacote já decifrado: persiste texto, processa recibo e
+    /// controle de arquivo. `envelope` é o envelope de onde ele saiu, para o
+    /// contador em claro.
+    fn handle_incoming_plaintext(
+        &self,
+        device_id: [u8; DEVICE_ID_LEN],
+        inner: InnerPlaintext,
+        envelope: &[u8],
+    ) -> Result<Option<IncomingMessageDto>, FfiError> {
         let received_at = viska_proto::util::time::unix_seconds() as i64;
         match inner.packet_type {
             PacketType::MsgText => {
@@ -414,7 +514,7 @@ impl Core {
                     &body,
                     received_at,
                 )?;
-                if let Ok(cnt) = viska_proto::wire::envelope::counter(&envelope) {
+                if let Ok(cnt) = viska_proto::wire::envelope::counter(envelope) {
                     let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
                 }
                 Ok(Some(IncomingMessageDto {
@@ -680,8 +780,8 @@ fn session_state(session: &Session) -> SessionStateKind {
 
 /// Sem passar por `status_dto`: este cálculo roda ao sair de todo método que
 /// mexe em sessão, e `status_dto` copiaria a INIT pendente só para descartá-la.
-fn snapshot(session: &Session) -> (SessionStateKind, bool) {
-    (session_state(session), session.needs_rehandshake())
+fn snapshot(session: &Session) -> (SessionStateKind, bool, u32) {
+    (session_state(session), session.needs_rehandshake(), session.generation())
 }
 
 fn status_dto(session: &Session) -> SessionStatusDto {
@@ -1671,5 +1771,173 @@ mod tests {
 
         assert_eq!(status.state, SessionStateKind::Handshaking);
         assert_eq!(last_state(&seen), Some(SessionStateKind::Handshaking));
+    }
+
+    // --- Reabertura avisada ao par (§11.4, issue #78) ---
+
+    /// Entrega `bytes` ao lado indicado e segue as respostas de um lado para o
+    /// outro até ninguém ter mais o que mandar: o laço que o Dart faz com
+    /// `receive_incoming`.
+    fn pump(p: &PairedCores, mut bytes: Vec<u8>, mut to_a: bool) {
+        for _ in 0..16 {
+            let (core, peer) = if to_a {
+                (&p.core_a, &p.device_id_b)
+            } else {
+                (&p.core_b, &p.device_id_a)
+            };
+            match core.receive_incoming(peer.clone(), bytes).unwrap().reply {
+                Some(reply) => {
+                    bytes = reply;
+                    to_a = !to_a;
+                }
+                None => return,
+            }
+        }
+        panic!("troca de sinais não terminou");
+    }
+
+    /// Texto nas duas direções, pelo caminho que o app usa.
+    fn assert_talks(p: &PairedCores) {
+        let a = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "oi b".to_owned()).unwrap();
+        let got = p.core_b.receive_incoming(p.device_id_a.clone(), a.bytes.unwrap()).unwrap();
+        assert_eq!(got.message.unwrap().body, "oi b");
+        let b = p.core_b.seal_outgoing_text(p.device_id_a.clone(), "oi a".to_owned()).unwrap();
+        let got = p.core_a.receive_incoming(p.device_id_b.clone(), b.bytes.unwrap()).unwrap();
+        assert_eq!(got.message.unwrap().body, "oi a");
+    }
+
+    fn state(core: &Core, peer: &[u8]) -> SessionStateKind {
+        core.session_status(peer.to_vec()).unwrap().unwrap().state
+    }
+
+    #[test]
+    fn first_contact_through_receive_incoming_establishes_both() {
+        let p = paired_pair();
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        assert_eq!(state(&p.core_a, &p.device_id_b), SessionStateKind::Established);
+        assert_eq!(state(&p.core_b, &p.device_id_a), SessionStateKind::Established);
+        assert_talks(&p);
+    }
+
+    #[test]
+    fn failed_initiator_reconnecting_alone_brings_both_back() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+        fail_session(&p.core_b, &p.device_id_a, &p.core_a, &p.device_id_b);
+        let seen_b = record_events(&p.core_b);
+
+        p.core_a.reset_session(p.device_id_b.clone()).unwrap();
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        assert_eq!(state(&p.core_a, &p.device_id_b), SessionStateKind::Established);
+        assert_eq!(state(&p.core_b, &p.device_id_a), SessionStateKind::Established);
+        let last = seen_b.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last.state, Some(SessionStateKind::Established));
+        assert_eq!(last.generation, 1, "o lado que não reabriu também avisa a troca");
+        assert_talks(&p);
+    }
+
+    #[test]
+    fn failed_responder_reconnecting_alone_brings_both_back() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+        fail_session(&p.core_a, &p.device_id_b, &p.core_b, &p.device_id_a);
+        let seen_a = record_events(&p.core_a);
+
+        p.core_b.reset_session(p.device_id_a.clone()).unwrap();
+        let signal = p.core_b.connect_signal(p.device_id_a.clone()).unwrap().unwrap();
+        pump(&p, signal, true);
+
+        assert_eq!(state(&p.core_a, &p.device_id_b), SessionStateKind::Established);
+        assert_eq!(state(&p.core_b, &p.device_id_a), SessionStateKind::Established);
+        assert_eq!(seen_a.lock().unwrap().last().unwrap().generation, 1);
+        assert_talks(&p);
+    }
+
+    #[test]
+    fn initiator_restart_is_followed_by_the_peer() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+
+        // Trancar e destrancar descarta as sessões, como reiniciar o app.
+        p.core_a.lock().unwrap();
+        p.core_a.unlock().unwrap();
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        assert_talks(&p);
+    }
+
+    #[test]
+    fn responder_restart_is_followed_by_the_peer() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+
+        p.core_b.lock().unwrap();
+        p.core_b.unlock().unwrap();
+        let signal = p.core_b.connect_signal(p.device_id_a.clone()).unwrap().unwrap();
+        pump(&p, signal, true);
+
+        assert_talks(&p);
+    }
+
+    #[test]
+    fn text_written_while_renewing_waits_and_goes_out_on_the_new_session() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+
+        p.core_b.lock().unwrap();
+        p.core_b.unlock().unwrap();
+        let signal = p.core_b.connect_signal(p.device_id_a.clone()).unwrap().unwrap();
+        let init = p
+            .core_a
+            .receive_incoming(p.device_id_b.clone(), signal)
+            .unwrap()
+            .reply
+            .unwrap();
+
+        // A sessão de `a` continua `Established`, mas não cifra nada agora.
+        let held = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "na fila".to_owned()).unwrap();
+        assert!(held.bytes.is_none());
+
+        pump(&p, init, false);
+        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        assert_eq!(flushed.len(), 1);
+        let got = p
+            .core_b
+            .receive_incoming(p.device_id_a.clone(), flushed[0].bytes.clone().unwrap())
+            .unwrap();
+        assert_eq!(got.message.unwrap().body, "na fila");
+    }
+
+    #[test]
+    fn peer_reopening_marks_in_flight_text_unknown() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        give_b_a_send_chain(&p);
+        // Cifrado e ainda não confirmado pelo transporte: fica `Sending`.
+        let in_flight = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "voando".to_owned()).unwrap();
+
+        p.core_b.lock().unwrap();
+        p.core_b.unlock().unwrap();
+        let signal = p.core_b.connect_signal(p.device_id_a.clone()).unwrap().unwrap();
+        p.core_a.receive_incoming(p.device_id_b.clone(), signal).unwrap();
+
+        let row = p
+            .core_a
+            .list_messages(p.device_id_b.clone())
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == in_flight.message_id)
+            .unwrap();
+        assert_eq!(row.delivery_state, DeliveryStateDto::Unknown);
     }
 }

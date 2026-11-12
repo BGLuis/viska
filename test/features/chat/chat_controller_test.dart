@@ -151,6 +151,42 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
         outgoingHandshake: outgoingHandshake,
       );
 
+  /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
+  /// handshake os bytes vão para o handshake (registrados em
+  /// [feedHandshakeCalls]); estabelecida, para a decifragem (registrados em
+  /// [decryptIncomingCalls]); falha, para lugar nenhum.
+  @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) async {
+    switch (sessionState) {
+      case SessionStateKind.failed:
+        return const IncomingResultDto();
+      case SessionStateKind.handshaking:
+        return IncomingResultDto(
+          reply: await feedHandshake(peerDeviceId: peerDeviceId, bytes: bytes),
+        );
+      case SessionStateKind.established:
+        return IncomingResultDto(
+          message: await decryptIncoming(peerDeviceId: peerDeviceId, envelope: bytes),
+        );
+    }
+  }
+
+  final connectSignalCalls = <List<int>>[];
+
+  /// Bytes que `connectSignal` devolve; sem valor, a INIT pendente enquanto em
+  /// handshake.
+  Uint8List? connectSignalResult;
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) async {
+    connectSignalCalls.add(peerDeviceId);
+    return connectSignalResult ??
+        (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
+  }
+
   @override
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
@@ -799,19 +835,18 @@ void main() {
       await service.dispose();
     });
 
-    test('reconnectSession resets the session and publishes the new INIT', () async {
+    test('reconnectSession resets the session and publishes the connect signal', () async {
       core.sessionState = SessionStateKind.failed;
-      core.resetSessionResult = SessionStatusDto(
-        state: SessionStateKind.handshaking,
-        needsRehandshake: false,
-        outgoingHandshake: Uint8List.fromList([4, 4]),
-      );
+      // INIT se formos iniciador, sinal de reabertura se respondedor: o Rust
+      // decide, o controlador só publica o que `connectSignal` devolver.
+      core.connectSignalResult = Uint8List.fromList([4, 4]);
       controller = makeController();
       await controller.initialize();
 
       await controller.reconnectSession();
 
       expect(core.resetSessionCalls, [contact.deviceId]);
+      expect(core.connectSignalCalls, isNotEmpty);
       expect(transport.sendCalls.any((b) => listEquals(b, [4, 4])), isTrue);
       expect(controller.isReconnecting, isFalse);
       expect(controller.sessionError, isNull);

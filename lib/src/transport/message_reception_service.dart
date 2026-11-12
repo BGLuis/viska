@@ -32,16 +32,23 @@ class TypingIndicatorEvent extends MessageReceptionEvent {
 }
 
 /// O Rust mudou o estado da sessão com o contato (handshake concluído, sessão
-/// falha, limiar de renovação cruzado). [state] é `null` quando a sessão
-/// deixou de existir (bloqueio do cofre, re-pareamento ou reset).
+/// falha, limiar de renovação cruzado, sessão trocada). [state] é `null`
+/// quando a sessão deixou de existir (bloqueio do cofre, re-pareamento ou
+/// reset).
 class SessionStateChangedEvent extends MessageReceptionEvent {
   const SessionStateChangedEvent(
     super.contactId, {
     required this.state,
     required this.needsRehandshake,
+    this.generation = 0,
   });
   final SessionStateKind? state;
   final bool needsRehandshake;
+
+  /// Muda quando a sessão foi trocada por outra, inclusive quando o contato
+  /// reabriu e a nossa continuou `established` (docs/protocol.md §11.4). Quem
+  /// dependia da sessão anterior compara este valor.
+  final int generation;
 
   bool get isEstablished => state == SessionStateKind.established;
 }
@@ -181,14 +188,18 @@ class MessageReceptionService {
       contactId,
       state: dto.state,
       needsRehandshake: dto.needsRehandshake,
+      generation: dto.generation,
     );
-    final wasEstablished = _sessionStates[contactId]?.isEstablished ?? false;
+    final previous = _sessionStates[contactId];
+    final wasEstablished = previous?.isEstablished ?? false;
     _sessionStates[contactId] = event;
     _eventsController.add(event);
-    // A saída só destrava quando a sessão passa a `established`: antes disso o
-    // Rust devolve lista vazia. Cobre também o respondedor, cuja cadeia de
-    // envio só nasce no primeiro pacote recebido (§5.1).
-    if (event.isEstablished && !wasEstablished) {
+    // A saída só destrava quando a sessão passa a `established`, ou quando é
+    // trocada por outra que já está (§11.4): antes disso o Rust devolve lista
+    // vazia. Cobre também o respondedor, cuja cadeia de envio só nasce no
+    // primeiro pacote recebido (§5.1).
+    final renewed = previous != null && previous.generation != event.generation;
+    if (event.isEstablished && (!wasEstablished || renewed)) {
       unawaited(_flushPending(contactId));
     }
   }
@@ -264,9 +275,10 @@ class MessageReceptionService {
     _incomingSubs[contactId] = controlSub;
     _incomingFileSubs[contactId] = fileSub;
 
-    // Se formos iniciador deste contato e houver handshake pendente,
-    // despacha a INIT assim que o canal abrir.
-    unawaited(_tryPublishOutgoingHandshake(contactId));
+    // Anuncia a sessão assim que o canal abrir: a INIT se formos iniciador, ou
+    // o sinal de reabertura se formos respondedor de uma sessão recém-aberta
+    // (docs/protocol.md §11.4).
+    unawaited(_publishConnectSignal(contactId));
   }
 
   /// Recria o transporte de um contato depois que o atual falhou, para que o
@@ -297,30 +309,24 @@ class MessageReceptionService {
   Future<void> _handleIncomingRaw(ContactId contactId, Uint8List bytes) async {
     if (_isPaused || _disposed) return;
     try {
-      final status = await _core.ensureSession(peerDeviceId: contactId.deviceId);
-      if (status.state == SessionStateKind.failed) {
-        // Nada a fazer com o pacote: só `reset_session` reabre a sessão, e quem
-        // decide isso é a pessoa, pelo aviso do chat. O estado já foi publicado.
-        if (kDebugMode) debugPrint('[MessageReceptionService] Pacote de $contactId descartado: sessão falha');
-        return;
-      }
-
-      if (status.state != SessionStateKind.established) {
-        final response = await _core.feedHandshake(
-          peerDeviceId: contactId.deviceId,
-          bytes: bytes,
-        );
-        if (response != null) {
-          await _router.sendToContact(contactId, response);
-        }
-        return;
-      }
-
-      final incoming = await _core.decryptIncoming(
+      // O Rust decide se os bytes são handshake, sinal de reabertura ou
+      // envelope (docs/protocol.md §11.4); aqui só se devolve o que ele pedir.
+      final result = await _core.receiveIncoming(
         peerDeviceId: contactId.deviceId,
-        envelope: bytes,
+        bytes: bytes,
       );
+      final reply = result.reply;
+      if (reply != null) {
+        try {
+          await _router.sendToContact(contactId, reply);
+        } catch (e) {
+          // Sem transporte agora: o par repete o sinal, ou `connectSignal`
+          // republica quando o canal voltar.
+          if (kDebugMode) debugPrint('[MessageReceptionService] Resposta a $contactId não enviada: $e');
+        }
+      }
 
+      final incoming = result.message;
       if (incoming?.isTyping == true) {
         _eventsController.add(TypingIndicatorEvent(contactId));
       } else {
@@ -545,18 +551,14 @@ class MessageReceptionService {
     }
   }
 
-  Future<void> _tryPublishOutgoingHandshake(ContactId contactId) async {
+  Future<void> _publishConnectSignal(ContactId contactId) async {
     try {
-      final status = await _core.ensureSession(peerDeviceId: contactId.deviceId);
-      // Sessão já estabelecida: o evento do stream drena o que ficou pendente.
-      if (status.state != SessionStateKind.handshaking) return;
-
-      final outgoing = status.outgoingHandshake;
-      if (outgoing != null) {
-        await _router.sendToContact(contactId, outgoing);
+      final signal = await _core.connectSignal(peerDeviceId: contactId.deviceId);
+      if (signal != null) {
+        await _router.sendToContact(contactId, signal);
       }
     } catch (e) {
-      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao enviar handshake inicial para $contactId: $e');
+      if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao anunciar a sessão para $contactId: $e');
     }
   }
 

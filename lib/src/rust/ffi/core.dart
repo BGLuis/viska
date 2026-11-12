@@ -52,6 +52,16 @@ abstract class Core implements RustOpaqueInterface {
   /// entre aparelhos próximos em pareamento.
   Future<String> computeSasCode({required List<int> peerPayload});
 
+  /// Bytes a publicar quando o canal com o contato conecta (§11.4): a INIT se
+  /// formos iniciador esperando a RESP, um `REOPEN` novo se formos
+  /// respondedor esperando a INIT, `None` se não há nada a anunciar. Abre a
+  /// sessão se ela ainda não existir.
+  ///
+  /// Separado de `ensure_session` de propósito: cada `REOPEN` tem nonce e
+  /// carimbo próprios, então gerá-lo numa simples consulta de status faria
+  /// toda leitura produzir um sinal novo.
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId});
+
   /// Decodifica o formato interno devolvido por
   /// [`Core::finish_receive_audio`] para um WAV tocável — inteiramente em
   /// memória; quem chama nunca deveria gravar o resultado em disco. WAV,
@@ -60,6 +70,10 @@ abstract class Core implements RustOpaqueInterface {
   Future<Uint8List> decodeAudioToWav({required List<int> internalBytes});
 
   /// Decifra um envelope recebido no `DataChannel`.
+  ///
+  /// O app usa [`Self::receive_incoming`], que também trata handshake e
+  /// reabertura (§11.4); este caminho só serve a quem já sabe que os bytes
+  /// são um envelope da sessão atual, e não considera uma sessão candidata.
   ///
   /// `Ok(None)` cobre qualquer falha de decifragem — a mesma política de
   /// `Session::decrypt_incoming`, nenhuma causa diferenciada por fora.
@@ -116,6 +130,9 @@ abstract class Core implements RustOpaqueInterface {
   /// Alimenta a sessão com uma mensagem de handshake recebida via
   /// sinalização (INIT ou RESP, conforme o estado atual). Devolve os bytes
   /// de resposta a publicar, se houver.
+  ///
+  /// O app usa [`Self::receive_incoming`]; este caminho não trata uma sessão
+  /// já estabelecida que recebe a INIT de uma reabertura (§11.4).
   ///
   /// Erra com `FfiError::NoActiveSession` se `ensure_session` não tiver
   /// sido chamado antes para este contato — este método nunca cria uma
@@ -292,6 +309,21 @@ abstract class Core implements RustOpaqueInterface {
     required List<int> peerDeviceId,
   });
 
+  /// Entrada única dos bytes que chegam do par — `docs/protocol.md` §11.4.
+  ///
+  /// O Rust decide o que os bytes são (INIT, RESP, `REOPEN` ou envelope),
+  /// pelo estado da sessão e pelo tamanho; o Dart só envia `reply` de volta,
+  /// se vier. Abre a sessão se ela ainda não existir, com o papel de §4.
+  /// Falha de decifragem devolve tudo `None`, sem distinguir a causa.
+  ///
+  /// Quando o par reabre (uma candidata é aberta), os textos deste contato
+  /// que estavam em `Sending` viram `Unknown`: saíram pela sessão que o par
+  /// provavelmente perdeu, e recifrá-los poderia entregá-los duas vezes.
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  });
+
   /// Rejeita e descarta uma oferta de arquivo retida em memória. Remove
   /// a oferta e zera o material de chave sem criar registro em banco ou
   /// arquivo em staging.
@@ -323,9 +355,10 @@ abstract class Core implements RustOpaqueInterface {
   /// em handshake, devolve o status atual sem tocar em nada, para um toque
   /// repetido na UI não derrubar uma sessão que acabou de se restabelecer.
   ///
-  /// O reset é local. O par não é avisado (não há marcador de tipo no fio,
-  /// D4): se ele seguir `Established`, a INIT nova só vale depois que a
-  /// sessão dele também falhar. Ver `docs/protocol.md` §11.1.
+  /// O par fica sabendo pelo que o Dart publica a seguir com
+  /// [`Self::connect_signal`]: a INIT, se formos iniciador, ou um `REOPEN`,
+  /// se formos respondedor (§11.4). A sessão dele segue viva até a nova
+  /// provar a chave.
   ///
   /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
   /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1763982849;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 833623575;
 
 // Section: executor
 
@@ -413,6 +413,59 @@ fn wire__crate__ffi__core__Core_compute_sas_code_impl(
                     let output_ok = crate::ffi::core::Core::compute_sas_code(
                         &*api_that_guard,
                         api_peer_payload,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__ffi__core__Core_connect_signal_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_connect_signal",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_peer_device_id = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::connect_signal(
+                        &*api_that_guard,
+                        api_peer_device_id,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -2299,6 +2352,61 @@ fn wire__crate__ffi__core__Core_pending_file_offers_impl(
         },
     )
 }
+fn wire__crate__ffi__core__Core_receive_incoming_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_receive_incoming",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_peer_device_id = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_bytes = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::receive_incoming(
+                        &*api_that_guard,
+                        api_peer_device_id,
+                        api_bytes,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__ffi__core__Core_reject_file_offer_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -4113,6 +4221,19 @@ impl SseDecode for crate::ffi::types::IncomingMessageDto {
     }
 }
 
+impl SseDecode for crate::ffi::types::IncomingResultDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_message =
+            <Option<crate::ffi::types::IncomingMessageDto>>::sse_decode(deserializer);
+        let mut var_reply = <Option<Vec<u8>>>::sse_decode(deserializer);
+        return crate::ffi::types::IncomingResultDto {
+            message: var_message,
+            reply: var_reply,
+        };
+    }
+}
+
 impl SseDecode for crate::ffi::types::IngestedChunkDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4506,10 +4627,12 @@ impl SseDecode for crate::ffi::types::SessionStateEventDto {
         let mut var_peerDeviceId = <Vec<u8>>::sse_decode(deserializer);
         let mut var_state = <Option<crate::ffi::types::SessionStateKind>>::sse_decode(deserializer);
         let mut var_needsRehandshake = <bool>::sse_decode(deserializer);
+        let mut var_generation = <u32>::sse_decode(deserializer);
         return crate::ffi::types::SessionStateEventDto {
             peer_device_id: var_peerDeviceId,
             state: var_state,
             needs_rehandshake: var_needsRehandshake,
+            generation: var_generation,
         };
     }
 }
@@ -4667,215 +4790,217 @@ fn pde_ffi_dispatcher_primary_impl(
         ),
         6 => wire__crate__ffi__core__Core_cancel_transfer_impl(port, ptr, rust_vec_len, data_len),
         7 => wire__crate__ffi__core__Core_compute_sas_code_impl(port, ptr, rust_vec_len, data_len),
-        8 => {
+        8 => wire__crate__ffi__core__Core_connect_signal_impl(port, ptr, rust_vec_len, data_len),
+        9 => {
             wire__crate__ffi__core__Core_decode_audio_to_wav_impl(port, ptr, rust_vec_len, data_len)
         }
-        9 => wire__crate__ffi__core__Core_decrypt_incoming_impl(port, ptr, rust_vec_len, data_len),
-        10 => {
+        10 => wire__crate__ffi__core__Core_decrypt_incoming_impl(port, ptr, rust_vec_len, data_len),
+        11 => {
             wire__crate__ffi__core__Core_discovery_beacons_impl(port, ptr, rust_vec_len, data_len)
         }
-        11 => wire__crate__ffi__core__Core_emergency_erase_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__ffi__core__Core_ensure_session_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__ffi__core__Core_export_encrypted_backup_impl(
+        12 => wire__crate__ffi__core__Core_emergency_erase_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__ffi__core__Core_ensure_session_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__ffi__core__Core_export_encrypted_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        14 => wire__crate__ffi__core__Core_feed_handshake_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__ffi__core__Core_file_feedback_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__ffi__core__Core_finish_receive_audio_impl(
+        15 => wire__crate__ffi__core__Core_feed_handshake_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__ffi__core__Core_file_feedback_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__ffi__core__Core_finish_receive_audio_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        17 => {
+        18 => {
             wire__crate__ffi__core__Core_finish_receive_file_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => wire__crate__ffi__core__Core_flush_pending_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__ffi__core__Core_get_config_impl(port, ptr, rust_vec_len, data_len),
-        20 => {
+        19 => wire__crate__ffi__core__Core_flush_pending_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__ffi__core__Core_get_config_impl(port, ptr, rust_vec_len, data_len),
+        21 => {
             wire__crate__ffi__core__Core_get_ephemeral_ttl_impl(port, ptr, rust_vec_len, data_len)
         }
-        21 => wire__crate__ffi__core__Core_ingest_incoming_wire_bytes_impl(
+        22 => wire__crate__ffi__core__Core_ingest_incoming_wire_bytes_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        22 => {
+        23 => {
             wire__crate__ffi__core__Core_is_contact_verified_impl(port, ptr, rust_vec_len, data_len)
         }
-        23 => wire__crate__ffi__core__Core_is_key_changed_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__ffi__core__Core_is_locked_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__ffi__core__Core_list_active_file_transfer_ids_impl(
+        24 => wire__crate__ffi__core__Core_is_key_changed_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__ffi__core__Core_is_locked_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__ffi__core__Core_list_active_file_transfer_ids_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        26 => wire__crate__ffi__core__Core_list_contacts_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__ffi__core__Core_list_messages_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__ffi__core__Core_list_messages_paginated_impl(
+        27 => wire__crate__ffi__core__Core_list_contacts_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__ffi__core__Core_list_messages_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__ffi__core__Core_list_messages_paginated_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => wire__crate__ffi__core__Core_lock_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__ffi__core__Core_mark_message_delivered_impl(
+        30 => wire__crate__ffi__core__Core_lock_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__ffi__core__Core_mark_message_delivered_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        31 => {
+        32 => {
             wire__crate__ffi__core__Core_mark_message_failed_impl(port, ptr, rust_vec_len, data_len)
         }
-        32 => {
+        33 => {
             wire__crate__ffi__core__Core_mark_message_read_impl(port, ptr, rust_vec_len, data_len)
         }
-        33 => {
+        34 => {
             wire__crate__ffi__core__Core_mark_message_sent_impl(port, ptr, rust_vec_len, data_len)
         }
-        34 => wire__crate__ffi__core__Core_match_discovered_beacon_impl(
+        35 => wire__crate__ffi__core__Core_match_discovered_beacon_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__ffi__core__Core_my_device_id_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__ffi__core__Core_my_nickname_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__ffi__core__Core_my_qr_payload_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__ffi__core__Core_next_outgoing_wire_chunk_impl(
+        36 => wire__crate__ffi__core__Core_my_device_id_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__ffi__core__Core_my_nickname_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__ffi__core__Core_my_qr_payload_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__ffi__core__Core_next_outgoing_wire_chunk_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__ffi__core__Core_open_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__ffi__core__Core_open_signaling_payload_impl(
+        40 => wire__crate__ffi__core__Core_open_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__ffi__core__Core_open_signaling_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        41 => wire__crate__ffi__core__Core_pair_from_qr_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__ffi__core__Core_pending_audio_offers_impl(
+        42 => wire__crate__ffi__core__Core_pair_from_qr_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__ffi__core__Core_pending_audio_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        43 => {
+        44 => {
             wire__crate__ffi__core__Core_pending_file_offers_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => {
+        45 => wire__crate__ffi__core__Core_receive_incoming_impl(port, ptr, rust_vec_len, data_len),
+        46 => {
             wire__crate__ffi__core__Core_reject_file_offer_impl(port, ptr, rust_vec_len, data_len)
         }
-        45 => wire__crate__ffi__core__Core_repair_from_qr_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__ffi__core__Core_requeue_message_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__ffi__core__Core_resend_unknown_message_impl(
+        47 => wire__crate__ffi__core__Core_repair_from_qr_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__ffi__core__Core_requeue_message_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__ffi__core__Core_resend_unknown_message_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        48 => wire__crate__ffi__core__Core_reset_session_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__ffi__core__Core_restore_encrypted_backup_impl(
+        50 => wire__crate__ffi__core__Core_reset_session_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__ffi__core__Core_restore_encrypted_backup_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        50 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
+        52 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
+        54 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => {
+        55 => {
             wire__crate__ffi__core__Core_seal_outgoing_text_impl(port, ptr, rust_vec_len, data_len)
         }
-        54 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
+        56 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        55 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
+        57 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        57 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
+        59 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => {
+        61 => {
             wire__crate__ffi__core__Core_set_ephemeral_ttl_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
-        62 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__ffi__core__Core_subscribe_session_events_impl(
+        62 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__ffi__core__Core_subscribe_session_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
+        67 => wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
+        68 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => {
+        69 => {
             wire__crate__ffi__core__Core_transfer_progress_impl(port, ptr, rust_vec_len, data_len)
         }
-        68 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
+        70 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        69 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
-        71 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
+        71 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__ffi__framing__frame_for_local_socket_impl(
+        74 => wire__crate__ffi__framing__frame_for_local_socket_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        73 => wire__crate__ffi__pin__pin_check_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__ffi__pin__pin_hash_impl(port, ptr, rust_vec_len, data_len),
-        75 => {
+        75 => wire__crate__ffi__pin__pin_check_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__ffi__pin__pin_hash_impl(port, ptr, rust_vec_len, data_len),
+        77 => {
             wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -5057,6 +5182,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::IncomingMessageDto>
     for crate::ffi::types::IncomingMessageDto
 {
     fn into_into_dart(self) -> crate::ffi::types::IncomingMessageDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::IncomingResultDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.message.into_into_dart().into_dart(),
+            self.reply.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::IncomingResultDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::IncomingResultDto>
+    for crate::ffi::types::IncomingResultDto
+{
+    fn into_into_dart(self) -> crate::ffi::types::IncomingResultDto {
         self
     }
 }
@@ -5303,6 +5449,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::SessionStateEventDto {
             self.peer_device_id.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.needs_rehandshake.into_into_dart().into_dart(),
+            self.generation.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5618,6 +5765,14 @@ impl SseEncode for crate::ffi::types::IncomingMessageDto {
         <String>::sse_encode(self.body, serializer);
         <bool>::sse_encode(self.is_typing, serializer);
         <i64>::sse_encode(self.received_at_unix_secs, serializer);
+    }
+}
+
+impl SseEncode for crate::ffi::types::IncomingResultDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<crate::ffi::types::IncomingMessageDto>>::sse_encode(self.message, serializer);
+        <Option<Vec<u8>>>::sse_encode(self.reply, serializer);
     }
 }
 
@@ -5941,6 +6096,7 @@ impl SseEncode for crate::ffi::types::SessionStateEventDto {
         <Vec<u8>>::sse_encode(self.peer_device_id, serializer);
         <Option<crate::ffi::types::SessionStateKind>>::sse_encode(self.state, serializer);
         <bool>::sse_encode(self.needs_rehandshake, serializer);
+        <u32>::sse_encode(self.generation, serializer);
     }
 }
 

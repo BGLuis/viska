@@ -112,6 +112,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IncomingMessageDto dco_decode_incoming_message_dto(dynamic raw);
 
   @protected
+  IncomingResultDto dco_decode_incoming_result_dto(dynamic raw);
+
+  @protected
   IngestedChunkDto dco_decode_ingested_chunk_dto(dynamic raw);
 
   @protected
@@ -345,6 +348,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IncomingMessageDto sse_decode_incoming_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  IncomingResultDto sse_decode_incoming_result_dto(
     SseDeserializer deserializer,
   );
 
@@ -637,6 +645,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_incoming_message_dto(
     IncomingMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_incoming_result_dto(
+    IncomingResultDto self,
     SseSerializer serializer,
   );
 

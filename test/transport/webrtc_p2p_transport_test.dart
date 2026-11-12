@@ -75,6 +75,17 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<DiscoveryBeaconsDto> discoveryBeacons({required List<int> peerDeviceId}) =>
       throw UnimplementedError();
 

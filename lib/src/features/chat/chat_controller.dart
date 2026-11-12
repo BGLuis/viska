@@ -795,24 +795,24 @@ class ChatController extends ChangeNotifier {
   }
 
 
-  /// Abre uma sessão nova com o contato (`Core.resetSession`) e publica a
-  /// INIT se formos o iniciador. O reset é só local: o contato pode precisar
-  /// reconectar também, e o aviso do chat diz isso.
+  /// Abre uma sessão nova com o contato (`Core.resetSession`) e o avisa
+  /// (`Core.connectSignal`): a INIT se formos o iniciador, o sinal de
+  /// reabertura se formos o respondedor (docs/protocol.md §11.4).
   Future<void> reconnectSession() async {
     if (_reconnecting) return;
     _reconnecting = true;
     _sessionError = null;
     notifyListeners();
     try {
-      final status = await _core.resetSession(peerDeviceId: _contactId.deviceId);
-      final handshake = status.outgoingHandshake;
+      await _core.resetSession(peerDeviceId: _contactId.deviceId);
+      final handshake = await _core.connectSignal(peerDeviceId: _contactId.deviceId);
       if (handshake != null) {
         try {
           await _router.sendToContact(_contactId, handshake);
         } catch (e) {
           // A sessão já foi reaberta; sem transporte, o serviço de recepção
-          // publica a INIT quando ele voltar.
-          if (kDebugMode) debugPrint('[ChatController] INIT da sessão nova não enviada: $e');
+          // anuncia a sessão quando ele voltar.
+          if (kDebugMode) debugPrint('[ChatController] Aviso da sessão nova não enviado: $e');
         }
       }
     } catch (e, stack) {
