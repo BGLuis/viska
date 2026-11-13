@@ -11,5 +11,6 @@ pub mod keys;
 pub mod manifest;
 pub mod merkle;
 pub mod opus_container;
+pub mod outgoing;
 pub mod staging;
 pub mod transfer;

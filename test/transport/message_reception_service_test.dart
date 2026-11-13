@@ -273,10 +273,27 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
   List<ResumedTransferDto> resumable = [];
   final resumeCalls = <Uint8List>[];
 
+  /// Como o Rust, cada transferência volta uma vez por pedido configurado:
+  /// um recebimento abandonado, por exemplo, deixa de existir depois do aviso.
   @override
   Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async {
     resumeCalls.add(Uint8List.fromList(peerDeviceId));
-    return resumable;
+    final out = resumable;
+    resumable = [];
+    return out;
+  }
+
+  /// O que `sealResumedOffer` devolve, e quantas vezes foi chamado.
+  Uint8List? offerToSeal;
+  var sealOfferCalls = 0;
+
+  @override
+  Future<Uint8List?> sealResumedOffer({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) async {
+    sealOfferCalls++;
+    return offerToSeal;
   }
 
   /// Pedaços que o emissor ainda tem a mandar, na ordem.
@@ -490,15 +507,24 @@ void main() {
     group('resuming transfers (§7.5)', () {
       final fileId = Uint8List.fromList(List.filled(16, 0xF1));
 
-      ResumedTransferDto send({Uint8List? offer, int? messageId = 5}) => ResumedTransferDto(
+      ResumedTransferDto send({bool needsOffer = false}) => ResumedTransferDto(
             fileId: fileId,
             direction: ResumedDirectionDto.send,
-            sealedMetadata: offer,
-            messageId: messageId,
+            needsOffer: needsOffer,
+            messageId: 5,
+          );
+
+      TransferProgressDto waiting({bool awaitingAnswer = false}) => TransferProgressDto(
+            blocksDone: 0,
+            totalBlocks: 2,
+            bytesDone: BigInt.zero,
+            isComplete: false,
+            awaitingAnswer: awaitingAnswer,
           );
 
       test('established session resends the offer, pumps the send and marks it sent', () async {
-        core.resumable = [send(offer: Uint8List.fromList([0x0F]))];
+        core.resumable = [send(needsOffer: true)];
+        core.offerToSeal = Uint8List.fromList([0x0F]);
         core.outgoingChunks.addAll([Uint8List.fromList([1]), Uint8List.fromList([2])]);
         core.sessionState = SessionStateKind.established;
         await service.start();
@@ -515,15 +541,14 @@ void main() {
           ResumedTransferDto(
             fileId: fileId,
             direction: ResumedDirectionDto.receive,
-            sealedMetadata: null,
-            messageId: null,
+            needsOffer: false,
           ),
         ];
         core.receiveProgress = TransferProgressDto(
           blocksDone: 1,
           totalBlocks: 2,
           bytesDone: BigInt.from(10),
-          isComplete: false,
+          isComplete: false, awaitingAnswer: false
         );
         core.sessionState = SessionStateKind.established;
         await service.start();
@@ -563,12 +588,7 @@ void main() {
       test('a resumed send that stops with the transport is marked failed, not sent', () async {
         core.resumable = [send()];
         core.outgoingChunks.add(Uint8List.fromList([1]));
-        core.receiveProgress = TransferProgressDto(
-          blocksDone: 0,
-          totalBlocks: 2,
-          bytesDone: BigInt.zero,
-          isComplete: false,
-        );
+        core.receiveProgress = waiting();
         core.sessionState = SessionStateKind.established;
         await service.start();
         await pumpEventQueue();
@@ -608,17 +628,117 @@ void main() {
         expect(core.markFailedCalls, isEmpty);
       });
 
-      test('pumpOutgoing shares one loop per file_id', () async {
-        core.outgoingChunks.addAll([Uint8List.fromList([7]), Uint8List.fromList([8])]);
+      test('one lifecycle per file_id: a resume during a running send joins it', () async {
+        core.offerToSeal = Uint8List.fromList([0x0F]);
+        core.receiveProgress = waiting();
         await service.start();
         await pumpEventQueue();
 
-        final first = service.pumpOutgoing(contact, fileId);
-        final second = service.pumpOutgoing(contact, fileId);
+        final first = service.runOutgoingTransfer(contact, fileId, messageId: 5, offer: Uint8List.fromList([0x0E]));
+        final second = service.runOutgoingTransfer(contact, fileId, messageId: 5);
         expect(identical(first, second), isTrue);
-        await Future.wait([first, second]);
+        core.resumable = [send(needsOffer: true)];
+        await service.resumeTransfers(contact);
+        await pumpEventQueue();
 
-        expect(transport.sendFileCalls, [Uint8List.fromList([7]), Uint8List.fromList([8])]);
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0E])), hasLength(1));
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), isEmpty,
+            reason: 'a retomada não sela nem manda outra oferta para um envio em curso');
+        expect(core.sealOfferCalls, 0);
+        core.receiveProgress = null;
+        await first;
+      });
+
+      test('the offer is sealed only when the resumed send actually starts', () async {
+        core.resumable = [send()];
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.sealOfferCalls, 0, reason: 'oferta já respondida não é selada');
+      });
+
+      test('an abandoned receive delivers its notice to the sender', () async {
+        core.resumable = [
+          ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.abandoned,
+            needsOffer: false,
+            sealedNotice: Uint8List.fromList([0x24]),
+          ),
+        ];
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x24])), hasLength(1));
+        expect(core.fileFeedbackCalls, 0);
+      });
+
+      test('the pump follows a transport the router replaced instead of failing', () async {
+        core.receiveProgress = waiting();
+        await service.start();
+        await pumpEventQueue();
+        final run = service.runOutgoingTransfer(contact, fileId, messageId: 5);
+        await pumpEventQueue();
+
+        await router.closeContact(contact);
+        final replacement = _FakeP2PTransport();
+        transport = replacement;
+        router.incomingFor(contact);
+        core.outgoingChunks.add(Uint8List.fromList([4]));
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+
+        expect(replacement.sendFileCalls, [Uint8List.fromList([4])]);
+        expect(core.markFailedCalls, isEmpty);
+        core.receiveProgress = null;
+        await run;
+        expect(core.markSentCalls, contains(5));
+      });
+
+      test('an accepted send with no progress stops after the idle limit', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          Object? error;
+          idle.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object e) => error = e);
+
+          async.elapse(const Duration(minutes: 1));
+          expect(error, isNull);
+          async.elapse(const Duration(minutes: 2));
+
+          expect(error, isA<TransferStalledException>());
+          expect(core.markFailedCalls, [5]);
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('a send still waiting for the offer to be answered is not stopped', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = waiting(awaitingAnswer: true);
+          router.incomingFor(contact);
+          Object? error;
+          idle.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object e) => error = e);
+
+          async.elapse(const Duration(minutes: 10));
+          expect(error, isNull);
+          expect(core.markFailedCalls, isEmpty);
+
+          core.receiveProgress = null;
+          async.elapse(const Duration(seconds: 1));
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
       });
     });
 
@@ -829,7 +949,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -858,7 +978,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -884,7 +1004,7 @@ void main() {
             blocksDone: blocksDone,
             totalBlocks: 4,
             bytesDone: BigInt.zero,
-            isComplete: isComplete,
+            isComplete: isComplete, awaitingAnswer: false
           );
 
       // Encerra pelo caminho normal: sem isso o timer periódico sobrevive ao fakeAsync.
@@ -955,6 +1075,34 @@ void main() {
         });
       });
 
+      test('stops after the idle limit without progress, and a new chunk restarts it', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = progress(blocksDone: 1);
+          router.incomingFor(contact);
+          unawaited(idle.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+
+          async.elapse(const Duration(minutes: 3));
+          final sent = core.fileFeedbackCalls;
+          expect(async.periodicTimerCount, 0, reason: 'o emissor sumiu: o feedback para');
+          async.elapse(const Duration(minutes: 1));
+          expect(core.fileFeedbackCalls, sent);
+
+          unawaited(idle.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, sent + 1);
+          core.receiveProgress = null;
+          async.elapse(const Duration(milliseconds: 500));
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
       test('stops when the transfer ends or disappears', () {
         fakeAsync((async) {
           core.receiveProgress = progress(blocksDone: 0);
@@ -1000,7 +1148,7 @@ void main() {
             blocksDone: complete ? 1 : 0,
             totalBlocks: 1,
             bytesDone: BigInt.from(10),
-            isComplete: complete,
+            isComplete: complete, awaitingAnswer: false
           );
 
       setUp(() {

@@ -507,6 +507,10 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents implements Core {
   Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async => [];
 
   @override
+  Future<Uint8List?> sealResumedOffer({required List<int> peerDeviceId, required List<int> fileId}) async =>
+      null;
+
+  @override
   Future<Uint8List> finishReceiveAudio({
     required List<int> peerDeviceId,
     required List<int> fileId,
@@ -1244,7 +1248,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             );
         core.decodeAudioToWavHandler = (_) => Uint8List.fromList([6, 6, 6]);
 
@@ -1317,7 +1321,7 @@ void main() {
                 blocksDone: 1,
                 totalBlocks: 1,
                 bytesDone: BigInt.from(10),
-                isComplete: true,
+                isComplete: true, awaitingAnswer: false
               ),
             );
         core.finishReceiveAudioHandler = (_, _) => Uint8List.fromList([5, 5, 5]);
@@ -1350,7 +1354,7 @@ void main() {
               blocksDone: 0,
               totalBlocks: 4,
               bytesDone: BigInt.from(10),
-              isComplete: false,
+              isComplete: false, awaitingAnswer: false
             ),
           );
       controller = makeController();
@@ -1381,7 +1385,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       core.decodeAudioToWavHandler = (_) => Uint8List.fromList([8, 8, 8]);
@@ -1422,7 +1426,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       var decodeCalls = 0;
@@ -1478,7 +1482,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -1573,7 +1577,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             );
         controller = makeController();
         await controller.initialize();
@@ -1626,7 +1630,7 @@ void main() {
               blocksDone: 0,
               totalBlocks: 1,
               bytesDone: BigInt.zero,
-              isComplete: false,
+              isComplete: false, awaitingAnswer: false
             );
       }
 
@@ -1798,7 +1802,7 @@ void main() {
                 blocksDone: 1,
                 totalBlocks: 1,
                 bytesDone: BigInt.from(50),
-                isComplete: true,
+                isComplete: true, awaitingAnswer: false
               ),
             );
         // Configura como arquivo genérico (não áudio): finishReceiveAudio vai
@@ -1862,7 +1866,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(10),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       // Nenhuma oferta pendente de arquivo ou áudio — ambos os caminhos

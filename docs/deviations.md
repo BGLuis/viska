@@ -523,7 +523,9 @@ para um bloco que já tinha confirmado (o bloco de 65535 × 1024 B não fecha em
 remonta a partir da cópia em vez de ficar parado adiante dele (`docs/protocol.md` §7.5).
 
 **Custo:** o disco ocupado pelo arquivo dobra durante o envio, e cada retomada relê a cópia inteira
-para conferir a raiz. Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
+para conferir a raiz. Quando a transferência termina de um lado só sem o aviso chegar ao outro
+(`FILE_COMPLETE` perdido, emissor que desiste), o outro lado retoma a cada reconexão até o teto, limitado
+a 2 minutos de laço por vez (issue #108). Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
 um transporte que aceite símbolos desse tamanho.
 
 **Custo de reverter:** sem a cópia, a retomada teria de reler o original e conviver com o arquivo

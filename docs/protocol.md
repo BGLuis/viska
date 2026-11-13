@@ -497,12 +497,13 @@ que reconstrói o que falta:
   bate, o envio é encerrado como falha. O progresso não é persistido: o emissor recomeça do bloco 0 e
   o bitmap do primeiro `FILE_FEEDBACK` (§7.4) o faz pular o que o receptor já tem. Se a oferta ainda
   não teve resposta (nenhum `FILE_FEEDBACK` chegou, coluna `answered`), o `FILE_METADATA` é selado de
-  novo na sessão atual, com o mesmo `file_id`, segredo e manifesto, porque o original pode ter se
-  perdido com a sessão anterior. O receptor ignora uma oferta cujo `file_id` já conhece.
+  novo na sessão atual (`Core::seal_resumed_offer`, só quando o envio de fato recomeça), com o mesmo
+  `file_id`, segredo e manifesto, porque o original pode ter se perdido com a sessão anterior. O
+  receptor ignora uma oferta cujo `file_id` já conhece.
 - **Receptor:** conta as páginas inteiras do staging, recua até o fim do último source block contido
   nelas e reconstrói o hash do conteúdo decifrando essas páginas. O último bloco nunca conta como
   recebido, porque a página final, menor, só vai a disco ao completar. Staging que sumiu ou não
-  autentica encerra o recebimento.
+  autentica encerra o recebimento, e o receptor sela um `FILE_REJECT` (§7.7) para o emissor parar.
 
 Na LAN um source block (65535 × 1024 B, D23) não fecha em página, então o receptor que retoma pode
 voltar a um bloco que já tinha confirmado, enquanto o emissor, que não trancou, segue adiante. Como o
@@ -517,6 +518,13 @@ a Core trancou, ou enquanto a transferência acabou, é descartado em vez de ins
 linha no banco só são varridos ao abrir ou destrancar a Core, porque um envio recém-iniciado grava a
 cópia antes da linha. Uma transferência enfileirada sem sessão entra pelo mesmo caminho: basta a linha
 e a cópia existirem.
+
+**Fim de um lado só.** Nem todo encerramento chega ao outro lado: o `FILE_COMPLETE` pode se perder, e
+o emissor não tem pacote para avisar que desistiu (§7.7 só define `FILE_REJECT` do receptor). Para o
+lado que ficou não rodar até o teto de 7 dias, o app para de bombear um envio já respondido e de mandar
+`FILE_FEEDBACK` depois de 2 minutos sem progresso; a transferência continua no banco e volta na próxima
+retomada. Uma oferta ainda sem resposta não conta, porque o aceite de uma oferta grande espera a pessoa
+(§7.6). Avisar o par nesses casos é a issue #108.
 
 ### 7.6 Limite de auto-aceite e retenção volátil de ofertas
 

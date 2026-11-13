@@ -243,26 +243,33 @@ pub struct SendFileStartedDto {
     pub message_id: i64,
 }
 
-/// De que lado está este aparelho numa transferência retomada.
+/// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumedDirectionDto {
     /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
     Send,
     /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
     Receive,
+    /// O recebimento não tinha como continuar e foi encerrado aqui; quem chama
+    /// só entrega `sealed_notice` (um `FILE_REJECT`) ao par, para o emissor
+    /// parar de tentar.
+    Abandoned,
 }
 
-/// Uma transferência pronta para continuar com o contato — `Core::resume_transfers`
-/// (§7.5). Nada aqui é segredo.
+/// Uma transferência retomada com o contato — `Core::resume_transfers` (§7.5).
+/// Nada aqui é segredo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumedTransferDto {
     pub file_id: Vec<u8>,
     pub direction: ResumedDirectionDto,
-    /// O `FILE_METADATA` selado na sessão atual, para reenviar pelo canal
-    /// `control` — só num envio cuja oferta ainda não teve resposta, que pode
-    /// ter se perdido junto com a sessão anterior. O receptor ignora a cópia
-    /// de uma oferta que já conhece.
-    pub sealed_metadata: Option<Vec<u8>>,
+    /// Envio cuja oferta ainda não teve resposta e pode ter se perdido com a
+    /// sessão anterior: quem chama pede o `FILE_METADATA` a
+    /// `Core::seal_resumed_offer` logo antes de mandá-lo. Selar só então evita
+    /// gastar um contador do ratchet numa oferta que não vai sair.
+    pub needs_offer: bool,
+    /// Pacote de controle já selado a entregar ao par: o `FILE_REJECT` de um
+    /// recebimento `Abandoned`.
+    pub sealed_notice: Option<Vec<u8>>,
     /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
     /// bombeamento terminar. `None` no recebimento.
     pub message_id: Option<i64>,
@@ -307,6 +314,10 @@ pub struct TransferProgressDto {
     pub total_blocks: u32,
     pub bytes_done: u64,
     pub is_complete: bool,
+    /// Envio cuja oferta ainda não teve resposta: o emissor espera o aceite
+    /// (que pode levar horas, §7.6) e não deve ser dado como parado. Sempre
+    /// falso no recebimento.
+    pub awaiting_answer: bool,
 }
 
 /// Tópicos de sinalização para um contato — `docs/protocol.md` §8.1.

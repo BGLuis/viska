@@ -18,10 +18,13 @@ use std::collections::HashSet;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::{to_device_id, TransferHandle, OFFER_RESPONSE_TIMEOUT_SECS};
+use crate::ffi::transfer::{
+    seal_file_reject, to_device_id, OutgoingHandle, TransferHandle, OFFER_RESPONSE_TIMEOUT_SECS,
+};
 use crate::ffi::types::{ResumedDirectionDto, ResumedTransferDto};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE};
+use viska_proto::file::outgoing;
 use viska_proto::file::staging;
 use viska_proto::file::transfer::{
     self, FileFeedback, ReceiveTransfer, SendTransfer, TransferMode, TRANSFER_SECRET_LEN,
@@ -53,11 +56,14 @@ pub(super) fn can_seal_now(session: &viska_proto::session::Session) -> bool {
     session.is_established() && !session.is_renewing()
 }
 
-/// Apaga o `.staging` e a cópia de envio de `file_id`, se existirem. A chave
-/// já morreu com a linha do banco; isto é só devolver o espaço.
-pub(super) fn remove_transfer_files(core: &Core, file_id: &[u8; FILE_ID_LEN]) {
-    let _ = std::fs::remove_file(staging::staging_path(&core.staging_dir, file_id));
-    let _ = std::fs::remove_file(staging::staging_path(&core.outgoing_dir, file_id));
+/// Resultado de garantir um handle em memória para uma linha.
+enum Rebuild {
+    /// O handle está no mapa.
+    Ready,
+    /// A transferência não tinha como continuar e foi encerrada.
+    Ended,
+    /// Falha passageira, ou a Core trancou: fica para a próxima retomada.
+    Later,
 }
 
 /// Defeito que nenhuma retomada futura conserta: o conteúdo em disco não é
@@ -144,10 +150,26 @@ impl Core {
                 }
             };
         }
-        self.lock_transfers()?.remove(file_id);
+        self.end_transfer(file_id)
+    }
+
+    /// Último passo de toda transferência que acaba, por qualquer motivo:
+    /// apaga a linha (o que destrói a chave, D15), descarta o handle e apaga o
+    /// `.staging` e a cópia de envio. A linha vai antes do handle: uma
+    /// reconstrução concorrente ou viu a linha e instalou um handle que este
+    /// passo tira em seguida, ou já não a vê e não instala nada
+    /// ([`Self::install_handle`] confere sob a mesma trava).
+    pub(super) fn end_transfer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
         self.store.delete_file_transfer(file_id)?;
-        remove_transfer_files(self, file_id);
+        self.lock_transfers()?.remove(file_id);
+        let _ = std::fs::remove_file(staging::staging_path(&self.staging_dir, file_id));
+        let _ = std::fs::remove_file(staging::staging_path(&self.outgoing_dir, file_id));
         Ok(())
+    }
+
+    /// Geração atual da sessão com o contato, 0 sem sessão.
+    fn session_generation(&self, contact: &[u8; DEVICE_ID_LEN]) -> Result<u32, FfiError> {
+        Ok(self.lock_sessions()?.get(contact).map_or(0, |session| session.generation()))
     }
 
     fn drop_stored(&self, stored: &StoredTransfer, ending: Ending) -> Result<(), FfiError> {
@@ -162,11 +184,12 @@ impl Core {
     /// a oferta selada agora sairia pela sessão que o par acabou de perder.
     ///
     /// Um envio cuja cópia em `outgoing/` sumiu, foi cortada ou não bate mais
-    /// com a raiz, e um recebimento cujo `.staging` sumiu ou não autentica, são
-    /// encerrados como falha em vez de devolvidos. Uma falha passageira só pula
-    /// aquela transferência nesta chamada. Um envio sem resposta volta com o
-    /// `FILE_METADATA` selado de novo na sessão atual, porque o original pode ter
-    /// se perdido com a anterior.
+    /// com a raiz é encerrado como falha. Um recebimento cujo `.staging` sumiu
+    /// ou não autentica é encerrado e volta como `Abandoned`, com o
+    /// `FILE_REJECT` que avisa o emissor. Uma falha passageira só pula aquela
+    /// transferência nesta chamada. Um envio sem resposta volta com
+    /// `needs_offer`, porque o `FILE_METADATA` original pode ter se perdido com
+    /// a sessão anterior.
     pub fn resume_transfers(&self, peer_device_id: Vec<u8>) -> Result<Vec<ResumedTransferDto>, FfiError> {
         self.ensure_not_locked()?;
         let device_id = to_device_id(peer_device_id)?;
@@ -211,79 +234,130 @@ impl Core {
                     self.drop_stored(stored, Ending::Unresumable)?;
                     return Ok(None);
                 };
-                if !self.ensure_send_handle(stored, &manifest)? {
+                if !matches!(self.ensure_send_handle(stored, &manifest)?, Rebuild::Ready) {
                     return Ok(None);
                 }
                 self.store.reopen_failed_message_by_file_id(&stored.file_id, device_id)?;
-                let sealed_metadata = if stored.answered {
-                    None
-                } else {
-                    self.reseal_metadata(device_id, stored, &manifest)?
-                };
                 Ok(Some(ResumedTransferDto {
                     file_id: stored.file_id.to_vec(),
                     direction: ResumedDirectionDto::Send,
-                    sealed_metadata,
+                    needs_offer: !stored.answered,
+                    sealed_notice: None,
                     message_id: Some(message_id),
                 }))
             }
-            Direction::Receiving => {
-                if !self.ensure_receive_handle(stored, manifest)? {
-                    return Ok(None);
-                }
-                Ok(Some(ResumedTransferDto {
+            Direction::Receiving => match self.ensure_receive_handle(stored, manifest)? {
+                Rebuild::Ready => Ok(Some(ResumedTransferDto {
                     file_id: stored.file_id.to_vec(),
                     direction: ResumedDirectionDto::Receive,
-                    sealed_metadata: None,
+                    needs_offer: false,
+                    sealed_notice: None,
                     message_id: None,
-                }))
-            }
+                })),
+                // O emissor ainda tem a linha e tentaria retomar até o teto de
+                // retenção; o `FILE_REJECT` de §7.7 o encerra. Melhor esforço,
+                // como a recusa: sem sessão para selar, o aviso se perde.
+                Rebuild::Ended => {
+                    let mut sessions = self.lock_sessions()?;
+                    let notice = sessions
+                        .get_mut(device_id)
+                        .filter(|session| can_seal_now(session))
+                        .and_then(|session| seal_file_reject(session, &stored.file_id));
+                    Ok(notice.map(|notice| ResumedTransferDto {
+                        file_id: stored.file_id.to_vec(),
+                        direction: ResumedDirectionDto::Abandoned,
+                        needs_offer: false,
+                        sealed_notice: Some(notice),
+                        message_id: None,
+                    }))
+                }
+                Rebuild::Later => Ok(None),
+            },
         }
     }
 
-    /// Garante um `SendTransfer` em memória para `stored`; `false` se ele não
-    /// pode andar agora (encerrado, ou falha passageira).
-    fn ensure_send_handle(&self, stored: &StoredTransfer, manifest: &Manifest) -> Result<bool, FfiError> {
+    /// O `FILE_METADATA` de um envio retomado cuja oferta ainda não teve
+    /// resposta, selado na sessão atual com o mesmo `file_id`, segredo e
+    /// manifesto. `None` se não há mais o que oferecer (a oferta foi
+    /// respondida, a transferência acabou ou não é um envio para este contato)
+    /// ou se a sessão não cifra agora.
+    pub fn seal_resumed_offer(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_id: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id = to_device_id(peer_device_id)?;
+        let file_id: [u8; FILE_ID_LEN] = file_id.try_into().map_err(|_| FfiError::Internal)?;
+        // Declarado antes do lock de sessões, de propósito: é solto depois dele.
+        let _publish = self.publish_on_exit(device_id);
+        let Some(stored) = self.store.find_file_transfer(&file_id)? else {
+            return Ok(None);
+        };
+        if stored.direction != Direction::Sending
+            || stored.contact_device_id != device_id
+            || stored.answered
+        {
+            return Ok(None);
+        }
+        let manifest = Manifest::decode(&stored.manifest_cbor)?;
+        self.reseal_metadata(&device_id, &stored, &manifest)
+    }
+
+    /// Garante um `SendTransfer` em memória para `stored`.
+    fn ensure_send_handle(&self, stored: &StoredTransfer, manifest: &Manifest) -> Result<Rebuild, FfiError> {
         if self.lock_transfers()?.contains_key(&stored.file_id) {
-            return Ok(true);
+            return Ok(Rebuild::Ready);
         }
         if !staging::staging_path(&self.outgoing_dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
-            return Ok(false);
+            return Ok(Rebuild::Ended);
         }
         // Fora da trava de transferências: conferir a raiz relê a cópia inteira.
-        let reader = match transfer::open_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret) {
+        let reader = match outgoing::open_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret) {
             Ok(reader) => reader,
             Err(err) if is_lost_for_good(&err) => {
                 self.drop_stored(stored, Ending::Unresumable)?;
-                return Ok(false);
+                return Ok(Rebuild::Ended);
             }
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(Rebuild::Later),
         };
-        let send = SendTransfer::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader)
-            .with_mode(mode_for(manifest));
-        self.install_handle(stored.file_id, TransferHandle::Send(send))
+        let handle = OutgoingHandle {
+            transfer: SendTransfer::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader)
+                .with_mode(mode_for(manifest)),
+            generation: self.session_generation(&stored.contact_device_id)?,
+            answered: stored.answered,
+        };
+        self.install(stored.file_id, TransferHandle::Send(handle))
     }
 
     /// Como [`Self::ensure_send_handle`], para o recebimento.
-    fn ensure_receive_handle(&self, stored: &StoredTransfer, manifest: Manifest) -> Result<bool, FfiError> {
+    fn ensure_receive_handle(&self, stored: &StoredTransfer, manifest: Manifest) -> Result<Rebuild, FfiError> {
         if self.lock_transfers()?.contains_key(&stored.file_id) {
-            return Ok(true);
+            return Ok(Rebuild::Ready);
         }
         if !staging::staging_path(&self.staging_dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
-            return Ok(false);
+            return Ok(Rebuild::Ended);
         }
         let receive =
             match ReceiveTransfer::resume(manifest, stored.kind, &stored.transfer_secret, &self.staging_dir) {
                 Ok(receive) => receive,
                 Err(err) if is_lost_for_good(&err) => {
                     self.drop_stored(stored, Ending::Unresumable)?;
-                    return Ok(false);
+                    return Ok(Rebuild::Ended);
                 }
-                Err(_) => return Ok(false),
+                Err(_) => return Ok(Rebuild::Later),
             };
-        self.install_handle(stored.file_id, TransferHandle::Receive(receive))
+        self.install(stored.file_id, TransferHandle::Receive(receive))
+    }
+
+    fn install(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<Rebuild, FfiError> {
+        Ok(if self.install_handle(file_id, handle)? {
+            Rebuild::Ready
+        } else {
+            Rebuild::Later
+        })
     }
 
     /// Põe um handle reconstruído no mapa, a menos que a Core tenha trancado ou
@@ -292,7 +366,7 @@ impl Core {
     /// depois de fechar o banco, então esta inserção ou acontece antes dessa
     /// limpeza ou já vê o banco fechado. Outra chamada que tenha reconstruído o
     /// mesmo handle primeiro fica com o dela.
-    fn install_handle(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<bool, FfiError> {
+    pub(super) fn install_handle(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<bool, FfiError> {
         let mut transfers = self.lock_transfers()?;
         if self.is_locked() || !self.store.file_transfer_exists(&file_id)? {
             return Ok(false);
@@ -332,33 +406,35 @@ impl Core {
     }
 
     /// Entrega um `FILE_FEEDBACK` ao envio em memória. Se o receptor está atrás
-    /// do emissor, monta um emissor novo a partir da cópia e deixa o feedback
-    /// guiá-lo: o receptor que retomou do staging pode ter perdido o fim de um
-    /// bloco que já tinha confirmado (blocos da LAN não fecham em página, §7.5),
-    /// e `SendTransfer` só anda para a frente.
+    /// do emissor numa sessão nova, monta um emissor novo a partir da cópia e
+    /// deixa o feedback guiá-lo: o receptor que retomou do staging pode ter
+    /// perdido o fim de um bloco que já tinha confirmado (blocos da LAN não
+    /// fecham em página, §7.5), e `SendTransfer` só anda para a frente. Na
+    /// mesma sessão, um receptor nunca volta: um feedback que pareça atrás é
+    /// só um atrasado, ultrapassado por outro já processado.
     pub(super) fn ingest_send_feedback(
         &self,
         stored: &StoredTransfer,
         manifest: &Manifest,
         feedback: &FileFeedback,
     ) -> Result<(), FfiError> {
-        let behind = match self.lock_transfers()?.get_mut(&stored.file_id) {
-            Some(TransferHandle::Send(send)) => {
-                if feedback.first_incomplete_block() >= send.current_block() {
-                    send.ingest_feedback(feedback)?;
-                    return Ok(());
-                }
-                true
+        let generation = self.session_generation(&stored.contact_device_id)?;
+        {
+            let mut transfers = self.lock_transfers()?;
+            let Some(TransferHandle::Send(send)) = transfers.get_mut(&stored.file_id) else {
+                return Ok(());
+            };
+            send.answered = true;
+            let behind = feedback.first_incomplete_block() < send.transfer.current_block();
+            if !behind || send.generation == generation {
+                send.transfer.ingest_feedback(feedback)?;
+                return Ok(());
             }
-            _ => false,
-        };
-        if !behind {
-            return Ok(());
         }
         // Fora da trava: pular os blocos que o receptor ainda tem decifra a
         // cópia até eles. A cópia já teve a raiz conferida ao entrar em memória,
         // e cada página continua autenticada pelo AEAD.
-        let reader = transfer::read_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret)?;
+        let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret)?;
         let mut rewound = SendTransfer::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader)
             .with_mode(mode_for(manifest));
         rewound.ingest_feedback(feedback)?;
@@ -367,11 +443,12 @@ impl Core {
         if self.is_locked() {
             return Ok(());
         }
-        // Só troca se o handle ainda estiver adiante: outro feedback pode ter
-        // recuado ou avançado o envio enquanto este era montado.
+        // Só troca se o handle continuar adiante e ainda não tiver recuado nesta
+        // sessão: outro feedback pode ter feito isso enquanto este era montado.
         if let Some(TransferHandle::Send(send)) = transfers.get_mut(&stored.file_id) {
-            if send.current_block() > rewound.current_block() {
-                *send = rewound;
+            if send.generation != generation && send.transfer.current_block() > rewound.current_block() {
+                send.transfer = rewound;
+                send.generation = generation;
             }
         }
         Ok(())
@@ -660,7 +737,8 @@ mod tests {
             vec![ResumedTransferDto {
                 file_id: started.file_id.clone(),
                 direction: ResumedDirectionDto::Send,
-                sealed_metadata: None,
+                needs_offer: false,
+                sealed_notice: None,
                 message_id: Some(started.message_id),
             }],
             "a oferta já respondida não é reenviada"
@@ -727,14 +805,21 @@ mod tests {
         reconnect(&pair, true);
 
         let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
-        let offer = resumed[0].sealed_metadata.clone().expect("oferta sem resposta é reenviada");
+        assert!(resumed[0].needs_offer, "oferta sem resposta é reenviada");
+        let offer = pair
+            .core_a
+            .seal_resumed_offer(pair.device_id_b.clone(), started.file_id.clone())
+            .unwrap()
+            .unwrap();
         pair.core_b.decrypt_incoming(pair.device_id_a.clone(), offer).unwrap();
 
-        // Uma segunda retomada sela a oferta de novo; B já a conhece e ignora.
-        let again = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
-        pair.core_b
-            .decrypt_incoming(pair.device_id_a.clone(), again[0].sealed_metadata.clone().unwrap())
+        // Uma segunda oferta selada é ignorada por B, que já a conhece.
+        let again = pair
+            .core_a
+            .seal_resumed_offer(pair.device_id_b.clone(), started.file_id.clone())
+            .unwrap()
             .unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), again).unwrap();
         assert_eq!(pair.core_b.list_active_file_transfer_ids().unwrap(), vec![started.file_id.clone()]);
 
         assert_eq!(finish(&pair, &started.file_id, &dir_dst), original);
@@ -802,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_staging_drops_the_receive_on_resume() {
+    fn a_receive_that_cannot_resume_tells_the_sender_to_stop() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let (started, _) = start_two_block_send(&pair, &dir_src);
@@ -811,8 +896,59 @@ mod tests {
         pair.core_b.unlock().unwrap();
         reconnect(&pair, false);
 
-        assert!(pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap().is_empty());
+        let resumed = pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].direction, ResumedDirectionDto::Abandoned);
         assert!(pair.core_b.list_active_file_transfer_ids().unwrap().is_empty());
+
+        let notice = resumed[0].sealed_notice.clone().unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), notice).unwrap();
+        assert_sender_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
+    }
+
+    #[test]
+    fn a_late_feedback_in_the_same_session_does_not_rewind_the_sender() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        // Um feedback de antes de o bloco 0 completar, entregue depois.
+        let early = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        drive(&pair, &started.file_id, 1);
+        assert_eq!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().blocks_done, 1);
+
+        pair.core_a.receive_incoming(pair.device_id_b.clone(), early).unwrap();
+
+        assert_eq!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().blocks_done, 1);
+    }
+
+    #[test]
+    fn progress_reports_whether_the_offer_still_awaits_an_answer() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().awaiting_answer);
+
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+        let feedback = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), feedback).unwrap();
+
+        assert!(!pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().awaiting_answer);
+        assert!(!pair.core_b.transfer_progress(started.file_id).unwrap().unwrap().awaiting_answer);
+    }
+
+    #[test]
+    fn seal_resumed_offer_only_seals_an_unanswered_send_of_that_contact() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        assert!(pair.core_a.seal_resumed_offer(pair.device_id_b.clone(), started.file_id.clone()).unwrap().is_some());
+        assert!(pair.core_a.seal_resumed_offer(vec![0xEE; 16], started.file_id.clone()).unwrap().is_none());
+        assert!(pair.core_a.seal_resumed_offer(pair.device_id_b.clone(), vec![0x11; 16]).unwrap().is_none());
+
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+        let feedback = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), feedback).unwrap();
+
+        assert!(pair.core_a.seal_resumed_offer(pair.device_id_b.clone(), started.file_id).unwrap().is_none());
     }
 
     #[test]
@@ -918,8 +1054,12 @@ mod tests {
     fn rebuilt_send(pair: &EstablishedPair, started: &SendFileStartedDto) -> TransferHandle {
         let stored = pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
         let manifest = Manifest::decode(&stored.manifest_cbor).unwrap();
-        let reader = transfer::open_outgoing_copy(&pair.core_a.outgoing_dir, &manifest, &stored.transfer_secret).unwrap();
-        TransferHandle::Send(SendTransfer::new(manifest, stored.kind, &stored.transfer_secret, reader))
+        let reader = outgoing::open_outgoing_copy(&pair.core_a.outgoing_dir, &manifest, &stored.transfer_secret).unwrap();
+        TransferHandle::Send(OutgoingHandle {
+            transfer: SendTransfer::new(manifest, stored.kind, &stored.transfer_secret, reader),
+            generation: 0,
+            answered: false,
+        })
     }
 
     #[test]

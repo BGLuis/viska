@@ -332,11 +332,12 @@ abstract class Core implements RustOpaqueInterface {
   /// a oferta selada agora sairia pela sessão que o par acabou de perder.
   ///
   /// Um envio cuja cópia em `outgoing/` sumiu, foi cortada ou não bate mais
-  /// com a raiz, e um recebimento cujo `.staging` sumiu ou não autentica, são
-  /// encerrados como falha em vez de devolvidos. Uma falha passageira só pula
-  /// aquela transferência nesta chamada. Um envio sem resposta volta com o
-  /// `FILE_METADATA` selado de novo na sessão atual, porque o original pode ter
-  /// se perdido com a anterior.
+  /// com a raiz é encerrado como falha. Um recebimento cujo `.staging` sumiu
+  /// ou não autentica é encerrado e volta como `Abandoned`, com o
+  /// `FILE_REJECT` que avisa o emissor. Uma falha passageira só pula aquela
+  /// transferência nesta chamada. Um envio sem resposta volta com
+  /// `needs_offer`, porque o `FILE_METADATA` original pode ter se perdido com
+  /// a sessão anterior.
   Future<List<ResumedTransferDto>> resumeTransfers({
     required List<int> peerDeviceId,
   });
@@ -374,6 +375,16 @@ abstract class Core implements RustOpaqueInterface {
   Future<SealedMessageDto> sealOutgoingText({
     required List<int> peerDeviceId,
     required String body,
+  });
+
+  /// O `FILE_METADATA` de um envio retomado cuja oferta ainda não teve
+  /// resposta, selado na sessão atual com o mesmo `file_id`, segredo e
+  /// manifesto. `None` se não há mais o que oferecer (a oferta foi
+  /// respondida, a transferência acabou ou não é um envio para este contato)
+  /// ou se a sessão não cifra agora.
+  Future<Uint8List?> sealResumedOffer({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
   });
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já

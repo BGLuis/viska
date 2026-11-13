@@ -532,11 +532,13 @@ class ChatController extends ChangeNotifier {
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
       await _refreshMessages();
       handedOff = true;
+      // Esta tela já segura o serviço em primeiro plano desde antes de conectar.
       await _receptionService.runOutgoingTransfer(
         _contactId,
         started.fileId,
         offer: started.sealedMetadata,
         messageId: started.messageId,
+        holdForeground: false,
       );
       await _refreshMessages();
     } catch (e, stack) {

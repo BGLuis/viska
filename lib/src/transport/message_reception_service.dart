@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -105,8 +106,10 @@ class MessageReceptionService {
     Future<String> Function()? receivedDirProvider,
     TransferForegroundService? foregroundService,
     Duration renewalHold = defaultRenewalHold,
+    Duration idleLimit = defaultIdleLimit,
   })  : _core = core,
         _renewalHold = renewalHold,
+        _idleLimit = idleLimit,
         _router = router,
         _foregroundService = foregroundService ?? TransferForegroundService.shared,
         _appDirPath = appDirPath,
@@ -168,9 +171,19 @@ class MessageReceptionService {
   final Map<String, String> _receivedFilePaths = {};
   final Map<String, int> _lastFeedbackBlocksDone = {};
 
+  /// Quanto um envio ou recebimento já aceito fica sem progresso antes de o
+  /// laço parar. A transferência continua no banco e volta na próxima retomada;
+  /// isto só impede que um par que sumiu, ou que encerrou a transferência sem o
+  /// aviso chegar (issue #108), deixe o laço rodando até o teto de 7 dias.
+  static const defaultIdleLimit = Duration(minutes: 2);
+  final Duration _idleLimit;
+
   /// Cadência de `FILE_FEEDBACK` de §7.4.
   static const _feedbackInterval = Duration(milliseconds: 500);
   final Map<String, Timer> _feedbackTimers = {};
+
+  /// Último progresso visto por recebimento e desde quando ele não muda.
+  final Map<String, ({String progress, DateTime since})> _feedbackIdle = {};
   final Set<String> _feedbackTicksInFlight = {};
 
   final _eventsController = StreamController<MessageReceptionEvent>.broadcast();
@@ -463,6 +476,16 @@ class MessageReceptionService {
         _stopFeedback(hexId);
         return;
       }
+      final current = '${progress.blocksDone}/${progress.bytesDone}';
+      final idle = _feedbackIdle[hexId];
+      if (idle == null || idle.progress != current) {
+        _feedbackIdle[hexId] = (progress: current, since: clock.now());
+      } else if (clock.now().difference(idle.since) >= _idleLimit) {
+        // Emissor parado: o próximo pedaço que chegar, ou a próxima retomada,
+        // religa o feedback.
+        _stopFeedback(hexId);
+        return;
+      }
       // Sem transporte ativo, enviar criaria outro a cada tick e furaria o
       // intervalo de `_scheduleRetry` quando o par está offline.
       if (_router.transportFor(contactId) == null) return;
@@ -489,6 +512,7 @@ class MessageReceptionService {
 
   void _stopFeedback(String hexId) {
     _feedbackTimers.remove(hexId)?.cancel();
+    _feedbackIdle.remove(hexId);
     _lastFeedbackBlocksDone.remove(hexId);
     if (_feedbackTimers.isEmpty) _releaseForegroundForReceive();
   }
@@ -648,67 +672,117 @@ class MessageReceptionService {
     }
   }
 
-  /// Bombeamentos de envio em curso, por `file_id`: a retomada e a tela de
-  /// conversa podem pedir o mesmo envio, e dois laços sobre o mesmo emissor
-  /// mandariam cada símbolo duas vezes.
-  final Map<String, Future<void>> _pumps = {};
+  /// Ciclos de envio em curso, por `file_id`: a retomada e a tela de conversa
+  /// podem pedir o mesmo envio, e dois ciclos mandariam a oferta e cada
+  /// símbolo duas vezes.
+  final Map<String, Future<void>> _outgoing = {};
 
-  /// Envios retomados em curso, desde antes de a oferta sair até o fim do
-  /// bombeamento, por `file_id`.
-  final Set<String> _resumingSends = {};
-
-  /// Manda os pedaços do envio `fileId` pelo canal `file` até o emissor
-  /// completar, esperando o `FILE_FEEDBACK` do par entre um bloco e outro. Se o
-  /// envio já está sendo bombeado, devolve o mesmo laço. Lança
-  /// [TransportUnavailableException] quando o transporte do contato cai.
-  Future<void> pumpOutgoing(ContactId contactId, Uint8List fileId) {
+  /// Ciclo de um envio, igual para o que a conversa acabou de iniciar e para o
+  /// retomado: entrega a oferta (a já selada em [offer], ou a que [sealOffer]
+  /// selar na hora), bombeia até o emissor completar e marca a mensagem `sent`.
+  /// Se parar no meio, a mensagem vira `failed` e o erro sobe; a próxima
+  /// retomada a devolve a `pending` (docs/protocol.md §7.5). Um pedido para um
+  /// envio que já está em curso devolve o mesmo ciclo. Segura o serviço em
+  /// primeiro plano enquanto dura, salvo com [holdForeground] falso (quem chama
+  /// já segura, ou é uma nota de voz curta enviada com o app aberto).
+  Future<void> runOutgoingTransfer(
+    ContactId contactId,
+    Uint8List fileId, {
+    required int messageId,
+    Uint8List? offer,
+    Future<Uint8List?> Function()? sealOffer,
+    bool holdForeground = true,
+  }) {
     final hexId = _hex(fileId);
-    final running = _pumps[hexId];
+    final running = _outgoing[hexId];
     if (running != null) return running;
-    // Corpo em bloco de propósito: `remove` devolve o próprio laço, e um
+    // Corpo em bloco de propósito: `remove` devolve o próprio ciclo, e um
     // `whenComplete` que recebe um `Future` espera por ele — esperaria a si mesmo.
-    final pump = _pumpOutgoing(contactId, fileId).whenComplete(() {
-      _pumps.remove(hexId);
+    final run = _runOutgoing(
+      contactId,
+      fileId,
+      messageId: messageId,
+      offer: offer,
+      sealOffer: sealOffer,
+      holdForeground: holdForeground,
+    ).whenComplete(() {
+      _outgoing.remove(hexId);
     });
-    _pumps[hexId] = pump;
-    return pump;
+    _outgoing[hexId] = run;
+    return run;
+  }
+
+  Future<void> _runOutgoing(
+    ContactId contactId,
+    Uint8List fileId, {
+    required int messageId,
+    required Uint8List? offer,
+    required Future<Uint8List?> Function()? sealOffer,
+    required bool holdForeground,
+  }) async {
+    final lease = holdForeground ? await _foregroundService.acquire() : null;
+    try {
+      final toSend = offer ?? await sealOffer?.call();
+      if (toSend != null) await _router.sendToContact(contactId, toSend);
+      await _pumpOutgoing(contactId, fileId);
+      await _core.markMessageSent(messageId: messageId);
+    } catch (_) {
+      try {
+        await _core.markMessageFailed(messageId: messageId);
+      } catch (e) {
+        // Trancada ou banco indisponível: a abertura seguinte acerta o estado.
+        if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao marcar envio $messageId como falho: $e');
+      }
+      rethrow;
+    } finally {
+      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
+      await lease?.release();
+    }
   }
 
   Future<void> _pumpOutgoing(ContactId contactId, Uint8List fileId) async {
-    // O roteador esquece o transporte que falhou, então trocar de instância (ou
-    // sumir) é o sinal de queda. Sem essa saída o laço espera para sempre um
-    // `FILE_FEEDBACK` que não vem mais por um socket morto.
-    final transport = _router.transportFor(contactId);
-    // Sem transporte na entrada não há queda a detectar: `null == null` passaria
-    // na checagem abaixo para sempre.
-    if (transport == null) throw const TransportUnavailableException();
+    String? lastProgress;
+    var idleSince = clock.now();
     while (true) {
       // Sair em silêncio deixaria quem chamou marcar o envio como concluído.
-      if (_disposed || !identical(_router.transportFor(contactId), transport)) {
-        throw const TransportUnavailableException();
-      }
+      if (_disposed) throw const TransportUnavailableException();
+      // Segue o transporte atual do contato: o roteador recria o canal que caiu,
+      // e o emissor no Rust é o mesmo; o que se perdeu em voo o feedback pede de
+      // novo. Só sem transporte nenhum não há para onde mandar.
+      if (_router.transportFor(contactId) == null) throw const TransportUnavailableException();
       final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
-      if (chunk == null) {
-        final progress = await _core.transferProgress(fileId: fileId);
-        if (progress == null || progress.isComplete) return;
-        // Emissor esgotou o que tinha para o bloco atual — espera o
-        // `FILE_FEEDBACK` do receptor (processado como efeito colateral
-        // dentro de `Core.receiveIncoming`, já dirigido por
-        // `_handleIncomingRaw`) liberar o próximo bloco. Espera curta, não
-        // *polling* de descoberta — a novidade em si (oferta/conclusão) já
-        // chega por evento, isto só dá ritmo ao laço de envio.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (chunk != null) {
+        await _router.sendFileToContact(contactId, chunk);
+        idleSince = clock.now();
         continue;
       }
-      await _router.sendFileToContact(contactId, chunk);
+      final progress = await _core.transferProgress(fileId: fileId);
+      if (progress == null || progress.isComplete) return;
+      final current = '${progress.blocksDone}/${progress.bytesDone}';
+      if (current != lastProgress) {
+        lastProgress = current;
+        idleSince = clock.now();
+      } else if (!progress.awaitingAnswer && clock.now().difference(idleSince) >= _idleLimit) {
+        // O receptor sumiu ou já encerrou a transferência sem que o aviso chegasse
+        // (issue #108). A oferta ainda sem resposta não conta: o aceite de uma
+        // oferta grande espera a pessoa (§7.6).
+        throw const TransferStalledException();
+      }
+      // Emissor esgotou o que tinha para o bloco atual — espera o
+      // `FILE_FEEDBACK` do receptor (processado como efeito colateral dentro de
+      // `Core.receiveIncoming`, já dirigido por `_handleIncomingRaw`) liberar o
+      // próximo bloco. Espera curta, não *polling* de descoberta — a novidade em
+      // si (oferta/conclusão) já chega por evento, isto só dá ritmo ao laço.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
 
   /// Retoma as transferências com o contato (docs/protocol.md §7.5): reenvia a
-  /// oferta que ainda não teve resposta, volta a bombear os envios e a mandar
-  /// `FILE_FEEDBACK` dos recebimentos. Pode ser chamada de novo sem efeito
-  /// colateral: o Rust mantém o que já está em memória e o bombeamento é
-  /// deduplicado por `file_id`.
+  /// oferta que ainda não teve resposta, volta a bombear os envios, a mandar
+  /// `FILE_FEEDBACK` dos recebimentos e entrega o aviso de um recebimento que
+  /// não tinha como continuar. Pode ser chamada de novo sem efeito colateral:
+  /// o Rust mantém o que já está em memória e o ciclo de envio é único por
+  /// `file_id`.
   Future<void> resumeTransfers(ContactId contactId) async {
     if (_isPaused || _disposed) return;
     final List<ResumedTransferDto> resumed;
@@ -724,26 +798,26 @@ class MessageReceptionService {
     for (final transfer in resumed) {
       switch (transfer.direction) {
         case ResumedDirectionDto.send:
-          // O evento de sessão e o canal novo costumam chegar juntos e pedir a
-          // mesma retomada: uma só entrega a oferta e bombeia.
-          final hexId = _hex(transfer.fileId);
-          if (_pumps.containsKey(hexId) || !_resumingSends.add(hexId)) continue;
-          unawaited(_resumeSend(contactId, transfer).whenComplete(() {
-            _resumingSends.remove(hexId);
-          }));
+          final messageId = transfer.messageId;
+          if (messageId != null) unawaited(_resumeSend(contactId, transfer, messageId));
         case ResumedDirectionDto.receive:
           unawaited(watchIncomingTransfer(contactId, transfer.fileId));
+        case ResumedDirectionDto.abandoned:
+          final notice = transfer.sealedNotice;
+          if (notice != null) unawaited(_sendNotice(contactId, notice));
       }
     }
   }
 
-  Future<void> _resumeSend(ContactId contactId, ResumedTransferDto transfer) async {
+  Future<void> _resumeSend(ContactId contactId, ResumedTransferDto transfer, int messageId) async {
     try {
       await runOutgoingTransfer(
         contactId,
         transfer.fileId,
-        offer: transfer.sealedMetadata,
-        messageId: transfer.messageId,
+        messageId: messageId,
+        sealOffer: transfer.needsOffer
+            ? () => _core.sealResumedOffer(peerDeviceId: contactId.deviceId, fileId: transfer.fileId)
+            : null,
       );
     } catch (e) {
       // A transferência continua no banco: a próxima retomada tenta de novo, até
@@ -752,37 +826,12 @@ class MessageReceptionService {
     }
   }
 
-  /// Ciclo de um envio, igual para o que a conversa acabou de iniciar e para o
-  /// retomado: entrega a oferta (se houver), bombeia até o emissor completar e
-  /// marca a mensagem `sent`. Se parar no meio, a mensagem vira `failed` e o
-  /// erro sobe; a próxima retomada a devolve a `pending` (docs/protocol.md §7.5).
-  /// Segura o serviço em primeiro plano enquanto dura, salvo com
-  /// [holdForeground] falso (nota de voz curta, enviada com o app aberto).
-  Future<void> runOutgoingTransfer(
-    ContactId contactId,
-    Uint8List fileId, {
-    Uint8List? offer,
-    int? messageId,
-    bool holdForeground = true,
-  }) async {
-    final lease = holdForeground ? await _foregroundService.acquire() : null;
+  /// Melhor esforço, como a recusa de oferta: sem transporte, o aviso se perde.
+  Future<void> _sendNotice(ContactId contactId, Uint8List notice) async {
     try {
-      if (offer != null) await _router.sendToContact(contactId, offer);
-      await pumpOutgoing(contactId, fileId);
-      if (messageId != null) await _core.markMessageSent(messageId: messageId);
-    } catch (_) {
-      if (messageId != null) {
-        try {
-          await _core.markMessageFailed(messageId: messageId);
-        } catch (e) {
-          // Trancada ou banco indisponível: a abertura seguinte acerta o estado.
-          if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao marcar envio $messageId como falho: $e');
-        }
-      }
-      rethrow;
-    } finally {
-      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
-      await lease?.release();
+      await _router.sendToContact(contactId, notice);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Aviso a $contactId não enviado: $e');
     }
   }
 

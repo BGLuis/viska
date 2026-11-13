@@ -303,26 +303,35 @@ class MessageDto {
 /// Fase 3).
 enum MessageKindDto { text, voiceNote, file }
 
-/// De que lado está este aparelho numa transferência retomada.
+/// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
 enum ResumedDirectionDto {
   /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
   send,
 
   /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
   receive,
+
+  /// O recebimento não tinha como continuar e foi encerrado aqui; quem chama
+  /// só entrega `sealed_notice` (um `FILE_REJECT`) ao par, para o emissor
+  /// parar de tentar.
+  abandoned,
 }
 
-/// Uma transferência pronta para continuar com o contato — `Core::resume_transfers`
-/// (§7.5). Nada aqui é segredo.
+/// Uma transferência retomada com o contato — `Core::resume_transfers` (§7.5).
+/// Nada aqui é segredo.
 class ResumedTransferDto {
   final Uint8List fileId;
   final ResumedDirectionDto direction;
 
-  /// O `FILE_METADATA` selado na sessão atual, para reenviar pelo canal
-  /// `control` — só num envio cuja oferta ainda não teve resposta, que pode
-  /// ter se perdido junto com a sessão anterior. O receptor ignora a cópia
-  /// de uma oferta que já conhece.
-  final Uint8List? sealedMetadata;
+  /// Envio cuja oferta ainda não teve resposta e pode ter se perdido com a
+  /// sessão anterior: quem chama pede o `FILE_METADATA` a
+  /// `Core::seal_resumed_offer` logo antes de mandá-lo. Selar só então evita
+  /// gastar um contador do ratchet numa oferta que não vai sair.
+  final bool needsOffer;
+
+  /// Pacote de controle já selado a entregar ao par: o `FILE_REJECT` de um
+  /// recebimento `Abandoned`.
+  final Uint8List? sealedNotice;
 
   /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
   /// bombeamento terminar. `None` no recebimento.
@@ -331,7 +340,8 @@ class ResumedTransferDto {
   const ResumedTransferDto({
     required this.fileId,
     required this.direction,
-    this.sealedMetadata,
+    required this.needsOffer,
+    this.sealedNotice,
     this.messageId,
   });
 
@@ -339,7 +349,8 @@ class ResumedTransferDto {
   int get hashCode =>
       fileId.hashCode ^
       direction.hashCode ^
-      sealedMetadata.hashCode ^
+      needsOffer.hashCode ^
+      sealedNotice.hashCode ^
       messageId.hashCode;
 
   @override
@@ -349,7 +360,8 @@ class ResumedTransferDto {
           runtimeType == other.runtimeType &&
           fileId == other.fileId &&
           direction == other.direction &&
-          sealedMetadata == other.sealedMetadata &&
+          needsOffer == other.needsOffer &&
+          sealedNotice == other.sealedNotice &&
           messageId == other.messageId;
 }
 
@@ -661,11 +673,17 @@ class TransferProgressDto {
   final BigInt bytesDone;
   final bool isComplete;
 
+  /// Envio cuja oferta ainda não teve resposta: o emissor espera o aceite
+  /// (que pode levar horas, §7.6) e não deve ser dado como parado. Sempre
+  /// falso no recebimento.
+  final bool awaitingAnswer;
+
   const TransferProgressDto({
     required this.blocksDone,
     required this.totalBlocks,
     required this.bytesDone,
     required this.isComplete,
+    required this.awaitingAnswer,
   });
 
   @override
@@ -673,7 +691,8 @@ class TransferProgressDto {
       blocksDone.hashCode ^
       totalBlocks.hashCode ^
       bytesDone.hashCode ^
-      isComplete.hashCode;
+      isComplete.hashCode ^
+      awaitingAnswer.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -683,5 +702,6 @@ class TransferProgressDto {
           blocksDone == other.blocksDone &&
           totalBlocks == other.totalBlocks &&
           bytesDone == other.bytesDone &&
-          isComplete == other.isComplete;
+          isComplete == other.isComplete &&
+          awaitingAnswer == other.awaitingAnswer;
 }

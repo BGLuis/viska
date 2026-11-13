@@ -89,7 +89,7 @@ use std::path::Path;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer_resume::{can_seal_now, mode_for, remove_transfer_files};
+use crate::ffi::transfer_resume::{can_seal_now, mode_for};
 use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
     TransferEventDto, TransferEventKind, TransferProgressDto,
@@ -98,6 +98,7 @@ use crate::frb_generated::StreamSink;
 use crate::transfer_events::TransferEventSink;
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
+use viska_proto::file::outgoing;
 use viska_proto::file::staging::{self, StagingReader};
 use viska_proto::file::transfer::{
     self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferProgress,
@@ -110,14 +111,28 @@ use viska_proto::wire::transport::Transport;
 /// Um lado (emissor ou receptor) de uma transferência em memória, indexado
 /// por `file_id` em `Core::transfers`.
 pub(super) enum TransferHandle {
-    Send(SendTransfer<StagingReader>),
+    Send(OutgoingHandle),
     Receive(ReceiveTransfer),
+}
+
+/// Um envio em memória e o que o Rust precisa lembrar sobre ele entre um
+/// `FILE_FEEDBACK` e outro.
+pub(super) struct OutgoingHandle {
+    pub(super) transfer: SendTransfer<StagingReader>,
+    /// Geração da sessão com o contato quando o envio nasceu ou voltou atrás
+    /// pela última vez. Um receptor só fica para trás depois de trancar ou
+    /// reabrir, o que sempre troca a sessão; um feedback atrasado da mesma
+    /// sessão não faz o envio voltar (§7.5).
+    pub(super) generation: u32,
+    /// A oferta já teve resposta (§7.7 item 5), em cache para
+    /// `Core::transfer_progress` não ir ao banco a cada consulta.
+    pub(super) answered: bool,
 }
 
 /// Sela o `FILE_REJECT` de `file_id`, ou `None` sem sessão estabelecida ou se
 /// selar falhar. Recusa e bloqueio passam por aqui para o emissor não poder
 /// distinguir um do outro (§7.7 item 1).
-fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; FILE_ID_LEN]) -> Option<Vec<u8>> {
+pub(super) fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; FILE_ID_LEN]) -> Option<Vec<u8>> {
     if !session.is_established() {
         return None;
     }
@@ -201,12 +216,13 @@ fn to_file_id(bytes: Vec<u8>) -> Result<[u8; FILE_ID_LEN], FfiError> {
     bytes.try_into().map_err(|_| FfiError::Internal)
 }
 
-fn progress_dto(progress: TransferProgress) -> TransferProgressDto {
+fn progress_dto(progress: TransferProgress, awaiting_answer: bool) -> TransferProgressDto {
     TransferProgressDto {
         blocks_done: progress.blocks_done,
         total_blocks: progress.total_blocks,
         bytes_done: progress.bytes_done,
         is_complete: progress.is_complete(),
+        awaiting_answer,
     }
 }
 
@@ -316,7 +332,7 @@ impl Core {
             path: Some(staging::staging_path(&self.outgoing_dir, &file_id)),
         };
         let (merkle_root, file_size) =
-            transfer::stage_outgoing_copy(source, &self.outgoing_dir, file_id, &*transfer_secret)?;
+            outgoing::stage_outgoing_copy(source, &self.outgoing_dir, file_id, &*transfer_secret)?;
         let block_bytes = symbol_size as u64 * block_symbols as u64;
         let source_blocks = u32::try_from(file_size.div_ceil(block_bytes)).map_err(|_| FfiError::Internal)?;
 
@@ -339,10 +355,12 @@ impl Core {
                 return Err(FfiError::NoActiveSession);
             }
             let body = transfer::encode_metadata_body(kind, &transfer_secret, &manifest)?;
-            session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?
+            let sealed = session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?;
+            (sealed, session.generation())
         };
+        let (sealed_metadata, generation) = sealed_metadata;
 
-        let reader = transfer::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?;
+        let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?;
         let send = SendTransfer::new(manifest.clone(), kind, &*transfer_secret, reader).with_mode(mode_for(&manifest));
 
         let manifest_cbor = manifest.encode()?;
@@ -375,8 +393,16 @@ impl Core {
         // da transferência ou o prazo de retenção.
         copy_guard.path = None;
 
-        self.lock_transfers()?
-            .insert(file_id, TransferHandle::Send(send));
+        let handle = OutgoingHandle {
+            transfer: send,
+            generation,
+            answered: false,
+        };
+        if !self.install_handle(file_id, TransferHandle::Send(handle))? {
+            // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
+            // retoma depois do desbloqueio.
+            return Err(FfiError::Locked);
+        }
 
         Ok(StartedTransfer {
             file_id,
@@ -399,7 +425,7 @@ impl Core {
         let file_id = to_file_id(file_id)?;
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
-            Some(TransferHandle::Send(send)) => Ok(send.next_sealed_symbol()?),
+            Some(TransferHandle::Send(send)) => Ok(send.transfer.next_sealed_symbol()?),
             _ => Ok(None),
         }
     }
@@ -413,8 +439,8 @@ impl Core {
         let file_id = to_file_id(file_id)?;
         let transfers = self.lock_transfers()?;
         Ok(match transfers.get(&file_id) {
-            Some(TransferHandle::Send(send)) => Some(progress_dto(send.progress())),
-            Some(TransferHandle::Receive(recv)) => Some(progress_dto(recv.progress())),
+            Some(TransferHandle::Send(send)) => Some(progress_dto(send.transfer.progress(), !send.answered)),
+            Some(TransferHandle::Receive(recv)) => Some(progress_dto(recv.progress(), false)),
             None => None,
         })
     }
@@ -487,7 +513,7 @@ impl Core {
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
             Some(TransferHandle::Receive(recv)) => {
-                let progress = progress_dto(recv.ingest_sealed_symbol(sealed)?);
+                let progress = progress_dto(recv.ingest_sealed_symbol(sealed)?, false);
                 Ok(Some(IngestedChunkDto {
                     file_id: file_id.to_vec(),
                     progress,
@@ -632,10 +658,7 @@ impl Core {
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
         self.remove_unconfirmed_offer(&file_id)?;
-        self.lock_transfers()?.remove(&file_id);
-        self.store.delete_file_transfer(&file_id)?;
-        remove_transfer_files(self, &file_id);
-        Ok(())
+        self.end_transfer(&file_id)
     }
 
     /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
@@ -869,8 +892,9 @@ impl Core {
             )?;
         }
 
-        self.lock_transfers()?
-            .insert(manifest.file_id, TransferHandle::Receive(receive));
+        if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive))? {
+            return Err(FfiError::Locked);
+        }
         Ok(())
     }
 
@@ -993,10 +1017,7 @@ impl Core {
     /// transferência.
     pub(super) fn handle_incoming_file_complete(&self, body: &[u8]) -> Result<(), FfiError> {
         let complete = transfer::FileComplete::decode(body)?;
-        self.lock_transfers()?.remove(&complete.file_id);
-        self.store.delete_file_transfer(&complete.file_id)?;
-        remove_transfer_files(self, &complete.file_id);
-        Ok(())
+        self.end_transfer(&complete.file_id)
     }
 
     /// Chamado de dentro de `Core::decrypt_incoming` quando um `FILE_REJECT`
@@ -1020,10 +1041,7 @@ impl Core {
         // ainda existe e um novo `FILE_REJECT` consegue repetir o caminho todo.
         self.store
             .mark_message_rejected_by_file_id(&file_id, &contact_device_id)?;
-        self.lock_transfers()?.remove(&file_id);
-        self.store.delete_file_transfer(&file_id)?;
-        remove_transfer_files(self, &file_id);
-        Ok(())
+        self.end_transfer(&file_id)
     }
 }
 
