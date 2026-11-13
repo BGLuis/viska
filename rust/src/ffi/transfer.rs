@@ -727,6 +727,14 @@ impl Core {
         Ok(())
     }
 
+    /// Avisa quem bombeia o envio de `file_id` que vale reconsultar o emissor.
+    /// Não toma `unconfirmed_offers`: o sinal não depende de nenhuma oferta.
+    pub(super) fn emit_chunk_released(&self, contact: [u8; DEVICE_ID_LEN], file_id: [u8; FILE_ID_LEN]) {
+        if let Ok(events) = self.transfer_events.lock() {
+            events.emit(offer_event(TransferEventKind::ChunkReleased, contact, file_id));
+        }
+    }
+
     /// Chamar com a trava de `unconfirmed_offers` em mãos (ver `Core`).
     fn emit_offer_event(
         &self,
@@ -1004,7 +1012,10 @@ impl Core {
         if !stored.answered {
             self.store.mark_file_transfer_answered(&file_id)?;
         }
-        self.ingest_send_feedback(&stored, &manifest, &feedback)
+        let ingested = self.ingest_send_feedback(&stored, &manifest, &feedback);
+        // Mesmo se a ingestão falhou: acordar o envio só o faz reconsultar.
+        self.emit_chunk_released(contact_device_id, file_id);
+        ingested
     }
 
     /// Chamado de dentro de `Core::decrypt_incoming` quando um
@@ -2959,5 +2970,76 @@ pub(super) mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].kind, TransferEventKind::OfferGone);
+    }
+
+    fn released(seen: &SeenOffers) -> Vec<TransferEventDto> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == TransferEventKind::ChunkReleased)
+            .cloned()
+            .collect()
+    }
+
+    /// A manda um arquivo pequeno a B (aceito sozinho) e devolve o par já com o
+    /// emissor sob observação.
+    fn pair_with_send_in_flight(dir: &tempfile::TempDir) -> (EstablishedPair, SendFileStartedDto, SeenOffers) {
+        let pair = established_pair();
+        let path = write_temp_file(dir, "pequeno.bin", &vec![9u8; 2_000]);
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), path, false)
+            .unwrap();
+        pair.core_b
+            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
+            .unwrap();
+        let seen = watch_offers(&pair.core_a);
+        (pair, started, seen)
+    }
+
+    #[test]
+    fn feedback_releases_the_send_pump_with_only_file_id_and_contact() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started, seen) = pair_with_send_in_flight(&dir);
+        let feedback = pair
+            .core_b
+            .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
+            .unwrap();
+
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), feedback).unwrap();
+
+        assert_eq!(
+            released(&seen),
+            vec![TransferEventDto {
+                peer_device_id: pair.device_id_b.clone(),
+                file_id: started.file_id.clone(),
+                kind: TransferEventKind::ChunkReleased,
+            }]
+        );
+    }
+
+    #[test]
+    fn ending_a_send_releases_the_pump_but_ending_a_receive_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started, seen_a) = pair_with_send_in_flight(&dir);
+        let seen_b = watch_offers(&pair.core_b);
+
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        assert!(released(&seen_b).is_empty());
+
+        pair.core_a.cancel_transfer(started.file_id.clone()).unwrap();
+        assert_eq!(released(&seen_a).len(), 1);
+    }
+
+    #[test]
+    fn lock_releases_every_send_pump_before_dropping_the_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pair, started, seen) = pair_with_send_in_flight(&dir);
+
+        pair.core_a.lock().unwrap();
+
+        let released = released(&seen);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].file_id, started.file_id);
     }
 }

@@ -8,13 +8,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use zeroize::Zeroizing;
 
 use crate::ffi::error::FfiError;
 use crate::ffi::transfer::UnconfirmedOffer;
 use crate::ffi::transfer_handles::TransferHandle;
 use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
+use crate::expiry::ExpiryWake;
+use crate::message_events::MessageEvents;
 use crate::session_events::SessionEvents;
 use crate::transfer_events::TransferEvents;
 use viska_proto::crypto::identity::LocalIdentity;
@@ -36,7 +38,9 @@ pub struct Core {
     // `flutter_rust_bridge` tentar codificá-los (que ele não tenta, porque
     // nenhum dos três tipos é serializável pela ponte).
     pub(super) identity: RwLock<LocalIdentity>,
-    pub(super) store: Store,
+    /// `Arc` porque a thread de expiração (`expiry`) segura o `Store` sem
+    /// segurar a `Core`.
+    pub(super) store: Arc<Store>,
     /// Sessões de mensagens em memória, uma por contato — nunca persistidas:
     /// reabrir o app começa sem sessão nenhuma, exatamente como dois
     /// aparelhos que nunca trocaram um handshake (`ffi/session.rs`).
@@ -69,6 +73,15 @@ pub struct Core {
     /// o evento sai sob a mesma trava, para o replay da assinatura não perder
     /// nem duplicar uma mudança concorrente.
     pub(super) transfer_events: Mutex<TransferEvents>,
+    /// Destinatário dos eventos de mensagem. `Arc` porque o observador do
+    /// `Store` o segura. Nunca é tomado com a conexão do banco em mãos.
+    pub(super) message_events: Arc<Mutex<MessageEvents>>,
+    /// Acorda a thread de expiração, que sobe na primeira assinatura de
+    /// eventos de mensagem e acaba junto com a `Core`. A `Core` do cofre-isca
+    /// nunca assina, então nunca varre.
+    pub(super) expiry_wake: Arc<ExpiryWake>,
+    /// A thread de expiração já foi criada.
+    pub(super) expiry_started: std::sync::atomic::AtomicBool,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
@@ -101,8 +114,23 @@ impl Core {
     pub fn open(app_dir: String) -> Result<Core, FfiError> {
         let dir = Path::new(&app_dir);
         let master_secret = keyring::load_or_create_master_secret(dir)?;
-        let store = Store::open(&dir.join(DB_FILE_NAME), &master_secret)?;
+        let store = Arc::new(Store::open(&dir.join(DB_FILE_NAME), &master_secret)?);
         let identity = store.load_or_create_identity()?;
+
+        let message_events = Arc::new(Mutex::new(MessageEvents::default()));
+        let expiry_wake = Arc::new(ExpiryWake::default());
+        {
+            let events = Arc::clone(&message_events);
+            let wake = Arc::clone(&expiry_wake);
+            store.set_message_observer(Arc::new(move |change| {
+                if let Ok(events) = events.lock() {
+                    events.emit(change);
+                }
+                // Mensagem nova, leitura e estado novo podem mudar o próximo
+                // vencimento.
+                wake.poke();
+            }));
+        }
 
         let core = Core {
             identity: RwLock::new(identity),
@@ -114,6 +142,9 @@ impl Core {
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
             transfer_events: Mutex::new(TransferEvents::default()),
+            message_events: Arc::clone(&message_events),
+            expiry_wake: Arc::clone(&expiry_wake),
+            expiry_started: std::sync::atomic::AtomicBool::new(false),
             staging_dir: dir.join(STAGING_DIR_NAME),
             outgoing_dir: dir.join(OUTGOING_DIR_NAME),
             app_dir: dir.to_path_buf(),
@@ -137,6 +168,7 @@ impl Core {
         // O Dart não pode seguir achando que há sessão estabelecida.
         self.publish_all_sessions();
         self.clear_unconfirmed_offers()?;
+        self.release_send_pumps();
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         reset_inflight_state(&self.store);
 
@@ -157,6 +189,9 @@ impl Core {
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
         self.store
             .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
+        // A thread de expiração esperava o banco voltar; o que venceu durante o
+        // bloqueio sai agora.
+        self.expiry_wake.poke();
         self.maintain_transfers_at_rest();
         Ok(())
     }
@@ -228,15 +263,17 @@ impl Core {
         self.ensure_not_locked()?;
         let now = viska_proto::util::time::unix_seconds() as i64;
         self.store.mark_message_read(message_id, now)?;
+        // Ler arma o prazo da mensagem efêmera, que nenhum evento de linha avisa.
+        self.expiry_wake.poke();
         Ok(())
     }
 
-    /// Varre e destrói chaves de mensagens efêmeras expiradas.
-    pub fn sweep_expired_messages(&self) -> Result<u32, FfiError> {
-        self.ensure_not_locked()?;
-        let now = viska_proto::util::time::unix_seconds() as i64;
-        let count = self.store.sweep_expired_ephemeral_messages(now)?;
-        Ok(count as u32)
+    /// Pede à thread de expiração que reconte o próximo vencimento. O sono dela
+    /// usa relógio monotônico, que o Linux/Android não conta com o aparelho
+    /// suspenso: ao voltar do segundo plano o Dart chama isto para o que venceu
+    /// enquanto dormia sair já, em vez de esperar o resto do sono.
+    pub fn check_message_expiry(&self) {
+        self.expiry_wake.poke();
     }
 
     /// Os 145 bytes do QR Code desta identidade.
@@ -538,6 +575,13 @@ impl Core {
 impl std::fmt::Debug for Core {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Core(<opaco>)")
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        // Sem isto a thread de expiração dormiria para sempre segurando o `Store`.
+        self.expiry_wake.stop();
     }
 }
 

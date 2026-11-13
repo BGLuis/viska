@@ -16,16 +16,17 @@
 //! eventos novos de transferência entram como variantes de `TransferEventKind`.
 
 use std::collections::HashMap;
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::types::{
     DeliveryStateDto, IncomingMessageDto, IncomingResultDto, MessageDirectionDto, MessageDto,
-    MessageKindDto,
+    MessageEventDto, MessageKindDto,
     SealedMessageDto, SessionStateEventDto, SessionStateKind, SessionStatusDto,
 };
 use crate::frb_generated::StreamSink;
+use crate::message_events::MessageEventSink;
 use crate::session_events::{PublishOnExit, SessionEventSink, SessionView};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::session::Session;
@@ -600,6 +601,36 @@ impl Core {
         Ok(stored.into_iter().map(message_dto).collect())
     }
 
+    /// Uma mensagem pelo `id`, para o Dart atualizar só aquela linha quando um
+    /// `MessageEventDto` chega. `None` se ela já não existe (ou se a lista a
+    /// esconde, como os comandos de reação).
+    pub fn get_message(&self, message_id: i64) -> Result<Option<MessageDto>, FfiError> {
+        self.ensure_not_locked()?;
+        Ok(self.store.get_message(message_id)?.map(message_dto))
+    }
+
+    /// Passa a receber os eventos de mudança em mensagens e põe a expiração
+    /// para correr no Rust. Não há replay: quem assina lê a timeline depois,
+    /// e o que mudar entre as duas coisas chega como evento. Uma nova
+    /// assinatura substitui a anterior.
+    pub fn subscribe_message_events(&self, sink: StreamSink<MessageEventDto>) -> Result<(), FfiError> {
+        self.set_message_event_sink(Box::new(move |event| {
+            // Erro aqui é o Dart já ter fechado o stream: nada a fazer.
+            let _ = sink.add(event);
+        }))
+    }
+
+    /// Núcleo de [`Self::subscribe_message_events`], sem o `StreamSink`, para
+    /// que os testes observem os eventos sem subir a ponte.
+    pub(crate) fn set_message_event_sink(&self, sink: MessageEventSink) -> Result<(), FfiError> {
+        self.message_events.lock().map_err(|_| FfiError::Internal)?.set_sink(sink);
+        // Quem assina é a `Core` de verdade; a do cofre-isca nunca chega aqui.
+        if !self.expiry_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            crate::expiry::spawn(Arc::clone(&self.store), Arc::clone(&self.expiry_wake));
+        }
+        Ok(())
+    }
+
     /// Todas as mensagens já trocadas com um contato, mais antigas primeiro
     /// — histórico completo para a tela de chat abrir com.
     pub fn list_messages(&self, peer_device_id: Vec<u8>) -> Result<Vec<MessageDto>, FfiError> {
@@ -701,6 +732,7 @@ fn status_dto(session: &Session) -> SessionStatusDto {
 mod tests {
     use super::*;
     use crate::ffi::core::Core;
+    use crate::ffi::types::MessageEventKind;
 
     fn open_core(dir: &tempfile::TempDir) -> Core {
         Core::open(dir.path().to_str().unwrap().to_owned()).unwrap()
@@ -1849,5 +1881,105 @@ mod tests {
             .find(|m| m.id == in_flight.message_id)
             .unwrap();
         assert_eq!(row.delivery_state, DeliveryStateDto::Unknown);
+    }
+
+    type SeenMessages = std::sync::Arc<std::sync::Mutex<Vec<MessageEventDto>>>;
+
+    fn watch_messages(core: &Core) -> SeenMessages {
+        let seen: SeenMessages = Default::default();
+        let sink_seen = Arc::clone(&seen);
+        core.set_message_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e))).unwrap();
+        seen
+    }
+
+    #[test]
+    fn sending_and_receiving_a_text_emit_added_for_the_right_peer() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        let seen_a = watch_messages(&p.core_a);
+        let seen_b = watch_messages(&p.core_b);
+
+        let sealed = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "oi".to_string()).unwrap();
+        p.core_b
+            .decrypt_incoming(p.device_id_a.clone(), sealed.bytes.clone().unwrap())
+            .unwrap();
+
+        let a = seen_a.lock().unwrap();
+        assert_eq!(a[0].kind, MessageEventKind::Added);
+        assert_eq!(a[0].message_id, sealed.message_id);
+        assert_eq!(a[0].peer_device_id, p.device_id_b);
+        let b = seen_b.lock().unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].kind, MessageEventKind::Added);
+        assert_eq!(b[0].peer_device_id, p.device_id_a);
+    }
+
+    #[test]
+    fn get_message_returns_the_row_the_event_pointed_at() {
+        let p = paired_pair();
+        establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
+        let sealed = p.core_a.seal_outgoing_text(p.device_id_b.clone(), "oi".to_string()).unwrap();
+
+        let message = p.core_a.get_message(sealed.message_id).unwrap().unwrap();
+        assert_eq!(message.body, "oi");
+        assert!(p.core_a.get_message(sealed.message_id + 50).unwrap().is_none());
+
+        p.core_a.lock().unwrap();
+        assert!(matches!(p.core_a.get_message(sealed.message_id), Err(FfiError::Locked)));
+    }
+
+    #[test]
+    fn expiry_thread_sweeps_a_due_key_without_any_call_from_dart() {
+        let p = paired_pair();
+        let id_b: [u8; 16] = p.device_id_b.clone().try_into().unwrap();
+        p.core_a.set_ephemeral_ttl(p.device_id_b.clone(), 60).unwrap();
+        // Criada em 1000: venceu há muito, mas a Core só descobre pela thread.
+        let message_id = p
+            .core_a
+            .store
+            .insert_incoming_message(&id_b, PacketType::MsgText, "segredo", 1000)
+            .unwrap();
+        // Entrada não lida vence no teto de dias a partir da criação: em 1000,
+        // já venceu.
+
+        let seen = watch_messages(&p.core_a);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if seen.lock().unwrap().iter().any(|e| e.kind == MessageEventKind::KeyExpired) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "a thread não varreu a tempo");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let events = seen.lock().unwrap();
+        let expired: Vec<_> = events.iter().filter(|e| e.kind == MessageEventKind::KeyExpired).collect();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].message_id, message_id);
+        assert_eq!(expired[0].peer_device_id, p.device_id_b);
+    }
+
+    #[test]
+    fn expiry_thread_waits_while_locked_and_sweeps_after_unlock() {
+        let p = paired_pair();
+        let id_b: [u8; 16] = p.device_id_b.clone().try_into().unwrap();
+        p.core_a.set_ephemeral_ttl(p.device_id_b.clone(), 60).unwrap();
+        p.core_a
+            .store
+            .insert_incoming_message(&id_b, PacketType::MsgText, "segredo", 1000)
+            .unwrap();
+        p.core_a.lock().unwrap();
+        // A thread sobe já com o banco trancado: não pode varrer nem girar.
+        let seen = watch_messages(&p.core_a);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(seen.lock().unwrap().is_empty());
+
+        p.core_a.unlock().unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !seen.lock().unwrap().iter().any(|e| e.kind == MessageEventKind::KeyExpired) {
+            assert!(std::time::Instant::now() < deadline, "a thread não retomou depois do desbloqueio");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }

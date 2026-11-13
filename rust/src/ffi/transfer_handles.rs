@@ -21,6 +21,7 @@ use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use viska_proto::file::manifest::{Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE};
 use viska_proto::file::staging::{self, StagingReader};
+use viska_proto::store::transfers::Direction;
 use viska_proto::file::transfer::{ReceiveTransfer, SendTransfer, TransferKind, TransferMode};
 
 /// Um lado (emissor ou receptor) de uma transferência em memória, indexado
@@ -177,16 +178,45 @@ impl Core {
         Ok(true)
     }
 
+    /// Acorda quem bombeia cada envio em memória, antes de o bloqueio os largar:
+    /// sem isso o laço só notaria o bloqueio no fim do sono de segurança.
+    pub(super) fn release_send_pumps(&self) {
+        let Ok(transfers) = self.lock_transfers() else {
+            return;
+        };
+        let sending: Vec<[u8; FILE_ID_LEN]> = transfers
+            .iter()
+            .filter(|(_, handle)| matches!(handle, TransferHandle::Send(_)))
+            .map(|(file_id, _)| *file_id)
+            .collect();
+        drop(transfers);
+        for file_id in sending {
+            if let Ok(Some(stored)) = self.store.find_file_transfer(&file_id) {
+                self.emit_chunk_released(stored.contact_device_id, file_id);
+            }
+        }
+    }
+
     /// Último passo de toda transferência que acaba, por qualquer motivo:
     /// apaga a linha (o que destrói a chave, D15), descarta o handle e apaga o
     /// `.staging` e a cópia de envio. A linha vai antes do handle: uma
     /// reconstrução concorrente ou viu a linha e instalou um handle que este
     /// passo tira em seguida, ou já não a vê e não instala nada.
     pub(super) fn end_transfer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
+        // O contato só se acha antes de a linha sumir. Só envio tem laço esperando.
+        let sender_contact = self
+            .store
+            .find_file_transfer(file_id)?
+            .filter(|stored| stored.direction == Direction::Sending)
+            .map(|stored| stored.contact_device_id);
         self.store.delete_file_transfer(file_id)?;
         self.lock_transfers()?.remove(file_id);
         let _ = std::fs::remove_file(staging::staging_path(&self.staging_dir, file_id));
         let _ = std::fs::remove_file(staging::staging_path(&self.outgoing_dir, file_id));
+        // Quem bombeia este envio precisa ver o fim agora, não no próximo sono.
+        if let Some(contact) = sender_contact {
+            self.emit_chunk_released(contact, *file_id);
+        }
         Ok(())
     }
 }
