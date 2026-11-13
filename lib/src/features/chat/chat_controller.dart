@@ -138,6 +138,10 @@ class ChatController extends ChangeNotifier {
 
   static const sessionBrokenMessage = SessionHealth.brokenSendMessage;
 
+  /// O Rust recusa o enfileiramento acima do teto por contato (D30).
+  static const queueFullMessage =
+      'Há envios demais esperando este contato. Aguarde a conexão para enviar mais.';
+
   void _applySessionState(SessionStateKind? state, bool needsRehandshake, {required bool fromStream}) {
     if (!_session.apply(state, needsRehandshake, fromStream: fromStream)) return;
     // Sessão recuperada: um erro de envio antigo sobre ela deixou de valer.
@@ -508,21 +512,33 @@ class ChatController extends ChangeNotifier {
     int? startedMessageId;
     var handedOff = false;
     try {
-      // A conexão vem antes de `startSendFile`: ele grava a mensagem como
-      // pendente, e sem par alcançável ela ficaria "Enviando…" sem nunca sair.
-      // Bloco próprio para o timeout não se confundir com falha depois de a
-      // mensagem existir, que precisa ser marcada como falha.
+      // Esperar a conexão antes de `startSendFile` evita enfileirar à toa um
+      // envio que sairia em segundos. Sem conexão no prazo, o arquivo entra na
+      // fila (D30): a cópia cifrada fica no Rust, a linha aparece como "Na fila"
+      // e a retomada o manda quando a sessão se estabelecer.
+      var connected = true;
       try {
         await _router.awaitConnected(_contactId, timeout: _connectTimeout);
       } on TimeoutException {
-        _fileError = 'Sem conexão com o contato. Tente enviar o arquivo de novo.';
+        connected = false;
+      }
+      if (!connected) {
+        await _queueFile(filePath);
         return;
       }
-      final started = await _core.startSendFile(
-        peerDeviceId: _contactId.deviceId,
-        filePath: filePath,
-        useLan: activeTransport == ActiveTransportType.lanDirect,
-      );
+      final SendFileStartedDto started;
+      try {
+        started = await _core.startSendFile(
+          peerDeviceId: _contactId.deviceId,
+          filePath: filePath,
+          useLan: activeTransport == ActiveTransportType.lanDirect,
+        );
+      } on FfiError catch (e) {
+        // Canal aberto, mas a sessão ainda não cifra: mesmo destino do timeout.
+        if (e != FfiError.noActiveSession) rethrow;
+        await _queueFile(filePath);
+        return;
+      }
       startedMessageId = started.messageId;
       _receivedFilePaths[_hex(started.fileId)] = filePath;
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
@@ -537,13 +553,28 @@ class ChatController extends ChangeNotifier {
       );
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar arquivo: $e\n$stack');
-      _fileError = await _sendFailureMessage('Não foi possível enviar o arquivo.');
+      _fileError = e == FfiError.queueFull
+          ? queueFullMessage
+          : await _sendFailureMessage('Não foi possível enviar o arquivo.');
       await _afterSendFailure(startedMessageId, handedOff: handedOff);
     } finally {
       _sendingFile = false;
       notifyListeners();
       await lease.release();
     }
+  }
+
+  /// Grava o arquivo na fila do Rust e acorda a retomada: se a conexão chegou
+  /// entre a recusa e a gravação, nenhum evento de sessão viria buscá-lo.
+  Future<void> _queueFile(String filePath) async {
+    final queued = await _core.queueSendFile(
+      peerDeviceId: _contactId.deviceId,
+      filePath: filePath,
+      useLan: activeTransport == ActiveTransportType.lanDirect,
+    );
+    _receivedFilePaths[_hex(queued.fileId)] = filePath;
+    _receptionService.cacheReceivedFilePath(queued.fileId, filePath);
+    unawaited(_receptionService.resumeTransfers(_contactId));
   }
 
   /// Acerta a timeline depois de um envio que falhou. Se a falha veio de
@@ -706,19 +737,31 @@ class ChatController extends ChangeNotifier {
       await _core.sanitizeAndStageAudio(sourcePath: rawPath, destinationPath: sanitizedPath);
       unawaited(File(rawPath).delete().catchError((_) => File(rawPath)));
 
-      final started = await _core.startSendAudio(
-        peerDeviceId: _contactId.deviceId,
-        audioPath: sanitizedPath,
-        useLan: activeTransport == ActiveTransportType.lanDirect,
-      );
+      final SendAudioStartedDto started;
+      try {
+        started = await _core.startSendAudio(
+          peerDeviceId: _contactId.deviceId,
+          audioPath: sanitizedPath,
+          useLan: activeTransport == ActiveTransportType.lanDirect,
+        );
+      } on FfiError catch (e) {
+        if (e != FfiError.noActiveSession) rethrow;
+        // Sem sessão: a nota entra na fila, cifrada em repouso pelo Rust (D30).
+        // O áudio em claro sai do disco em seguida, no `finally`.
+        final queued = await _core.queueSendAudio(
+          peerDeviceId: _contactId.deviceId,
+          audioPath: sanitizedPath,
+          useLan: activeTransport == ActiveTransportType.lanDirect,
+        );
+        await _cacheVoiceNote(queued.fileId, sanitizedPath);
+        unawaited(_receptionService.resumeTransfers(_contactId));
+        return;
+      }
       startedMessageId = started.messageId;
 
       // Cacheia o áudio interno antes de apagar o arquivo sanitizado — permite
       // tocar a própria nota enviada, sem round-trip pela rede.
-      final internalBytes = await File(sanitizedPath).readAsBytes();
-      _voiceNoteAudio[_hex(started.fileId)] = internalBytes;
-      _receptionService.cacheVoiceNoteAudio(started.fileId, internalBytes);
-      unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
+      await _cacheVoiceNote(started.fileId, sanitizedPath);
 
       handedOff = true;
       await _receptionService.runOutgoingTransfer(
@@ -730,12 +773,23 @@ class ChatController extends ChangeNotifier {
       );
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar nota de voz: $e\n$stack');
-      _voiceError = await _sendFailureMessage('Não foi possível enviar a nota de voz.');
+      _voiceError = e == FfiError.queueFull
+          ? queueFullMessage
+          : await _sendFailureMessage('Não foi possível enviar a nota de voz.');
       await _afterSendFailure(startedMessageId, handedOff: handedOff);
     } finally {
+      // O sanitizado em claro nunca sobrevive à chamada: a fila guarda só a
+      // cópia cifrada do Rust, e uma falha também não pode deixá-lo no temp.
+      unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
       _sendingVoice = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _cacheVoiceNote(Uint8List fileId, String sanitizedPath) async {
+    final internalBytes = await File(sanitizedPath).readAsBytes();
+    _voiceNoteAudio[_hex(fileId)] = internalBytes;
+    _receptionService.cacheVoiceNoteAudio(fileId, internalBytes);
   }
 
   /// Toca uma nota de voz já pronta ([isVoiceNoteReady]) — remontagem em

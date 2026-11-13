@@ -563,6 +563,34 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   /// O serviço de recepção retoma ao ver a sessão estabelecida; estes testes
   /// não têm nada a retomar.
+  final queueSendFileCalls = <String>[];
+  final queueSendAudioCalls = <String>[];
+  Object? queueError;
+
+  @override
+  Future<QueuedTransferDto> queueSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) async {
+    queueSendFileCalls.add(filePath);
+    if (queueError != null) throw queueError!;
+    return QueuedTransferDto(fileId: Uint8List.fromList(List.filled(16, 6)), messageId: nextMessageId++);
+  }
+
+  @override
+  Future<QueuedTransferDto> queueSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) async {
+    queueSendAudioCalls.add(audioPath);
+    if (queueError != null) throw queueError!;
+    // O controlador lê o sanitizado antes de apagá-lo: precisa existir aqui.
+    expect(File(audioPath).existsSync(), isTrue);
+    return QueuedTransferDto(fileId: Uint8List.fromList(List.filled(16, 7)), messageId: nextMessageId++);
+  }
+
   @override
   Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async => [];
 
@@ -1341,6 +1369,22 @@ void main() {
       },
     );
 
+    test('voice note without a session is queued and the plaintext audio is deleted', () async {
+      recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
+      core.startSendAudioHandler = (_) => throw FfiError.noActiveSession;
+
+      controller = makeController();
+      await controller.initialize();
+      await controller.startRecording();
+      await controller.stopRecordingAndSend();
+      await pumpEventQueue();
+
+      expect(core.queueSendAudioCalls, ['${tempDir.path}/gravado.ogg.viska-audio']);
+      expect(controller.voiceError, isNull);
+      expect(File('${tempDir.path}/gravado.ogg.viska-audio').existsSync(), isFalse,
+          reason: 'só a cópia cifrada do Rust pode ficar em disco');
+    });
+
     test('error starting send (e.g. no session) becomes voiceError, not exception', () async {
       recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
       core.startSendAudioHandler = (_) => throw StateError('sem sessão ativa');
@@ -1762,7 +1806,7 @@ void main() {
         expect(core.startSendFileCalls, ['/tmp/documento.pdf']);
       });
 
-      test('sendFile gives up when the transport never connects', () async {
+      test('sendFile queues the file when the transport never connects', () async {
         core.sessionState = SessionStateKind.established;
         transport.connectGate = Completer<void>();
         controller = makeController(connectTimeout: const Duration(milliseconds: 100));
@@ -1770,9 +1814,34 @@ void main() {
 
         await controller.sendFile('/tmp/documento.pdf');
 
-        expect(core.startSendFileCalls, isEmpty, reason: 'sem mensagem pendente órfã no banco');
-        expect(controller.fileError, isNotNull);
+        expect(core.startSendFileCalls, isEmpty, reason: 'sem sessão que sele, só a fila grava a linha');
+        expect(core.queueSendFileCalls, ['/tmp/documento.pdf']);
+        expect(controller.fileError, isNull);
         expect(controller.isSendingFile, isFalse);
+      });
+
+      test('sendFile queues when the channel is open but the session cannot seal yet', () async {
+        core.sessionState = SessionStateKind.established;
+        core.startSendFileHandler = (_) => throw FfiError.noActiveSession;
+        controller = makeController();
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(core.queueSendFileCalls, ['/tmp/documento.pdf']);
+        expect(controller.fileError, isNull);
+      });
+
+      test('sendFile reports a full queue instead of a generic failure', () async {
+        core.sessionState = SessionStateKind.established;
+        transport.connectGate = Completer<void>();
+        core.queueError = FfiError.queueFull;
+        controller = makeController(connectTimeout: const Duration(milliseconds: 100));
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(controller.fileError, ChatController.queueFullMessage);
       });
     });
 
