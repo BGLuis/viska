@@ -89,7 +89,7 @@ use std::path::Path;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer_resume::{can_seal_now, mode_for};
+use crate::ffi::transfer_handles::{can_seal_now, OutgoingHandle, TransferHandle};
 use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
     TransferEventDto, TransferEventKind, TransferProgressDto,
@@ -99,35 +99,14 @@ use crate::transfer_events::TransferEventSink;
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
 use viska_proto::file::outgoing;
-use viska_proto::file::staging::{self, StagingReader};
+use viska_proto::file::staging;
 use viska_proto::file::transfer::{
-    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferProgress,
+    self, FileFeedback, ReceiveTransfer, TransferKind, TransferProgress,
     TRANSFER_SECRET_LEN,
 };
 use viska_proto::store::transfers::Direction;
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
-
-/// Um lado (emissor ou receptor) de uma transferência em memória, indexado
-/// por `file_id` em `Core::transfers`.
-pub(super) enum TransferHandle {
-    Send(OutgoingHandle),
-    Receive(ReceiveTransfer),
-}
-
-/// Um envio em memória e o que o Rust precisa lembrar sobre ele entre um
-/// `FILE_FEEDBACK` e outro.
-pub(super) struct OutgoingHandle {
-    pub(super) transfer: SendTransfer<StagingReader>,
-    /// Geração da sessão com o contato quando o envio nasceu ou voltou atrás
-    /// pela última vez. Um receptor só fica para trás depois de trancar ou
-    /// reabrir, o que sempre troca a sessão; um feedback atrasado da mesma
-    /// sessão não faz o envio voltar (§7.5).
-    pub(super) generation: u32,
-    /// A oferta já teve resposta (§7.7 item 5), em cache para
-    /// `Core::transfer_progress` não ir ao banco a cada consulta.
-    pub(super) answered: bool,
-}
 
 /// Sela o `FILE_REJECT` de `file_id`, ou `None` sem sessão estabelecida ou se
 /// selar falhar. Recusa e bloqueio passam por aqui para o emissor não poder
@@ -361,7 +340,6 @@ impl Core {
         let (sealed_metadata, generation) = sealed_metadata;
 
         let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?;
-        let send = SendTransfer::new(manifest.clone(), kind, &*transfer_secret, reader).with_mode(mode_for(&manifest));
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
@@ -393,11 +371,7 @@ impl Core {
         // da transferência ou o prazo de retenção.
         copy_guard.path = None;
 
-        let handle = OutgoingHandle {
-            transfer: send,
-            generation,
-            answered: false,
-        };
+        let handle = OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false);
         if !self.install_handle(file_id, TransferHandle::Send(handle))? {
             // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
             // retoma depois do desbloqueio.
@@ -598,10 +572,9 @@ impl Core {
         let _publish = self.publish_on_exit(device_id);
         let file_id = to_file_id(file_id)?;
 
-        let handle = self
-            .lock_transfers()?
-            .remove(&file_id)
-            .ok_or(FfiError::Internal)?;
+        let destination =
+            std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
+        let (handle, _claim) = self.take_for_finish(file_id)?.ok_or(FfiError::Internal)?;
         let TransferHandle::Receive(recv) = handle else {
             // Devolve o handle de envio — `finish_receive_*` não é o
             // método certo para ele — em vez de descartá-lo em silêncio.
@@ -609,10 +582,18 @@ impl Core {
             return Err(FfiError::Internal);
         };
 
-        let destination =
-            std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
-        let complete = recv.finish(&self.staging_dir, destination)?;
-        self.store.delete_file_transfer(&file_id)?;
+        let complete = match recv.finish(&self.staging_dir, destination) {
+            Ok(complete) => complete,
+            // A raiz não bate: receber de novo daria o mesmo arquivo errado.
+            Err(viska_proto::Error::MerkleMismatch) => {
+                self.end_transfer(&file_id)?;
+                return Err(viska_proto::Error::MerkleMismatch.into());
+            }
+            // Qualquer outra falha (E/S, Core trancada no meio) deixa a linha e o
+            // staging: a próxima retomada recomeça do último bloco (§7.5).
+            Err(err) => return Err(err.into()),
+        };
+        self.end_transfer(&file_id)?;
 
         let mut sessions = self.lock_sessions()?;
         let session = sessions
@@ -666,13 +647,6 @@ impl Core {
         self.ensure_not_locked()?;
         let ids = self.store.list_active_file_transfer_ids()?;
         Ok(ids.into_iter().map(|id| id.to_vec()).collect())
-    }
-
-    pub(super) fn lock_transfers(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], TransferHandle>>, FfiError>
-    {
-        self.transfers.lock().map_err(|_| FfiError::Internal)
     }
 
     /// Sela um `FILE_REJECT` para cada oferta retida, para `Core::lock` entregar
@@ -913,7 +887,7 @@ impl Core {
         // (§7.5): uma oferta que já virou recebimento é ignorada, e uma retida
         // é tratada logo abaixo. Um `file_id` de envio nosso também, sem erro
         // distinguível.
-        if self.store.find_file_transfer(&manifest.file_id)?.is_some() {
+        if self.store.file_transfer_exists(&manifest.file_id)? {
             return Ok(());
         }
         let manifest_cbor = manifest.encode()?;

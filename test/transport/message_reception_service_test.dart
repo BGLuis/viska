@@ -628,7 +628,7 @@ void main() {
         expect(core.markFailedCalls, isEmpty);
       });
 
-      test('one lifecycle per file_id: a resume during a running send joins it', () async {
+      test('one lifecycle per file_id: a resume during a running send joins it and resends the offer', () async {
         core.offerToSeal = Uint8List.fromList([0x0F]);
         core.receiveProgress = waiting();
         await service.start();
@@ -642,9 +642,9 @@ void main() {
         await pumpEventQueue();
 
         expect(transport.sendCalls.where((b) => listEquals(b, [0x0E])), hasLength(1));
-        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), isEmpty,
-            reason: 'a retomada não sela nem manda outra oferta para um envio em curso');
-        expect(core.sealOfferCalls, 0);
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), hasLength(1),
+            reason: 'o par pode ter perdido a oferta com a sessão anterior (decisão 8)');
+        expect(core.sealOfferCalls, 1);
         core.receiveProgress = null;
         await first;
       });
@@ -693,6 +693,52 @@ void main() {
         core.receiveProgress = null;
         await run;
         expect(core.markSentCalls, contains(5));
+      });
+
+      test('a completed send keeps pumping when the sender rewinds, then stops quietly', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = TransferProgressDto(
+            blocksDone: 2,
+            totalBlocks: 2,
+            bytesDone: BigInt.from(20),
+            isComplete: true,
+            awaitingAnswer: false,
+          );
+          router.incomingFor(contact);
+          var done = false;
+          unawaited(idle.runOutgoingTransfer(contact, fileId, messageId: 5).then((_) => done = true));
+          async.flushMicrotasks();
+          expect(done, isTrue, reason: 'quem chamou não espera o laço que sobra');
+          expect(core.markSentCalls, [5]);
+
+          // O receptor retomou atrás: o emissor recuou e tem o que mandar de novo.
+          core.receiveProgress = waiting();
+          core.outgoingChunks.add(Uint8List.fromList([9]));
+          async.elapse(const Duration(seconds: 2));
+          expect(transport.sendFileCalls.where((b) => listEquals(b, [9])), hasLength(1));
+
+          async.elapse(const Duration(minutes: 3));
+          expect(core.markFailedCalls, isEmpty, reason: 'depois de completar, parar não é falha');
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('resumes for one contact run one after the other', () async {
+        await service.start();
+        await pumpEventQueue();
+        core.resumeCalls.clear();
+
+        final first = service.resumeTransfers(contact);
+        final second = service.resumeTransfers(contact);
+        await Future.wait([first, second]);
+
+        expect(core.resumeCalls, hasLength(2));
       });
 
       test('an accepted send with no progress stops after the idle limit', () {

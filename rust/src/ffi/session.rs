@@ -117,7 +117,6 @@ impl Core {
         self.open_session(&mut sessions, device_id, generation)
     }
 
-
     /// Passa a receber os eventos de mudança de estado das sessões, a partir
     /// do estado atual de cada uma (replay): um evento emitido antes da
     /// assinatura não se perderia para o Dart. Uma nova assinatura substitui

@@ -12,7 +12,8 @@ use std::sync::{Mutex, RwLock};
 use zeroize::Zeroizing;
 
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
+use crate::ffi::transfer::UnconfirmedOffer;
+use crate::ffi::transfer_handles::TransferHandle;
 use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
 use crate::session_events::SessionEvents;
 use crate::transfer_events::TransferEvents;
@@ -49,6 +50,10 @@ pub struct Core {
     /// o `.staging` e a cópia em `outgoing/` bastam para reconstruí-los em
     /// `Core::resume_transfers` (§7.5).
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// `file_id`s sem handle no mapa que alguém está reconstruindo ou
+    /// terminando a partir do disco (`ffi/transfer_handles.rs`). Ordem de
+    /// travas: `transfers` antes desta.
+    pub(super) transfer_claims: Mutex<std::collections::HashSet<[u8; 16]>>,
     /// Destinatário dos eventos de estado de sessão e o último estado entregue
     /// por contato. Ordem de travas: `sessions` antes de `session_events`,
     /// sempre — quem publica lê a sessão e emite sob as duas, para que o
@@ -105,6 +110,7 @@ impl Core {
             sessions: Mutex::new(HashMap::new()),
             session_events: Mutex::new(SessionEvents::default()),
             transfers: Mutex::new(HashMap::new()),
+            transfer_claims: Mutex::new(std::collections::HashSet::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
             transfer_events: Mutex::new(TransferEvents::default()),

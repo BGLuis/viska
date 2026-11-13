@@ -898,7 +898,10 @@ impl ReceiveTransfer {
         StagingReader::open(staging_dir, manifest.file_id, key, manifest.file_size)?
             .decrypt_to(&mut destination)?;
 
-        let _ = std::fs::remove_file(staging::staging_path(staging_dir, &manifest.file_id));
+        // O `.staging` fica: quem chama o apaga junto com a linha da
+        // transferência, na mesma ordem de qualquer outro fim (§7.5). Apagá-lo
+        // aqui, com a linha ainda no banco, faria uma falha logo depois parecer
+        // um staging perdido.
         Ok(FileComplete {
             file_id: manifest.file_id,
         })

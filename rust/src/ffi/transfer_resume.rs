@@ -18,17 +18,14 @@ use std::collections::HashSet;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::{
-    seal_file_reject, to_device_id, OutgoingHandle, TransferHandle, OFFER_RESPONSE_TIMEOUT_SECS,
-};
+use crate::ffi::transfer::{seal_file_reject, to_device_id, OFFER_RESPONSE_TIMEOUT_SECS};
+use crate::ffi::transfer_handles::{can_seal_now, Claim, OutgoingHandle, TransferHandle};
 use crate::ffi::types::{ResumedDirectionDto, ResumedTransferDto};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
-use viska_proto::file::manifest::{Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE};
+use viska_proto::file::manifest::{Manifest, FILE_ID_LEN};
 use viska_proto::file::outgoing;
 use viska_proto::file::staging;
-use viska_proto::file::transfer::{
-    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferMode, TRANSFER_SECRET_LEN,
-};
+use viska_proto::file::transfer::{self, FileFeedback, ReceiveTransfer, TRANSFER_SECRET_LEN};
 use viska_proto::store::transfers::{Direction, StoredTransfer};
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
@@ -38,23 +35,6 @@ use viska_proto::wire::transport::Transport;
 /// `outgoing/` são apagados mesmo sem conclusão. Limita por quanto tempo uma
 /// apreensão do aparelho destrancado expõe uma transferência parada.
 pub(super) const TRANSFER_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
-
-/// Modo de envio que o manifesto implica: `symbol_size` da LAN é o único caso
-/// por offset (§7.3, D23). Decidido no início do envio e mantido na retomada,
-/// porque o tamanho de símbolo não muda depois da oferta.
-pub(super) fn mode_for(manifest: &Manifest) -> TransferMode {
-    if manifest.symbol_size == LAN_SYMBOL_SIZE {
-        TransferMode::Offset
-    } else {
-        TransferMode::Fountain
-    }
-}
-
-/// A sessão cifra agora: estabelecida e sem candidata segurando o envio
-/// (§11.4), que faria `encrypt_outgoing` recusar.
-pub(super) fn can_seal_now(session: &viska_proto::session::Session) -> bool {
-    session.is_established() && !session.is_renewing()
-}
 
 /// Resultado de garantir um handle em memória para uma linha.
 enum Rebuild {
@@ -151,20 +131,6 @@ impl Core {
             };
         }
         self.end_transfer(file_id)
-    }
-
-    /// Último passo de toda transferência que acaba, por qualquer motivo:
-    /// apaga a linha (o que destrói a chave, D15), descarta o handle e apaga o
-    /// `.staging` e a cópia de envio. A linha vai antes do handle: uma
-    /// reconstrução concorrente ou viu a linha e instalou um handle que este
-    /// passo tira em seguida, ou já não a vê e não instala nada
-    /// ([`Self::install_handle`] confere sob a mesma trava).
-    pub(super) fn end_transfer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
-        self.store.delete_file_transfer(file_id)?;
-        self.lock_transfers()?.remove(file_id);
-        let _ = std::fs::remove_file(staging::staging_path(&self.staging_dir, file_id));
-        let _ = std::fs::remove_file(staging::staging_path(&self.outgoing_dir, file_id));
-        Ok(())
     }
 
     /// Geração atual da sessão com o contato, 0 sem sessão.
@@ -306,9 +272,11 @@ impl Core {
 
     /// Garante um `SendTransfer` em memória para `stored`.
     fn ensure_send_handle(&self, stored: &StoredTransfer, manifest: &Manifest) -> Result<Rebuild, FfiError> {
-        if self.lock_transfers()?.contains_key(&stored.file_id) {
-            return Ok(Rebuild::Ready);
-        }
+        let _claim = match self.claim_for_rebuild(stored.file_id)? {
+            Claim::Live => return Ok(Rebuild::Ready),
+            Claim::Busy => return Ok(Rebuild::Later),
+            Claim::Claimed(guard) => guard,
+        };
         if !staging::staging_path(&self.outgoing_dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
             return Ok(Rebuild::Ended);
@@ -322,20 +290,27 @@ impl Core {
             }
             Err(_) => return Ok(Rebuild::Later),
         };
-        let handle = OutgoingHandle {
-            transfer: SendTransfer::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader)
-                .with_mode(mode_for(manifest)),
-            generation: self.session_generation(&stored.contact_device_id)?,
-            answered: stored.answered,
-        };
+        let handle = OutgoingHandle::new(
+            manifest.clone(),
+            stored.kind,
+            &stored.transfer_secret,
+            reader,
+            self.session_generation(&stored.contact_device_id)?,
+            stored.answered,
+        );
         self.install(stored.file_id, TransferHandle::Send(handle))
     }
 
     /// Como [`Self::ensure_send_handle`], para o recebimento.
     fn ensure_receive_handle(&self, stored: &StoredTransfer, manifest: Manifest) -> Result<Rebuild, FfiError> {
-        if self.lock_transfers()?.contains_key(&stored.file_id) {
-            return Ok(Rebuild::Ready);
-        }
+        // A reserva cobre a leitura e o corte do staging em `ReceiveTransfer::resume`:
+        // uma segunda reconstrução, ou o `finish` concorrente, cortaria páginas
+        // que o outro está usando.
+        let _claim = match self.claim_for_rebuild(stored.file_id)? {
+            Claim::Live => return Ok(Rebuild::Ready),
+            Claim::Busy => return Ok(Rebuild::Later),
+            Claim::Claimed(guard) => guard,
+        };
         if !staging::staging_path(&self.staging_dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
             return Ok(Rebuild::Ended);
@@ -358,21 +333,6 @@ impl Core {
         } else {
             Rebuild::Later
         })
-    }
-
-    /// Põe um handle reconstruído no mapa, a menos que a Core tenha trancado ou
-    /// a transferência tenha acabado enquanto ele era montado. As duas checagens
-    /// ficam sob a trava de transferências: `Core::lock` limpa o mapa de novo
-    /// depois de fechar o banco, então esta inserção ou acontece antes dessa
-    /// limpeza ou já vê o banco fechado. Outra chamada que tenha reconstruído o
-    /// mesmo handle primeiro fica com o dela.
-    pub(super) fn install_handle(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<bool, FfiError> {
-        let mut transfers = self.lock_transfers()?;
-        if self.is_locked() || !self.store.file_transfer_exists(&file_id)? {
-            return Ok(false);
-        }
-        transfers.entry(file_id).or_insert(handle);
-        Ok(true)
     }
 
     /// Sela de novo o `FILE_METADATA` de um envio, com o mesmo `file_id`,
@@ -428,6 +388,11 @@ impl Core {
             let behind = feedback.first_incomplete_block() < send.transfer.current_block();
             if !behind || send.generation == generation {
                 send.transfer.ingest_feedback(feedback)?;
+                // Um feedback em dia fixa a geração: daqui em diante, só um
+                // receptor que reabriu de novo faz o envio voltar.
+                if !behind {
+                    send.generation = generation;
+                }
                 return Ok(());
             }
         }
@@ -435,9 +400,9 @@ impl Core {
         // cópia até eles. A cópia já teve a raiz conferida ao entrar em memória,
         // e cada página continua autenticada pelo AEAD.
         let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret)?;
-        let mut rewound = SendTransfer::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader)
-            .with_mode(mode_for(manifest));
-        rewound.ingest_feedback(feedback)?;
+        let mut rewound =
+            OutgoingHandle::new(manifest.clone(), stored.kind, &stored.transfer_secret, reader, generation, true);
+        rewound.transfer.ingest_feedback(feedback)?;
 
         let mut transfers = self.lock_transfers()?;
         if self.is_locked() {
@@ -446,9 +411,8 @@ impl Core {
         // Só troca se o handle continuar adiante e ainda não tiver recuado nesta
         // sessão: outro feedback pode ter feito isso enquanto este era montado.
         if let Some(TransferHandle::Send(send)) = transfers.get_mut(&stored.file_id) {
-            if send.generation != generation && send.transfer.current_block() > rewound.current_block() {
-                send.transfer = rewound;
-                send.generation = generation;
+            if send.generation != generation && send.transfer.current_block() > rewound.transfer.current_block() {
+                *send = rewound;
             }
         }
         Ok(())
@@ -1055,11 +1019,7 @@ mod tests {
         let stored = pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
         let manifest = Manifest::decode(&stored.manifest_cbor).unwrap();
         let reader = outgoing::open_outgoing_copy(&pair.core_a.outgoing_dir, &manifest, &stored.transfer_secret).unwrap();
-        TransferHandle::Send(OutgoingHandle {
-            transfer: SendTransfer::new(manifest, stored.kind, &stored.transfer_secret, reader),
-            generation: 0,
-            answered: false,
-        })
+        TransferHandle::Send(OutgoingHandle::new(manifest, stored.kind, &stored.transfer_secret, reader, 0, false))
     }
 
     #[test]
@@ -1122,5 +1082,88 @@ mod tests {
 
         assert!(matches!(pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()), Err(FfiError::Locked)));
         assert!(matches!(pair.core_a.transfer_progress(started.file_id), Err(FfiError::Locked)));
+    }
+
+    #[test]
+    fn concurrent_resumes_of_one_receive_leave_the_staging_intact() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (started, original) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        pair.core_b.lock().unwrap();
+        pair.core_b.unlock().unwrap();
+        reconnect(&pair, false);
+
+        // Evento de sessão e canal novo pedem a mesma retomada ao mesmo tempo.
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap());
+            }
+        });
+        pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+
+        assert_eq!(finish(&pair, &started.file_id, &dir_dst), original);
+        assert_sender_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_rebuild_never_runs_while_the_file_id_is_claimed() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        let file_id = fid(&started.file_id);
+        let staging = staging::staging_path(&pair.core_b.staging_dir, &file_id);
+
+        // `finish_receive` em andamento: o handle saiu do mapa e o id está reservado.
+        let (handle, claim) = pair.core_b.take_for_finish(file_id).unwrap().unwrap();
+        let before = std::fs::metadata(&staging).unwrap().len();
+        let resumed = pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap();
+
+        assert!(resumed.is_empty(), "a retomada espera quem está terminando");
+        assert_eq!(std::fs::metadata(&staging).unwrap().len(), before);
+        drop(claim);
+        drop(handle);
+        assert_eq!(pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_finish_keeps_the_staging_for_the_next_resume() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let path = write_temp_file(&dir_src, "a.bin", &original);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata).unwrap();
+        drive(&pair, &started.file_id, 1);
+
+        // Destino num diretório que não existe: o arquivo não chega a ser escrito.
+        let bad = dir_dst.path().join("nao-existe").join("x.bin");
+        assert!(pair
+            .core_b
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), bad.to_str().unwrap().to_owned())
+            .is_err());
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+
+        pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap();
+        assert_eq!(finish(&pair, &started.file_id, &dir_dst), original);
+    }
+
+    #[test]
+    fn an_in_step_feedback_pins_the_generation_against_later_late_ones() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        let early = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        drive(&pair, &started.file_id, 1);
+        // A sessão de A troca (o par reabriu) sem que B fique para trás.
+        if let Some(TransferHandle::Send(send)) = pair.core_a.lock_transfers().unwrap().get_mut(&fid(&started.file_id)) {
+            send.generation = u32::MAX;
+        }
+        let in_step = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        pair.core_a.receive_incoming(pair.device_id_b.clone(), in_step).unwrap();
+
+        pair.core_a.receive_incoming(pair.device_id_b.clone(), early).unwrap();
+
+        assert_eq!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().blocks_done, 1);
     }
 }

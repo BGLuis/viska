@@ -476,7 +476,7 @@ class MessageReceptionService {
         _stopFeedback(hexId);
         return;
       }
-      final current = '${progress.blocksDone}/${progress.bytesDone}';
+      final current = _progressMark(progress);
       final idle = _feedbackIdle[hexId];
       if (idle == null || idle.progress != current) {
         _feedbackIdle[hexId] = (progress: current, since: clock.now());
@@ -673,18 +673,26 @@ class MessageReceptionService {
   }
 
   /// Ciclos de envio em curso, por `file_id`: a retomada e a tela de conversa
-  /// podem pedir o mesmo envio, e dois ciclos mandariam a oferta e cada
-  /// símbolo duas vezes.
-  final Map<String, Future<void>> _outgoing = {};
+  /// podem pedir o mesmo envio, e dois ciclos mandariam cada símbolo duas vezes.
+  final Map<String, _OutgoingCycle> _outgoing = {};
 
   /// Ciclo de um envio, igual para o que a conversa acabou de iniciar e para o
   /// retomado: entrega a oferta (a já selada em [offer], ou a que [sealOffer]
   /// selar na hora), bombeia até o emissor completar e marca a mensagem `sent`.
-  /// Se parar no meio, a mensagem vira `failed` e o erro sobe; a próxima
-  /// retomada a devolve a `pending` (docs/protocol.md §7.5). Um pedido para um
-  /// envio que já está em curso devolve o mesmo ciclo. Segura o serviço em
-  /// primeiro plano enquanto dura, salvo com [holdForeground] falso (quem chama
-  /// já segura, ou é uma nota de voz curta enviada com o app aberto).
+  /// Se parar antes disso, a mensagem vira `failed` e o erro sobe; a próxima
+  /// retomada a devolve a `pending` (docs/protocol.md §7.5).
+  ///
+  /// O `Future` termina quando o envio completa, mas o laço segue um pouco: o
+  /// receptor que retoma pode voltar a um bloco já confirmado, e o emissor que
+  /// recua precisa de alguém bombeando. Ele para no `FILE_COMPLETE` ou depois do
+  /// limite de inatividade, sem mexer mais na mensagem.
+  ///
+  /// Um pedido para um envio já em curso junta-se a ele; se trouxer
+  /// [sealOffer], a oferta sai de novo mesmo assim, porque ele vem de uma
+  /// retomada e o par pode tê-la perdido com a sessão anterior (o receptor
+  /// ignora a cópia de uma oferta que já conhece). Segura o serviço em primeiro
+  /// plano até completar, salvo com [holdForeground] falso (quem chama já
+  /// segura, ou é uma nota de voz curta enviada com o app aberto).
   Future<void> runOutgoingTransfer(
     ContactId contactId,
     Uint8List fileId, {
@@ -695,61 +703,98 @@ class MessageReceptionService {
   }) {
     final hexId = _hex(fileId);
     final running = _outgoing[hexId];
-    if (running != null) return running;
-    // Corpo em bloco de propósito: `remove` devolve o próprio ciclo, e um
-    // `whenComplete` que recebe um `Future` espera por ele — esperaria a si mesmo.
-    final run = _runOutgoing(
+    if (running != null) {
+      if (sealOffer != null) unawaited(_sendSealedOffer(contactId, sealOffer));
+      return running.done.future;
+    }
+    final cycle = _OutgoingCycle();
+    _outgoing[hexId] = cycle;
+    unawaited(_runOutgoing(
       contactId,
       fileId,
+      cycle,
       messageId: messageId,
       offer: offer,
       sealOffer: sealOffer,
       holdForeground: holdForeground,
     ).whenComplete(() {
-      _outgoing.remove(hexId);
-    });
-    _outgoing[hexId] = run;
-    return run;
+      if (identical(_outgoing[hexId], cycle)) _outgoing.remove(hexId);
+    }));
+    return cycle.done.future;
+  }
+
+  Future<void> _sendSealedOffer(ContactId contactId, Future<Uint8List?> Function() sealOffer) async {
+    try {
+      final offer = await sealOffer();
+      if (offer != null) await _router.sendToContact(contactId, offer);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Oferta retomada para $contactId não enviada: $e');
+    }
   }
 
   Future<void> _runOutgoing(
     ContactId contactId,
-    Uint8List fileId, {
+    Uint8List fileId,
+    _OutgoingCycle cycle, {
     required int messageId,
     required Uint8List? offer,
     required Future<Uint8List?> Function()? sealOffer,
     required bool holdForeground,
   }) async {
-    final lease = holdForeground ? await _foregroundService.acquire() : null;
+    var lease = holdForeground ? await _foregroundService.acquire() : null;
+    Future<void> completed() async {
+      if (cycle.done.isCompleted) return;
+      await _core.markMessageSent(messageId: messageId);
+      cycle.done.complete();
+      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
+      // O que sobra do laço só espera um eventual recuo do receptor: não vale
+      // manter a notificação de envio em curso por ele.
+      await lease?.release();
+      lease = null;
+    }
+
     try {
       final toSend = offer ?? await sealOffer?.call();
       if (toSend != null) await _router.sendToContact(contactId, toSend);
-      await _pumpOutgoing(contactId, fileId);
-      await _core.markMessageSent(messageId: messageId);
-    } catch (_) {
-      try {
-        await _core.markMessageFailed(messageId: messageId);
-      } catch (e) {
-        // Trancada ou banco indisponível: a abertura seguinte acerta o estado.
-        if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao marcar envio $messageId como falho: $e');
+      await _pumpOutgoing(contactId, fileId, onComplete: completed);
+      // O laço acabou sem ver o envio completo: o Rust largou o envio (recusa,
+      // prazo, `FILE_COMPLETE` antes do último progresso). `mark_sent` não
+      // rebaixa um estado final.
+      await completed();
+    } catch (e, stack) {
+      if (!cycle.done.isCompleted) {
+        try {
+          await _core.markMessageFailed(messageId: messageId);
+        } catch (e) {
+          // Trancada ou banco indisponível: a abertura seguinte acerta o estado.
+          if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao marcar envio $messageId como falho: $e');
+        }
+        cycle.done.completeError(e, stack);
       }
-      rethrow;
     } finally {
       if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
       await lease?.release();
     }
   }
 
-  Future<void> _pumpOutgoing(ContactId contactId, Uint8List fileId) async {
+  Future<void> _pumpOutgoing(
+    ContactId contactId,
+    Uint8List fileId, {
+    required Future<void> Function() onComplete,
+  }) async {
+    var completed = false;
     String? lastProgress;
     var idleSince = clock.now();
     while (true) {
-      // Sair em silêncio deixaria quem chamou marcar o envio como concluído.
-      if (_disposed) throw const TransportUnavailableException();
+      // Sair em silêncio antes de completar deixaria quem chamou marcar o envio
+      // como concluído; depois de completar, sair é o fim normal.
+      if (_disposed || _router.transportFor(contactId) == null) {
+        if (completed) return;
+        throw const TransportUnavailableException();
+      }
       // Segue o transporte atual do contato: o roteador recria o canal que caiu,
       // e o emissor no Rust é o mesmo; o que se perdeu em voo o feedback pede de
-      // novo. Só sem transporte nenhum não há para onde mandar.
-      if (_router.transportFor(contactId) == null) throw const TransportUnavailableException();
+      // novo.
       final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
       if (chunk != null) {
         await _router.sendFileToContact(contactId, chunk);
@@ -757,33 +802,52 @@ class MessageReceptionService {
         continue;
       }
       final progress = await _core.transferProgress(fileId: fileId);
-      if (progress == null || progress.isComplete) return;
-      final current = '${progress.blocksDone}/${progress.bytesDone}';
+      if (progress == null) return;
+      if (progress.isComplete && !completed) {
+        completed = true;
+        await onComplete();
+      }
+      final current = _progressMark(progress);
       if (current != lastProgress) {
         lastProgress = current;
         idleSince = clock.now();
-      } else if (!progress.awaitingAnswer && clock.now().difference(idleSince) >= _idleLimit) {
-        // O receptor sumiu ou já encerrou a transferência sem que o aviso chegasse
-        // (issue #108). A oferta ainda sem resposta não conta: o aceite de uma
-        // oferta grande espera a pessoa (§7.6).
-        throw const TransferStalledException();
+      } else if (clock.now().difference(idleSince) >= _idleLimit) {
+        if (completed) return;
+        // O receptor sumiu ou já encerrou a transferência sem que o aviso
+        // chegasse (issue #108). A oferta ainda sem resposta não conta: o aceite
+        // de uma oferta grande espera a pessoa (§7.6).
+        if (!progress.awaitingAnswer) throw const TransferStalledException();
       }
       // Emissor esgotou o que tinha para o bloco atual — espera o
       // `FILE_FEEDBACK` do receptor (processado como efeito colateral dentro de
       // `Core.receiveIncoming`, já dirigido por `_handleIncomingRaw`) liberar o
       // próximo bloco. Espera curta, não *polling* de descoberta — a novidade em
       // si (oferta/conclusão) já chega por evento, isto só dá ritmo ao laço.
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await Future<void>.delayed(completed ? const Duration(seconds: 1) : const Duration(milliseconds: 100));
     }
   }
+
+  /// Retomadas em curso por contato: o evento de sessão e o canal novo costumam
+  /// pedir a mesma retomada juntos, e elas rodam uma depois da outra.
+  final Map<ContactId, Future<void>> _resumeQueue = {};
 
   /// Retoma as transferências com o contato (docs/protocol.md §7.5): reenvia a
   /// oferta que ainda não teve resposta, volta a bombear os envios, a mandar
   /// `FILE_FEEDBACK` dos recebimentos e entrega o aviso de um recebimento que
   /// não tinha como continuar. Pode ser chamada de novo sem efeito colateral:
-  /// o Rust mantém o que já está em memória e o ciclo de envio é único por
-  /// `file_id`.
-  Future<void> resumeTransfers(ContactId contactId) async {
+  /// o Rust mantém o que já está em memória, o ciclo de envio é único por
+  /// `file_id` e as chamadas para um contato não se sobrepõem.
+  Future<void> resumeTransfers(ContactId contactId) {
+    final previous = _resumeQueue[contactId] ?? Future<void>.value();
+    final next = previous.then((_) => _resumeOnce(contactId));
+    _resumeQueue[contactId] = next;
+    unawaited(next.whenComplete(() {
+      if (identical(_resumeQueue[contactId], next)) _resumeQueue.remove(contactId);
+    }));
+    return next;
+  }
+
+  Future<void> _resumeOnce(ContactId contactId) async {
     if (_isPaused || _disposed) return;
     final List<ResumedTransferDto> resumed;
     try {
@@ -907,3 +971,11 @@ class MessageReceptionService {
 
 String _hex(Uint8List bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+/// Um envio em curso: [done] termina quando ele completa (ou falha antes).
+class _OutgoingCycle {
+  final done = Completer<void>();
+}
+
+/// O que conta como progresso para os limites de inatividade.
+String _progressMark(TransferProgressDto progress) => '${progress.blocksDone}/${progress.bytesDone}';

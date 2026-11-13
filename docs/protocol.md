@@ -510,8 +510,13 @@ voltar a um bloco que já tinha confirmado, enquanto o emissor, que não trancou
 emissor só anda para a frente, um `FILE_FEEDBACK` cujo primeiro bloco incompleto está atrás do bloco
 corrente do emissor faz montar um emissor novo a partir da cópia, guiado por esse mesmo feedback.
 
-A chamada pode se repetir: um handle que já está em memória fica como está, e o recuo acima cobre o
-caso em que ele ficou adiante do receptor. Enquanto uma sessão candidata segura o envio (§11.4), ela
+A chamada pode se repetir, inclusive em paralelo: um handle que já está em memória fica como está, e
+quem reconstrói ou termina uma transferência reserva o `file_id` antes de mexer no staging, porque a
+reconstrução corta o arquivo e não pode correr junto com outra, nem com o `finish` que o lê. O recuo
+acima cobre o caso em que o handle ficou adiante do receptor; ele só acontece num feedback de uma sessão
+mais nova que a do último feedback em dia, porque na mesma sessão um feedback que pareça atrás é só um
+atrasado. O receptor só apaga o staging junto com a linha, depois do commit no destino: um `finish`
+que falhe no meio recomeça do último bloco na próxima retomada. Enquanto uma sessão candidata segura o envio (§11.4), ela
 não faz nada. Uma falha passageira de E/S só adia aquela transferência para a próxima chamada; só um
 arquivo sumido, cortado, adulterado ou que não bate com a raiz a encerra. Um handle montado enquanto
 a Core trancou, ou enquanto a transferência acabou, é descartado em vez de instalado. Os arquivos sem
