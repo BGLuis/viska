@@ -726,7 +726,7 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     final sanitizedPath = '$rawPath.viska-audio';
     // Sem `awaitConnected` nem serviço em primeiro plano, de propósito: a nota
-    // é curta, gravada com o app aberto; sem conexão ela falha e é marcada.
+    // é curta, gravada com o app aberto; sem sessão que sele, ela entra na fila.
     int? startedMessageId;
     var handedOff = false;
     try {
@@ -757,9 +757,10 @@ class ChatController extends ChangeNotifier {
         // pode virar "não foi possível enviar".
         try {
           await _cacheVoiceNote(queued.fileId, sanitizedPath);
-        } catch (e) {
-          if (kDebugMode) debugPrint('[ChatController] áudio enfileirado sem cache local: $e');
+        } catch (cacheError) {
+          if (kDebugMode) debugPrint('[ChatController] áudio enfileirado sem cache local: $cacheError');
         }
+        await _discardSanitized(sanitizedPath);
         unawaited(_receptionService.resumeTransfers(_contactId));
         return;
       }
@@ -768,6 +769,9 @@ class ChatController extends ChangeNotifier {
       // Cacheia o áudio interno antes de apagar o arquivo sanitizado — permite
       // tocar a própria nota enviada, sem round-trip pela rede.
       await _cacheVoiceNote(started.fileId, sanitizedPath);
+      // Logo depois do cache, não no fim: o laço de envio dura a transferência
+      // inteira, e o áudio em claro não pode esperar por ela.
+      await _discardSanitized(sanitizedPath);
 
       handedOff = true;
       await _receptionService.runOutgoingTransfer(
@@ -784,12 +788,19 @@ class ChatController extends ChangeNotifier {
           : await _sendFailureMessage('Não foi possível enviar a nota de voz.');
       await _afterSendFailure(startedMessageId, handedOff: handedOff);
     } finally {
-      // O sanitizado em claro nunca sobrevive à chamada: a fila guarda só a
-      // cópia cifrada do Rust, e uma falha também não pode deixá-lo no temp.
-      await File(sanitizedPath).delete().catchError((_) => File(sanitizedPath));
+      // Rede de segurança para as falhas anteriores ao apagamento; idempotente.
+      await _discardSanitized(sanitizedPath);
       _sendingVoice = false;
       notifyListeners();
     }
+  }
+
+  /// Apaga o áudio sanitizado em claro: o Rust já tem a cópia cifrada.
+  Future<void> _discardSanitized(String sanitizedPath) async {
+    try {
+      final file = File(sanitizedPath);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 
   Future<void> _cacheVoiceNote(Uint8List fileId, String sanitizedPath) async {
