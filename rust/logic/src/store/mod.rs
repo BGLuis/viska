@@ -13,7 +13,7 @@ mod schema;
 pub mod transfers;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 use rusqlite::OptionalExtension;
 use zeroize::Zeroizing;
@@ -37,7 +37,37 @@ use crate::{Error, Result};
 /// liberando caches descriptografados e chaves em RAM.
 pub struct Store {
     conn: Mutex<Option<rusqlite::Connection>>,
+    /// Quem quer saber de toda mudança em mensagem. Fica aqui, e não em cada
+    /// chamador, para que nenhum caminho de escrita possa esquecer de avisar:
+    /// a timeline do Dart deixou de reler a lista inteira justamente porque
+    /// este é o único ponto que sabe que algo mudou.
+    observer: RwLock<Option<MessageObserver>>,
 }
+
+/// O que aconteceu com uma mensagem. Só identificadores: o conteúdo o Dart
+/// pede depois, por `Core::get_message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageChangeKind {
+    /// Linha nova na timeline.
+    Added,
+    /// Estado de entrega ou ligação com o arquivo mudou.
+    Updated,
+    /// A chave efêmera foi destruída (vencimento ou visualização única).
+    KeyExpired,
+    /// As reações da mensagem mudaram.
+    ReactionsChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageChange {
+    pub contact_device_id: [u8; 16],
+    pub message_id: i64,
+    pub kind: MessageChangeKind,
+}
+
+/// Chamado depois de a escrita terminar e fora do lock da conexão, então pode
+/// sem risco só enfileirar (é o que o `StreamSink` faz).
+pub type MessageObserver = Arc<dyn Fn(MessageChange) + Send + Sync>;
 
 impl Store {
     /// Abre (criando se necessário) o banco em `path`, cifrado com a chave
@@ -57,6 +87,7 @@ impl Store {
 
         Ok(Self {
             conn: Mutex::new(Some(conn)),
+            observer: RwLock::new(None),
         })
     }
 
@@ -66,6 +97,43 @@ impl Store {
         let guard = self.conn.lock().map_err(|_| Error::Store)?;
         let conn = guard.as_ref().ok_or(Error::Locked)?;
         f(conn)
+    }
+
+    /// Troca o observador de mudanças em mensagens.
+    pub fn set_message_observer(&self, observer: MessageObserver) {
+        if let Ok(mut slot) = self.observer.write() {
+            *slot = Some(observer);
+        }
+    }
+
+    /// Avisa o observador. Roda depois de a escrita ter terminado: uma falha
+    /// aqui (banco trancado no meio, sem observador) só perde o aviso, nunca
+    /// desfaz a escrita, e a próxima leitura da linha traz o estado certo.
+    fn announce(&self, kind: MessageChangeKind, ids: &[i64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some(observer) = self.observer.read().ok().and_then(|slot| slot.clone()) else {
+            return;
+        };
+        let Ok(owners) = self.with_conn(|conn| messages::contacts_of(conn, ids)) else {
+            return;
+        };
+        for (message_id, contact_device_id) in owners {
+            observer(MessageChange { contact_device_id, message_id, kind });
+        }
+    }
+
+    /// Como [`Self::announce`] para a mensagem de saída ligada a `file_id`.
+    fn announce_by_file_id(&self, file_id: &[u8; 16], contact_device_id: &[u8; 16]) {
+        if let Ok(Some(id)) = self.outgoing_message_id_by_file_id(file_id, contact_device_id) {
+            self.announce(MessageChangeKind::Updated, &[id]);
+        }
+    }
+
+    /// Quando a próxima chave efêmera vence (segundos Unix), se houver alguma.
+    pub fn next_ephemeral_expiry(&self) -> Result<Option<i64>> {
+        self.with_conn(messages::next_ephemeral_expiry)
     }
 
     /// Fecha a conexão com o banco cifrado, liberando da memória páginas
@@ -250,9 +318,11 @@ impl Store {
         body: &str,
         created_at_unix_secs: i64,
     ) -> Result<i64> {
-        self.with_conn(|conn| {
+        let id = self.with_conn(|conn| {
             messages::insert_pending(conn, contact_device_id, packet_type, body, created_at_unix_secs)
-        })
+        })?;
+        self.announce(MessageChangeKind::Added, &[id]);
+        Ok(id)
     }
 
     /// Persiste uma mensagem recebida e já decifrada.
@@ -263,54 +333,106 @@ impl Store {
         body: &str,
         received_at_unix_secs: i64,
     ) -> Result<i64> {
-        self.with_conn(|conn| {
+        let id = self.with_conn(|conn| {
             messages::insert_incoming(conn, contact_device_id, packet_type, body, received_at_unix_secs)
-        })
+        })?;
+        // Idempotente por `global_id`: a repetição devolve a linha que já
+        // existia e o aviso repetido é inofensivo, o Dart aplica por id.
+        self.announce(MessageChangeKind::Added, &[id]);
+        Ok(id)
     }
 
     /// Marca uma mensagem de saída como entregue ao transporte.
     pub fn mark_message_sent(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::mark_sent(conn, message_id))
+        if self.with_conn(|conn| messages::mark_sent(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
     pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::mark_sending(conn, message_id))
+        if self.with_conn(|conn| messages::mark_sending(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Devolve à fila uma mensagem `Sending` cujo envio não aconteceu.
     pub fn requeue_message(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::requeue(conn, message_id))
+        if self.with_conn(|conn| messages::requeue(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Marca como `Unknown` todo texto que ficou em `Sending` (abertura e trava).
     pub fn mark_sending_messages_unknown(&self) -> Result<usize> {
-        self.with_conn(messages::mark_all_sending_unknown)
+        let ids = self.with_conn(messages::mark_all_sending_unknown)?;
+        self.announce(MessageChangeKind::Updated, &ids);
+        Ok(ids.len())
+    }
+
+    /// Marca como `Unknown` os textos em `Sending` de um contato (§11.4).
+    pub fn mark_sending_messages_unknown_for_contact(
+        &self,
+        contact_device_id: &[u8; 16],
+    ) -> Result<usize> {
+        let ids = self.with_conn(|conn| messages::mark_sending_unknown_for_contact(conn, contact_device_id))?;
+        self.announce(MessageChangeKind::Updated, &ids);
+        Ok(ids.len())
     }
 
     /// Devolve à fila um texto `Unknown`, a pedido da pessoa.
     pub fn resend_unknown_message(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::resend_unknown(conn, message_id))
+        if self.with_conn(|conn| messages::resend_unknown(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Devolve à fila os envios em `Sending` de um único contato.
     pub fn requeue_sending_messages_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
-        self.with_conn(|conn| messages::requeue_sending_for_contact(conn, contact_device_id))
+        let ids = self.with_conn(|conn| messages::requeue_sending_for_contact(conn, contact_device_id))?;
+        self.announce(MessageChangeKind::Updated, &ids);
+        Ok(ids.len())
     }
 
-    /// Marca como falha os envios de arquivo e voz `Pending` de um contato.
-    pub fn fail_pending_transfers_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
-        self.with_conn(|conn| messages::fail_pending_transfers_for_contact(conn, contact_device_id))
+    /// `id` da mensagem de saída ligada a `file_id` deste contato.
+    pub fn outgoing_message_id_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| messages::outgoing_id_by_file_id(conn, file_id, contact_device_id))
+    }
+
+    /// Devolve a `Pending` o envio de arquivo marcado como falha que vai retomar.
+    pub fn reopen_failed_message_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        let changed = self.with_conn(|conn| messages::reopen_failed_by_file_id(conn, file_id, contact_device_id))?;
+        if changed {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(changed)
     }
 
     /// Marca uma mensagem de saída `Pending` como falha.
     pub fn mark_message_failed(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::mark_failed(conn, message_id))
+        if self.with_conn(|conn| messages::mark_failed(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Liga a mensagem de saída de um arquivo ao seu `file_id`.
     pub fn set_message_file_id(&self, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
-        self.with_conn(|conn| messages::set_file_id(conn, message_id, file_id))
+        self.with_conn(|conn| messages::set_file_id(conn, message_id, file_id))?;
+        self.announce(MessageChangeKind::Updated, &[message_id]);
+        Ok(())
     }
 
     /// Marca como recusada a mensagem de arquivo deste contato (`FILE_REJECT`).
@@ -319,7 +441,11 @@ impl Store {
         file_id: &[u8; 16],
         contact_device_id: &[u8; 16],
     ) -> Result<bool> {
-        self.with_conn(|conn| messages::mark_rejected_by_file_id(conn, file_id, contact_device_id))
+        let changed = self.with_conn(|conn| messages::mark_rejected_by_file_id(conn, file_id, contact_device_id))?;
+        if changed {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(changed)
     }
 
     /// Marca como expirada a mensagem de arquivo deste contato (oferta sem resposta).
@@ -328,26 +454,39 @@ impl Store {
         file_id: &[u8; 16],
         contact_device_id: &[u8; 16],
     ) -> Result<bool> {
-        self.with_conn(|conn| messages::mark_expired_by_file_id(conn, file_id, contact_device_id))
+        let changed = self.with_conn(|conn| messages::mark_expired_by_file_id(conn, file_id, contact_device_id))?;
+        if changed {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(changed)
     }
 
-    /// Marca como falha a mensagem de arquivo deste contato (envio cancelado pelo reset).
+    /// Marca como falha a mensagem de arquivo deste contato (envio que não retoma mais).
     pub fn mark_message_failed_by_file_id(
         &self,
         file_id: &[u8; 16],
         contact_device_id: &[u8; 16],
     ) -> Result<bool> {
-        self.with_conn(|conn| messages::mark_failed_by_file_id(conn, file_id, contact_device_id))
+        let changed = self.with_conn(|conn| messages::mark_failed_by_file_id(conn, file_id, contact_device_id))?;
+        if changed {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(changed)
     }
 
-    /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
+    /// Marca como falha os envios de arquivo/voz `Pending` que não podem retomar.
     pub fn fail_pending_transfers(&self) -> Result<usize> {
-        self.with_conn(messages::fail_pending_transfers)
+        let ids = self.with_conn(messages::fail_pending_transfers)?;
+        self.announce(MessageChangeKind::Updated, &ids);
+        Ok(ids.len())
     }
 
     /// Marca uma mensagem de saída como confirmada pelo par (via MSG_RECEIPT).
     pub fn mark_message_delivered(&self, message_id: i64) -> Result<()> {
-        self.with_conn(|conn| messages::mark_delivered(conn, message_id))
+        if self.with_conn(|conn| messages::mark_delivered(conn, message_id))? {
+            self.announce(MessageChangeKind::Updated, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Marca uma mensagem como entregue buscando por identificador global, id numérico ou ratchet_counter.
@@ -356,7 +495,11 @@ impl Store {
         target_id_str: &str,
         contact_device_id: &[u8; 16],
     ) -> Result<Option<i64>> {
-        self.with_conn(|conn| messages::mark_delivered_by_target(conn, target_id_str, contact_device_id))
+        let id = self.with_conn(|conn| messages::mark_delivered_by_target(conn, target_id_str, contact_device_id))?;
+        if let Some(id) = id {
+            self.announce(MessageChangeKind::Updated, &[id]);
+        }
+        Ok(id)
     }
 
     /// Atualiza o ratchet_counter associado a uma mensagem enviada.
@@ -371,12 +514,22 @@ impl Store {
 
     /// Marca mensagem efêmera como lida, disparando o temporizador regressivo.
     pub fn mark_message_read(&self, message_id: i64, unix_now: i64) -> Result<()> {
-        self.with_conn(|conn| messages::mark_message_read(conn, message_id, unix_now))
+        if self.with_conn(|conn| messages::mark_message_read(conn, message_id, unix_now))? {
+            self.announce(MessageChangeKind::KeyExpired, &[message_id]);
+        }
+        Ok(())
     }
 
     /// Varre e destrói chaves de mensagens efêmeras vencidas.
     pub fn sweep_expired_ephemeral_messages(&self, unix_now: i64) -> Result<usize> {
-        self.with_conn(|conn| messages::sweep_expired_ephemeral_messages(conn, unix_now))
+        let expired = self.with_conn(|conn| messages::sweep_expired_ephemeral_messages(conn, unix_now))?;
+        self.announce(MessageChangeKind::KeyExpired, &expired);
+        Ok(expired.len())
+    }
+
+    /// Uma mensagem pelo `id`; `None` se sumiu ou se a lista a esconde.
+    pub fn get_message(&self, message_id: i64) -> Result<Option<messages::StoredMessage>> {
+        self.with_conn(|conn| messages::get_by_id(conn, message_id))
     }
 
     /// Mensagens de um contato com paginação opcional (`since_id`, `limit`).
@@ -412,7 +565,9 @@ impl Store {
     ) -> Result<()> {
         self.with_conn(|conn| {
             messages::add_reaction(conn, message_id, contact_device_id, emoji, created_at_unix_secs)
-        })
+        })?;
+        self.announce(MessageChangeKind::ReactionsChanged, &[message_id]);
+        Ok(())
     }
 
     /// Adiciona uma reação emoji a uma mensagem buscando pelo identificador global ou rowid local.
@@ -423,9 +578,13 @@ impl Store {
         emoji: &str,
         created_at_unix_secs: i64,
     ) -> Result<Option<i64>> {
-        self.with_conn(|conn| {
+        let id = self.with_conn(|conn| {
             messages::add_reaction_by_target(conn, target_id_str, contact_device_id, emoji, created_at_unix_secs)
-        })
+        })?;
+        if let Some(id) = id {
+            self.announce(MessageChangeKind::ReactionsChanged, &[id]);
+        }
+        Ok(id)
     }
 
     /// Consulta as reações emoji vinculadas a uma mensagem.
@@ -465,6 +624,30 @@ impl Store {
         file_id: &[u8; 16],
     ) -> Result<Option<transfers::StoredTransfer>> {
         self.with_conn(|conn| transfers::find(conn, file_id))
+    }
+
+    /// Transferências que passaram do teto de retenção ou da oferta sem resposta.
+    pub fn list_due_file_transfers(
+        &self,
+        retention_cutoff: i64,
+        offer_cutoff: i64,
+    ) -> Result<Vec<transfers::DueTransfer>> {
+        self.with_conn(|conn| transfers::list_due(conn, retention_cutoff, offer_cutoff))
+    }
+
+    /// A transferência ainda tem linha em `file_transfers`.
+    pub fn file_transfer_exists(&self, file_id: &[u8; 16]) -> Result<bool> {
+        self.with_conn(|conn| transfers::exists(conn, file_id))
+    }
+
+    /// Registra que a oferta da transferência foi respondida (§7.7 item 5).
+    pub fn mark_file_transfer_answered(&self, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| transfers::mark_answered(conn, file_id))
+    }
+
+    /// Quantos envios ao contato ainda esperam resposta (a fila offline, D30).
+    pub fn count_unanswered_sending_transfers(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| transfers::count_unanswered_sending(conn, contact_device_id))
     }
 
     /// Transferências de um contato numa direção.
@@ -1037,6 +1220,133 @@ mod tests {
             assert_eq!(f_count, 0, "nenhuma linha de file_transfers deve permanecer na versao desativada");
             Ok(())
         }).unwrap();
+    }
+
+    mod message_changes {
+        use super::*;
+        use crate::wire::packet_type::PacketType;
+        use std::sync::{Arc, Mutex};
+
+        fn observed_store(dir: &tempfile::TempDir) -> (Store, [u8; 16], Arc<Mutex<Vec<MessageChange>>>) {
+            let store = Store::open(&temp_db_path(dir), &key(3)).unwrap();
+            let contact = LocalIdentity::generate().unwrap().public();
+            store.insert_contact(&contact, 100, None).unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&seen);
+            store.set_message_observer(Arc::new(move |c| sink.lock().unwrap().push(c)));
+            (store, contact.device_id, seen)
+        }
+
+        fn kinds(seen: &Arc<Mutex<Vec<MessageChange>>>) -> Vec<MessageChangeKind> {
+            seen.lock().unwrap().iter().map(|c| c.kind).collect()
+        }
+
+        #[test]
+        fn announces_added_updated_and_reactions_with_owner() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            let id = store.insert_pending_message(&contact, PacketType::MsgText, "oi", 1000).unwrap();
+            store.mark_message_sending(id).unwrap();
+            store.add_reaction(id, &contact, "👍", 1001).unwrap();
+
+            assert_eq!(
+                kinds(&seen),
+                vec![MessageChangeKind::Added, MessageChangeKind::Updated, MessageChangeKind::ReactionsChanged]
+            );
+            assert!(seen.lock().unwrap().iter().all(|c| c.message_id == id && c.contact_device_id == contact));
+        }
+
+        #[test]
+        fn stays_silent_when_a_conditional_update_changes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            let id = store.insert_pending_message(&contact, PacketType::MsgText, "oi", 1000).unwrap();
+            store.mark_message_sent(id).unwrap();
+            seen.lock().unwrap().clear();
+
+            // Já está `Sent`: nem rebaixar a `Sending` nem devolver à fila muda a linha.
+            store.mark_message_sending(id).unwrap();
+            store.requeue_message(id).unwrap();
+            store.mark_message_failed(id).unwrap();
+
+            assert!(seen.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn bulk_updates_announce_one_event_per_row() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            let a = store.insert_pending_message(&contact, PacketType::MsgText, "a", 1000).unwrap();
+            let b = store.insert_pending_message(&contact, PacketType::MsgText, "b", 1001).unwrap();
+            let untouched = store.insert_pending_message(&contact, PacketType::MsgText, "c", 1002).unwrap();
+            store.mark_message_sending(a).unwrap();
+            store.mark_message_sending(b).unwrap();
+            seen.lock().unwrap().clear();
+
+            assert_eq!(store.mark_sending_messages_unknown().unwrap(), 2);
+
+            let mut ids: Vec<i64> = seen.lock().unwrap().iter().map(|c| c.message_id).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec![a, b]);
+            assert!(!ids.contains(&untouched));
+        }
+
+        #[test]
+        fn sweep_announces_key_expired_for_each_swept_message() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            store.set_ephemeral_ttl(&contact, 60).unwrap();
+            let id = store.insert_incoming_message(&contact, PacketType::MsgText, "segredo", 1000).unwrap();
+            seen.lock().unwrap().clear();
+
+            assert_eq!(store.sweep_expired_ephemeral_messages(1000).unwrap(), 0);
+            assert!(seen.lock().unwrap().is_empty());
+
+            let ceiling = 1000 + 7 * 86400 + 1;
+            assert_eq!(store.next_ephemeral_expiry().unwrap().map(|at| at <= ceiling), Some(true));
+            assert_eq!(store.sweep_expired_ephemeral_messages(ceiling).unwrap(), 1);
+            assert_eq!(kinds(&seen), vec![MessageChangeKind::KeyExpired]);
+            assert_eq!(seen.lock().unwrap()[0].message_id, id);
+            assert_eq!(store.next_ephemeral_expiry().unwrap(), None);
+        }
+
+        #[test]
+        fn view_once_read_announces_key_expired() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            store.set_ephemeral_ttl(&contact, 60).unwrap();
+            let body = r#"{"viewOnce":true,"text":"x"}"#;
+            let id = store.insert_incoming_message(&contact, PacketType::MsgText, body, 1000).unwrap();
+            seen.lock().unwrap().clear();
+
+            store.mark_message_read(id, 1010).unwrap();
+
+            assert_eq!(kinds(&seen), vec![MessageChangeKind::KeyExpired]);
+        }
+
+        #[test]
+        fn get_message_matches_the_list_row_and_misses_unknown_ids() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, _seen) = observed_store(&dir);
+            let id = store.insert_pending_message(&contact, PacketType::MsgText, "oi", 1000).unwrap();
+            store.add_reaction(id, &contact, "👍", 1001).unwrap();
+
+            let listed = store.list_messages(&contact).unwrap();
+            let fetched = store.get_message(id).unwrap().unwrap();
+            assert_eq!(fetched.body, listed[0].body);
+            assert_eq!(fetched.reactions, listed[0].reactions);
+            assert_eq!(fetched.id, listed[0].id);
+            assert!(store.get_message(id + 99).unwrap().is_none());
+        }
+
+        #[test]
+        fn announcing_without_an_observer_is_silent() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(&temp_db_path(&dir), &key(4)).unwrap();
+            let contact = LocalIdentity::generate().unwrap().public();
+            store.insert_contact(&contact, 100, None).unwrap();
+            store.insert_pending_message(&contact.device_id, PacketType::MsgText, "oi", 1000).unwrap();
+        }
     }
 }
 

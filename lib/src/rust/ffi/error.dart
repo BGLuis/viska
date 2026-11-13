@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `eq`, `fmt`, `fmt`, `from`
@@ -65,6 +66,10 @@ enum FfiError {
 
   /// Oferta de arquivo retida não encontrada ou já limpa por auto-lock/cancelamento (U-08).
   offerNotFound,
+
+  /// O contato já tem o máximo de envios de arquivo ou voz esperando resposta
+  /// (fila offline, D30): a UI pede para aguardar a conexão.
+  queueFull,
 
   /// Qualquer outra falha interna, sem informação útil para a UI.
   internal,

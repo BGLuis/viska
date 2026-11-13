@@ -88,6 +88,74 @@ pub struct SessionStateEventDto {
     /// re-pareamento ou reset): a UI não deve tratá-la como estabelecida.
     pub state: Option<SessionStateKind>,
     pub needs_rehandshake: bool,
+    /// Muda quando a sessão com o par é trocada por outra, inclusive quando o
+    /// par reabriu e a nossa continuou `Established` (§11.4). Quem precisa
+    /// refazer algo que dependia da sessão anterior compara este valor. É só
+    /// um contador local, sem relação com nenhuma chave.
+    pub generation: u32,
+    /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+    /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+    /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+    /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+    pub renewing: bool,
+}
+
+/// Resultado de `Core::receive_incoming`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingResultDto {
+    /// A mensagem de aplicação decifrada, quando os bytes eram uma.
+    pub message: Option<IncomingMessageDto>,
+    /// Bytes a enviar de volta ao par, sem tocar: RESP, INIT, `REOPEN` ou um
+    /// `CONTROL_SUITES` já cifrado. Material público de handshake ou
+    /// ciphertext, nunca segredo.
+    pub reply: Option<Vec<u8>>,
+}
+
+/// Evento de transferência, empurrado pelo stream de
+/// `Core::subscribe_transfer_events`. Só avisa que algo mudou: nome, tamanho e
+/// qualquer segredo da oferta ficam no Rust, o Dart os lê pelas consultas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEventDto {
+    pub peer_device_id: Vec<u8>,
+    pub file_id: Vec<u8>,
+    pub kind: TransferEventKind,
+}
+
+/// O que aconteceu. Novos eventos de transferência entram aqui como variantes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferEventKind {
+    /// Oferta retida aguardando confirmação (`unconfirmed_file_offers`).
+    OfferAppeared,
+    /// A oferta deixou de estar pendente: aceita, recusada, cancelada ou
+    /// descartada no bloqueio do cofre.
+    OfferGone,
+    /// O estado de um envio mudou e vale pedir o próximo bloco: chegou um
+    /// `FILE_FEEDBACK`, ou a transferência acabou (concluída, recusada,
+    /// cancelada ou largada no bloqueio). Quem bombeia o envio acorda e
+    /// reconsulta, em vez de dormir um tempo fixo.
+    ChunkReleased,
+}
+
+/// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.
+/// Só identificadores: o conteúdo o Dart lê com `Core::get_message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageEventDto {
+    pub peer_device_id: Vec<u8>,
+    pub message_id: i64,
+    pub kind: MessageEventKind,
+}
+
+/// O que aconteceu com a mensagem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageEventKind {
+    /// Linha nova na timeline. Repetida para a mesma linha é inofensiva.
+    Added,
+    /// Estado de entrega ou ligação com o arquivo mudou.
+    Updated,
+    /// A chave efêmera foi destruída: a linha continua, mas sem o conteúdo.
+    KeyExpired,
+    /// As reações da mensagem mudaram.
+    ReactionsChanged,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão
@@ -202,6 +270,48 @@ pub struct SendFileStartedDto {
     pub message_id: i64,
 }
 
+/// Envio enfileirado sem sessão (`Core::queue_send_file`/`queue_send_audio`,
+/// D30): só o que a UI precisa para ligar a linha da timeline. A oferta sai
+/// depois, por `Core::resume_transfers`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedTransferDto {
+    pub file_id: Vec<u8>,
+    /// `id` na tabela `messages`, já `Pending`.
+    pub message_id: i64,
+}
+
+/// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumedDirectionDto {
+    /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
+    Send,
+    /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
+    Receive,
+    /// O recebimento não tinha como continuar e foi encerrado aqui; quem chama
+    /// só entrega `sealed_notice` (um `FILE_REJECT`) ao par, para o emissor
+    /// parar de tentar.
+    Abandoned,
+}
+
+/// Uma transferência retomada com o contato — `Core::resume_transfers` (§7.5).
+/// Nada aqui é segredo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumedTransferDto {
+    pub file_id: Vec<u8>,
+    pub direction: ResumedDirectionDto,
+    /// Envio cuja oferta ainda não teve resposta e pode ter se perdido com a
+    /// sessão anterior: quem chama pede o `FILE_METADATA` a
+    /// `Core::seal_resumed_offer` logo antes de mandá-lo. Selar só então evita
+    /// gastar um contador do ratchet numa oferta que não vai sair.
+    pub needs_offer: bool,
+    /// Pacote de controle já selado a entregar ao par: o `FILE_REJECT` de um
+    /// recebimento `Abandoned`.
+    pub sealed_notice: Option<Vec<u8>>,
+    /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
+    /// bombeamento terminar. `None` no recebimento.
+    pub message_id: Option<i64>,
+}
+
 /// Como [`SendFileStartedDto`], para `Core::start_send_audio` — carrega
 /// também o `message_id` da linha `Pending` já inserida na timeline única
 /// (Fase 5), para quem chama poder marcá-la `Sent` depois
@@ -241,6 +351,10 @@ pub struct TransferProgressDto {
     pub total_blocks: u32,
     pub bytes_done: u64,
     pub is_complete: bool,
+    /// Envio cuja oferta ainda não teve resposta: o emissor espera o aceite
+    /// (que pode levar horas, §7.6) e não deve ser dado como parado. Sempre
+    /// falso no recebimento.
+    pub awaiting_answer: bool,
 }
 
 /// Tópicos de sinalização para um contato — `docs/protocol.md` §8.1.

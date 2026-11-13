@@ -94,7 +94,7 @@ class _FakePermissionHandlerPlatform extends PermissionHandlerPlatform {
 /// Só implementa o que `ChatController` de fato chama — o resto arremessa
 /// `UnimplementedError` de propósito (ver o mesmo padrão em
 /// `webrtc_p2p_transport_test.dart`).
-class _FakeCore with FakeSessionEvents implements Core {
+class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents implements Core {
   _FakeCore() {
     peerDeviceId = List.generate(16, (i) => i);
     sessionState = SessionStateKind.handshaking;
@@ -151,7 +151,42 @@ class _FakeCore with FakeSessionEvents implements Core {
         outgoingHandshake: outgoingHandshake,
       );
 
+  /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
+  /// handshake os bytes vão para [feedHandshake]; estabelecida, para
+  /// [decryptIncoming]; falha, para lugar nenhum. Os dois são só ganchos do
+  /// dublê, o `Core` real não os expõe.
   @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) async {
+    switch (sessionState) {
+      case SessionStateKind.failed:
+        return const IncomingResultDto();
+      case SessionStateKind.handshaking:
+        return IncomingResultDto(
+          reply: await feedHandshake(peerDeviceId: peerDeviceId, bytes: bytes),
+        );
+      case SessionStateKind.established:
+        return IncomingResultDto(
+          message: await decryptIncoming(peerDeviceId: peerDeviceId, envelope: bytes),
+        );
+    }
+  }
+
+  final connectSignalCalls = <List<int>>[];
+
+  /// Bytes que `connectSignal` devolve; sem valor, a INIT pendente enquanto em
+  /// handshake.
+  Uint8List? connectSignalResult;
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) async {
+    connectSignalCalls.add(peerDeviceId);
+    return connectSignalResult ??
+        (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
+  }
+
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
@@ -171,18 +206,79 @@ class _FakeCore with FakeSessionEvents implements Core {
   }) async {
     sealOutgoingTextCalls.add(body);
     final id = nextMessageId++;
-    if (sealOutgoingTextHandler != null) {
-      return sealOutgoingTextHandler!(body);
+    final sealed = sealOutgoingTextHandler != null
+        ? sealOutgoingTextHandler!(body)
+        : SealedMessageDto(
+            messageId: id,
+            bytes: sessionState == SessionStateKind.established
+                ? Uint8List.fromList([1, 2, 3])
+                : null,
+          );
+    // Como o Rust: a linha `pending` nasce aqui e o aviso sai junto.
+    if (!messagesToReturn.any((m) => m.id == sealed.messageId)) {
+      messagesToReturn = [
+        ...messagesToReturn,
+        MessageDto(
+          id: sealed.messageId,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: body,
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1700000000 + sealed.messageId,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+      emitMessageEvent(sealed.messageId, MessageEventKind.added);
     }
-    return SealedMessageDto(
-      messageId: id,
-      bytes: sessionState == SessionStateKind.established
-          ? Uint8List.fromList([1, 2, 3])
-          : null,
-    );
+    return sealed;
   }
 
   @override
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId}) async {
+    getMessageCalls.add(messageId);
+    if (getMessageError != null) throw getMessageError!;
+    MessageDto? found;
+    for (final m in messagesToReturn) {
+      if (m.id == messageId) found = m;
+    }
+    final gate = getMessageDelays.remove(messageId);
+    if (gate != null) await gate.future;
+    return found;
+  }
+
+  final getMessageCalls = <PlatformInt64>[];
+
+  /// Muda o estado de entrega de uma linha e avisa, como o `Store` do Rust.
+  void setDeliveryState(int messageId, DeliveryStateDto state) {
+    var changed = false;
+    messagesToReturn = [
+      for (final m in messagesToReturn)
+        if (m.id == messageId && m.deliveryState != state)
+          () {
+            changed = true;
+            return MessageDto(
+              id: m.id,
+              globalId: m.globalId,
+              direction: m.direction,
+              kind: m.kind,
+              body: m.body,
+              audioFileId: m.audioFileId,
+              deliveryState: state,
+              createdAtUnixSecs: m.createdAtUnixSecs,
+              isEphemeral: m.isEphemeral,
+              replyToId: m.replyToId,
+              viewOnce: m.viewOnce,
+              reactions: m.reactions,
+            );
+          }()
+        else
+          m,
+    ];
+    if (changed) emitMessageEvent(messageId, MessageEventKind.updated);
+  }
+
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,
@@ -202,6 +298,7 @@ class _FakeCore with FakeSessionEvents implements Core {
   @override
   Future<void> requeueMessage({required PlatformInt64 messageId}) async {
     requeueCalls.add(messageId);
+    setDeliveryState(messageId, DeliveryStateDto.pending);
   }
 
   final resendUnknownCalls = <PlatformInt64>[];
@@ -209,12 +306,14 @@ class _FakeCore with FakeSessionEvents implements Core {
   @override
   Future<void> resendUnknownMessage({required PlatformInt64 messageId}) async {
     resendUnknownCalls.add(messageId);
+    setDeliveryState(messageId, DeliveryStateDto.pending);
   }
 
   @override
   Future<void> markMessageSent({required PlatformInt64 messageId}) async {
     markSentCalls.add(messageId);
     if (failMarkSent) throw StateError('banco indisponível');
+    setDeliveryState(messageId, DeliveryStateDto.sent);
   }
 
   bool failMarkSent = false;
@@ -226,23 +325,7 @@ class _FakeCore with FakeSessionEvents implements Core {
   Future<void> markMessageFailed({required PlatformInt64 messageId}) async {
     markFailedCalls.add(messageId);
     if (failMarkFailed) throw StateError('banco indisponível');
-    messagesToReturn = [
-      for (final m in messagesToReturn)
-        if (m.id == messageId)
-          MessageDto(
-            id: m.id,
-            direction: m.direction,
-            kind: m.kind,
-            body: m.body,
-            deliveryState: DeliveryStateDto.failed,
-            createdAtUnixSecs: m.createdAtUnixSecs,
-            isEphemeral: m.isEphemeral,
-            viewOnce: m.viewOnce,
-            reactions: m.reactions,
-          )
-        else
-          m,
-    ];
+    setDeliveryState(messageId, DeliveryStateDto.failed);
   }
 
   final List<PlatformInt64> markDeliveredCalls = [];
@@ -263,9 +346,20 @@ class _FakeCore with FakeSessionEvents implements Core {
     );
   }
 
+  var listMessagesCalls = 0;
+  Completer<void>? listMessagesGate;
+  Object? getMessageError;
+
+  /// Atraso de `getMessage` por id, para provocar leituras que terminam fora de ordem.
+  final getMessageDelays = <int, Completer<void>>{};
+
   @override
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async =>
-      messagesToReturn;
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async {
+    listMessagesCalls++;
+    final gate = listMessagesGate;
+    if (gate != null) await gate.future;
+    return messagesToReturn;
+  }
 
   @override
   Future<List<MessageDto>> listMessagesPaginated({
@@ -467,6 +561,43 @@ class _FakeCore with FakeSessionEvents implements Core {
   Future<TransferProgressDto?> transferProgress({required List<int> fileId}) async =>
       transferProgressHandler?.call(Uint8List.fromList(fileId));
 
+  /// O serviço de recepção retoma ao ver a sessão estabelecida; estes testes
+  /// não têm nada a retomar.
+  final queueSendFileCalls = <String>[];
+  final queueSendAudioCalls = <String>[];
+  Object? queueError;
+
+  @override
+  Future<QueuedTransferDto> queueSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) async {
+    queueSendFileCalls.add(filePath);
+    if (queueError != null) throw queueError!;
+    return QueuedTransferDto(fileId: Uint8List.fromList(List.filled(16, 6)), messageId: nextMessageId++);
+  }
+
+  @override
+  Future<QueuedTransferDto> queueSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) async {
+    queueSendAudioCalls.add(audioPath);
+    if (queueError != null) throw queueError!;
+    // O controlador lê o sanitizado antes de apagá-lo: precisa existir aqui.
+    expect(File(audioPath).existsSync(), isTrue);
+    return QueuedTransferDto(fileId: Uint8List.fromList(List.filled(16, 7)), messageId: nextMessageId++);
+  }
+
+  @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async => [];
+
+  @override
+  Future<Uint8List?> sealResumedOffer({required List<int> peerDeviceId, required List<int> fileId}) async =>
+      null;
+
   @override
   Future<Uint8List> finishReceiveAudio({
     required List<int> peerDeviceId,
@@ -515,9 +646,6 @@ class _FakeCore with FakeSessionEvents implements Core {
 
   @override
   Future<List<Uint8List>> listActiveFileTransferIds() async => [];
-
-  @override
-  Future<int> sweepExpiredMessages() async => 0;
 
   @override
   Future<void> addReaction({
@@ -799,19 +927,18 @@ void main() {
       await service.dispose();
     });
 
-    test('reconnectSession resets the session and publishes the new INIT', () async {
+    test('reconnectSession resets the session and publishes the connect signal', () async {
       core.sessionState = SessionStateKind.failed;
-      core.resetSessionResult = SessionStatusDto(
-        state: SessionStateKind.handshaking,
-        needsRehandshake: false,
-        outgoingHandshake: Uint8List.fromList([4, 4]),
-      );
+      // INIT se formos iniciador, sinal de reabertura se respondedor: o Rust
+      // decide, o controlador só publica o que `connectSignal` devolver.
+      core.connectSignalResult = Uint8List.fromList([4, 4]);
       controller = makeController();
       await controller.initialize();
 
       await controller.reconnectSession();
 
       expect(core.resetSessionCalls, [contact.deviceId]);
+      expect(core.connectSignalCalls, isNotEmpty);
       expect(transport.sendCalls.any((b) => listEquals(b, [4, 4])), isTrue);
       expect(controller.isReconnecting, isFalse);
       expect(controller.sessionError, isNull);
@@ -1206,7 +1333,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             );
         core.decodeAudioToWavHandler = (_) => Uint8List.fromList([6, 6, 6]);
 
@@ -1241,6 +1368,22 @@ void main() {
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
     );
+
+    test('voice note without a session is queued and the plaintext audio is deleted', () async {
+      recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
+      core.startSendAudioHandler = (_) => throw FfiError.noActiveSession;
+
+      controller = makeController();
+      await controller.initialize();
+      await controller.startRecording();
+      await controller.stopRecordingAndSend();
+      await pumpEventQueue();
+
+      expect(core.queueSendAudioCalls, ['${tempDir.path}/gravado.ogg.viska-audio']);
+      expect(controller.voiceError, isNull);
+      expect(File('${tempDir.path}/gravado.ogg.viska-audio').existsSync(), isFalse,
+          reason: 'só a cópia cifrada do Rust pode ficar em disco');
+    });
 
     test('error starting send (e.g. no session) becomes voiceError, not exception', () async {
       recorder.pathToReturnOnStop = '${tempDir.path}/gravado.ogg';
@@ -1279,7 +1422,7 @@ void main() {
                 blocksDone: 1,
                 totalBlocks: 1,
                 bytesDone: BigInt.from(10),
-                isComplete: true,
+                isComplete: true, awaitingAnswer: false
               ),
             );
         core.finishReceiveAudioHandler = (_, _) => Uint8List.fromList([5, 5, 5]);
@@ -1312,7 +1455,7 @@ void main() {
               blocksDone: 0,
               totalBlocks: 4,
               bytesDone: BigInt.from(10),
-              isComplete: false,
+              isComplete: false, awaitingAnswer: false
             ),
           );
       controller = makeController();
@@ -1343,7 +1486,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       core.decodeAudioToWavHandler = (_) => Uint8List.fromList([8, 8, 8]);
@@ -1384,7 +1527,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       var decodeCalls = 0;
@@ -1440,7 +1583,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(1),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -1535,7 +1678,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             );
         controller = makeController();
         await controller.initialize();
@@ -1588,7 +1731,7 @@ void main() {
               blocksDone: 0,
               totalBlocks: 1,
               bytesDone: BigInt.zero,
-              isComplete: false,
+              isComplete: false, awaitingAnswer: false
             );
       }
 
@@ -1663,7 +1806,7 @@ void main() {
         expect(core.startSendFileCalls, ['/tmp/documento.pdf']);
       });
 
-      test('sendFile gives up when the transport never connects', () async {
+      test('sendFile queues the file when the transport never connects', () async {
         core.sessionState = SessionStateKind.established;
         transport.connectGate = Completer<void>();
         controller = makeController(connectTimeout: const Duration(milliseconds: 100));
@@ -1671,9 +1814,34 @@ void main() {
 
         await controller.sendFile('/tmp/documento.pdf');
 
-        expect(core.startSendFileCalls, isEmpty, reason: 'sem mensagem pendente órfã no banco');
-        expect(controller.fileError, isNotNull);
+        expect(core.startSendFileCalls, isEmpty, reason: 'sem sessão que sele, só a fila grava a linha');
+        expect(core.queueSendFileCalls, ['/tmp/documento.pdf']);
+        expect(controller.fileError, isNull);
         expect(controller.isSendingFile, isFalse);
+      });
+
+      test('sendFile queues when the channel is open but the session cannot seal yet', () async {
+        core.sessionState = SessionStateKind.established;
+        core.startSendFileHandler = (_) => throw FfiError.noActiveSession;
+        controller = makeController();
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(core.queueSendFileCalls, ['/tmp/documento.pdf']);
+        expect(controller.fileError, isNull);
+      });
+
+      test('sendFile reports a full queue instead of a generic failure', () async {
+        core.sessionState = SessionStateKind.established;
+        transport.connectGate = Completer<void>();
+        core.queueError = FfiError.queueFull;
+        controller = makeController(connectTimeout: const Duration(milliseconds: 100));
+        await controller.initialize();
+
+        await controller.sendFile('/tmp/documento.pdf');
+
+        expect(controller.fileError, ChatController.queueFullMessage);
       });
     });
 
@@ -1760,7 +1928,7 @@ void main() {
                 blocksDone: 1,
                 totalBlocks: 1,
                 bytesDone: BigInt.from(50),
-                isComplete: true,
+                isComplete: true, awaitingAnswer: false
               ),
             );
         // Configura como arquivo genérico (não áudio): finishReceiveAudio vai
@@ -1824,7 +1992,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(10),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
       // Nenhuma oferta pendente de arquivo ou áudio — ambos os caminhos
@@ -1839,6 +2007,37 @@ void main() {
 
       expect(controller.fileError, isNull);
       expect(controller.connectionError, isNull);
+    });
+
+    test('offer events from Rust reload the unconfirmed list', () async {
+      final service = MessageReceptionService(core: core, router: router);
+      controller = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: service,
+        recorder: recorder,
+        player: player,
+      );
+      await controller.initialize();
+      expect(controller.unconfirmedOffers, isEmpty);
+
+      final fileId = Uint8List.fromList(List.filled(16, 6));
+      core.unconfirmedFileOffersToReturn = [
+        FileOfferDto(fileId: fileId, name: 'novo.bin', fileSize: BigInt.from(200 * 1024 * 1024)),
+      ];
+      // Sem evento do Rust a lista não é relida, mesmo que ela tenha mudado.
+      await pumpEventQueue();
+      expect(controller.unconfirmedOffers, isEmpty);
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: fileId,
+        kind: TransferEventKind.offerAppeared,
+      ));
+      await pumpEventQueue();
+      expect(controller.unconfirmedOffers, hasLength(1));
+      await service.dispose();
     });
 
     test('loadUnconfirmedOffers loads unconfirmed file offers into state', () async {
@@ -2058,6 +2257,194 @@ void main() {
       await controller.resendUnknown(7);
 
       expect(core.resendUnknownCalls, [7]);
+    });
+  });
+
+  group('timeline driven by Rust message events', () {
+    MessageDto row(
+      int id, {
+      String body = 'oi',
+      DeliveryStateDto state = DeliveryStateDto.delivered,
+      int created = 100,
+      MessageDirectionDto direction = MessageDirectionDto.incoming,
+      List<String> reactions = const [],
+    }) =>
+        MessageDto(
+          id: id,
+          direction: direction,
+          kind: MessageKindDto.text,
+          body: body,
+          deliveryState: state,
+          createdAtUnixSecs: created,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: reactions,
+        );
+
+    Future<void> settle() => pumpEventQueue();
+
+    test('loads the timeline once and never reloads it as things change', () async {
+      controller = makeController();
+      await controller.initialize();
+      expect(core.listMessagesCalls, 1);
+
+      await controller.sendText('um');
+      await controller.sendText('dois');
+      core.messagesToReturn = [...core.messagesToReturn, row(50, created: 5000)];
+      core.emitMessageEvent(50, MessageEventKind.added);
+      await settle();
+
+      expect(core.listMessagesCalls, 1, reason: 'a lista só muda por evento, sem releitura');
+      expect(controller.messages.map((m) => m.id), containsAll([50]));
+    });
+
+    test('a sent text appears through the Added event and moves to sent through Updated', () async {
+      core.sessionState = SessionStateKind.established;
+      controller = makeController();
+      await controller.initialize();
+      await controller.sendText('olá');
+      await settle();
+
+      expect(controller.messages.map((m) => m.body), ['olá']);
+      expect(controller.messages.single.deliveryState, DeliveryStateDto.sent);
+    });
+
+    test('Added inserts in creation order, not at the end', () async {
+      core.messagesToReturn = [row(1, created: 10), row(3, created: 30)];
+      controller = makeController();
+      await controller.initialize();
+
+      core.messagesToReturn = [...core.messagesToReturn, row(2, created: 20)];
+      core.emitMessageEvent(2, MessageEventKind.added);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [1, 2, 3]);
+    });
+
+    test('Updated replaces only the affected row', () async {
+      core.messagesToReturn = [
+        row(1, direction: MessageDirectionDto.outgoing, state: DeliveryStateDto.sent),
+        row(2),
+      ];
+      controller = makeController();
+      await controller.initialize();
+      core.getMessageCalls.clear();
+
+      core.setDeliveryState(1, DeliveryStateDto.delivered);
+      await settle();
+
+      expect(controller.messages.first.deliveryState, DeliveryStateDto.delivered);
+      expect(core.getMessageCalls, [1], reason: 'só a linha 1 é relida');
+    });
+
+    test('KeyExpired shows the row without its content', () async {
+      core.messagesToReturn = [row(1, body: 'segredo')];
+      controller = makeController();
+      await controller.initialize();
+
+      core.messagesToReturn = [row(1, body: '<mensagem expirada e destruída>')];
+      core.emitMessageEvent(1, MessageEventKind.keyExpired);
+      await settle();
+
+      expect(controller.messages.single.body, '<mensagem expirada e destruída>');
+    });
+
+    test('a row the Rust no longer has is dropped', () async {
+      core.messagesToReturn = [row(1), row(2)];
+      controller = makeController();
+      await controller.initialize();
+
+      core.messagesToReturn = [row(2)];
+      core.emitMessageEvent(1, MessageEventKind.updated);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [2]);
+    });
+
+    test('ReactionsChanged refreshes the reaction counters of that row', () async {
+      core.messagesToReturn = [row(1)];
+      controller = makeController();
+      await controller.initialize();
+      expect(controller.reactionsFor(1), isEmpty);
+
+      core.messagesToReturn = [row(1, reactions: const ['👍', '👍'])];
+      core.emitMessageEvent(1, MessageEventKind.reactionsChanged);
+      await settle();
+
+      expect(controller.reactionsFor(1), {'👍': 2});
+    });
+
+    test('the same event twice leaves one row', () async {
+      controller = makeController();
+      await controller.initialize();
+      core.messagesToReturn = [row(7)];
+
+      core.emitMessageEvent(7, MessageEventKind.added);
+      core.emitMessageEvent(7, MessageEventKind.added);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [7]);
+    });
+
+    test('an event that arrives during the initial load is applied after it, not lost', () async {
+      core.messagesToReturn = [row(1, created: 10)];
+      final gate = Completer<void>();
+      core.listMessagesGate = gate;
+      controller = makeController();
+      final init = controller.initialize();
+      await settle();
+
+      core.messagesToReturn = [row(1, created: 10), row(2, created: 20)];
+      core.emitMessageEvent(2, MessageEventKind.added);
+      gate.complete();
+      await init;
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [1, 2]);
+    });
+
+    test('two reads of one row finishing out of order keep the latest state', () async {
+      core.messagesToReturn = [row(1, direction: MessageDirectionDto.outgoing, state: DeliveryStateDto.pending)];
+      controller = makeController();
+      await controller.initialize();
+
+      final slow = Completer<void>();
+      core.getMessageDelays[1] = slow;
+      core.setDeliveryState(1, DeliveryStateDto.sent);
+      await settle();
+      core.setDeliveryState(1, DeliveryStateDto.delivered);
+      slow.complete();
+      await settle();
+
+      expect(controller.messages.single.deliveryState, DeliveryStateDto.delivered);
+    });
+
+    test('events for another contact do not touch this conversation', () async {
+      controller = makeController();
+      await controller.initialize();
+      core.messagesToReturn = [row(9)];
+      core.getMessageCalls.clear();
+
+      core.emitMessageEvent(9, MessageEventKind.added, peer: List.filled(16, 0xAA));
+      await settle();
+
+      expect(controller.messages, isEmpty);
+      expect(core.getMessageCalls, isEmpty);
+    });
+
+    test('a failure reading the row is swallowed and the next event still applies', () async {
+      controller = makeController();
+      await controller.initialize();
+      core.getMessageError = StateError('trancado');
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await settle();
+
+      core.getMessageError = null;
+      core.messagesToReturn = [row(2)];
+      core.emitMessageEvent(2, MessageEventKind.added);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [2]);
     });
   });
 }

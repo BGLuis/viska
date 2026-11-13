@@ -51,10 +51,20 @@ pub mod context {
     pub const MESSAGE_KEY: &str = "viska-msg-key-v1";
     pub const REKEM: &str = "viska-rekem-v1";
     pub const SIGNALING: &str = "viska-signaling-v1";
+    /// Sela o sinal `REOPEN` (§11.4, D27). Mesmo DH estático de `SIGNALING`,
+    /// domínio próprio: o sinal trafega no canal de dados, não no broker, e
+    /// uma chave comum aos dois usos deixaria um payload de sinalização ser
+    /// reaproveitado como `REOPEN` se os formatos um dia coincidirem.
+    pub const REOPEN: &str = "viska-reopen-v1";
     pub const BEACON: &str = "viska-beacon-v1";
     pub const PREAMBLE: &str = "viska-preamble-v1";
     pub const FILE_KEY: &str = "viska-file-key-v1";
     pub const STAGING: &str = "viska-staging-v1";
+    /// Cifra a cópia local do arquivo-fonte que o emissor guarda para retomar
+    /// o envio depois de bloqueio ou reinício (§7.5). Nunca vai ao fio. Domínio
+    /// próprio, separado de `STAGING`: os dois derivam do mesmo `K_file`, e a
+    /// cópia do emissor e o staging do receptor não podem ser a mesma chave.
+    pub const OUTGOING_STAGING: &str = "viska-outgoing-staging-v1";
     /// Cifra o nome original do arquivo dentro do corpo do manifesto (§7.1).
     pub const FILE_NAME: &str = "viska-file-name-v1";
     /// Cifra cada símbolo RaptorQ no canal não confiável — fora do ratchet,

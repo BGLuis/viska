@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D26). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D30). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -266,12 +266,10 @@ retomar uma transferência não depende de reconstruir um estado de ratchet espe
 sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
 desenhada dentro do ratchet — projeto à parte.
 
-**Estado atual (pendente):** a retomada que esta decisão torna possível ainda **não existe**. `Core::lock`
-e a abertura do app tratam toda transferência sem handle em memória como abortada e apagam a linha e o
-`transfer_secret` (U-03, issue #9), de modo que o segredo persistido hoje nunca é lido de volta. O
-envio de arquivo, em particular, não sobrevive a bloqueio nem a reinício, e por isso o prazo de oferta
-sem resposta do §7.7 item 5 também vive só em memória. Reconstruir `SendTransfer`/`ReceiveTransfer` a
-partir do banco no `unlock` é trabalho à parte.
+**Estado atual:** a retomada existe desde a issue #82 (`docs/protocol.md` §7.5, D28). O segredo
+persistido sobrevive a bloqueio e reinício, e `Core::resume_transfers` reconstrói `SendTransfer` e
+`ReceiveTransfer` do banco quando a sessão com o contato volta. O prazo de oferta sem resposta do §7.7
+item 5 passou a ser contado a partir do banco.
 
 ---
 
@@ -461,3 +459,136 @@ O manifesto carrega uma única `merkle_root` de 32 B, e autenticar um bloco do m
 O que continua garantido por símbolo: cada `FILE_SYMBOL` é selado com XChaCha20-Poly1305 sob `symbol_key` (`SendTransfer::next_sealed_symbol` sela, `ReceiveTransfer::ingest_sealed_symbol` abre; a chave vem de `keys::derive_symbol_key`, derivada do `transfer_secret`, D15; cifra e nonce em D11; em notas de voz o `AUDIO_CHUNK` usa `K_audio_chunk` no lugar de `K_symbol`), com `file_id` como AAD. Adulteração ou forja em trânsito por quem não detém o segredo da transferência falha na abertura. O que **não** é garantido: que o conteúdo bate com a raiz antes do fim. Um par pareado que mande conteúdo errado só é detectado depois de receber o arquivo inteiro, ao custo de banda e de espaço de staging. A autenticação é MAC simétrico, então a deniabilidade não muda.
 
 **Custo de reverter:** acrescentar um CV por bloco ao manifesto (ou a um pacote logo após ele), chamar `merkle::block_chaining_value` (hoje sem chamador) a cada bloco decodificado em `ReceiveTransfer`, e decidir a LAN: ficar sem verificação por bloco ou alinhar o `symbol_size` (reabrindo D23). Muda o wire e o limite de tamanho do manifesto.
+
+---
+
+## D27 — Reabertura de sessão avisada ao par por tamanho e por um sinal `REOPEN` disfarçado de envelope
+**Spec:** sem previsão. A spec original tinha `Packet Type` em claro (removido por D4) e sessão de
+chave única (substituída por D2); não trata de um lado perder a sessão e o outro não.
+**Aqui:** `docs/protocol.md` §11.4. O lado que não reabriu reconhece a INIT pelo tamanho (1218 B,
+que nenhum envelope tem) e responde com uma sessão candidata, promovida só quando o primeiro AEAD sob
+ela abre. Quem reabre como respondedor manda um `REOPEN` de 1076 B, do tamanho de um envelope do
+bucket menor, inteiro saída de XChaCha20-Poly1305 sob uma chave derivada do DH estático entre as duas
+`IK_dh`, com carimbo de tempo e guarda de repetição em memória.
+
+Por que isso não reabre D4: a INIT já saía em claro com `version` e `msg_type` (§4.1), então usar o
+tamanho dela não revela nada novo; e o `REOPEN` não tem nenhum byte fixo, só o tamanho já comum a todo
+envelope pequeno. Por que não fere D1: a autenticação do `REOPEN` é um AEAD sob uma chave que os dois
+lados conhecem, então qualquer um deles poderia ter produzido o sinal.
+
+O que fica exposto: um observador do canal vê uma INIT (1218 B) e uma RESP (1122 B) a cada reabertura,
+como já via na primeira abertura, e pode correlacionar isso com o momento em que um aparelho reiniciou
+ou destrancou o app. Os quatro primeiros bytes de um envelope são um contador quase sempre pequeno,
+enquanto os do `REOPEN` são aleatórios: um classificador estatístico do tráfego conseguiria separar os
+dois com alguma confiança. Mesma categoria de vazamento do contador em claro (D4) e não mitigado aqui.
+Quem consegue injetar bytes no canal (o socket TCP local não autentica a conexão além do preâmbulo,
+§9.3) pode forjar INITs. Elas nunca derrubam a sessão viva, mas cada uma segura a fila de envio por
+até 30 s e marca como `unknown` os textos do contato que estavam em `Sending`; repetida a cada 30 s,
+a retenção dura o quanto o atacante quiser. Pelo mesmo limite de uma candidata a cada 10 s, uma INIT
+forjada também pode fazer o respondedor recusar a INIT verdadeira de uma reabertura; o iniciador a
+reenvia a cada tráfego ilegível, mas quem injeta a cada 10 s consegue atrasar a reabertura enquanto
+continuar injetando. No máximo uma candidata a cada 10 s, o que limita o custo
+de CPU a um encapsulamento ML-KEM por intervalo. O guarda de repetição do `REOPEN` vive na sessão:
+depois que o próprio iniciador reabre, um `REOPEN` gravado nos últimos 3 minutos pode ser repetido
+mais uma vez, ao custo de um handshake.
+
+**Custo de reverter:** voltar à lacuna anterior: reset, reinício e trancamento de um lado só deixam o
+outro com uma sessão que ninguém mais lê, até ele também falhar (8 falhas de AEAD) e a pessoa tocar
+em reconectar nos dois aparelhos. A alternativa com marcador de tipo em claro reabre D4.
+
+---
+
+## D28 — Retomada do envio a partir de cópia cifrada local, com teto de retenção
+**Spec:** §7.5 só descreve o staging do receptor e não diz de onde o emissor relê o arquivo numa
+retomada, nem por quanto tempo uma transferência parada fica no aparelho.
+**Aqui:** ao iniciar um envio, o emissor copia o arquivo-fonte para `<app_dir>/outgoing/`, cifrado por
+página sob uma chave local nova, `K_outgoing = derive_key("viska-outgoing-staging-v1", K_file)`, que
+nunca vai ao fio. A raiz do manifesto é calculada sobre a cópia, na mesma leitura. Toda retomada relê
+só a cópia e confere a raiz antes de mandar o primeiro símbolo. Qualquer transferência (envio ou
+recebimento) é apagada ao passar de 7 dias desde a criação, mesmo sem conclusão.
+
+O caminho que o app recebe do seletor de arquivos aponta, no Android, para uma cópia no cache, que o
+sistema pode apagar. O arquivo também pode mudar entre o bloqueio e a retomada. Retomar do original
+mandaria conteúdo diferente do oferecido, e o receptor só descobriria no fim, ao comparar a raiz (D26),
+depois de baixar tudo. Guardar o caminho original em claro no banco também diria mais sobre a pessoa do
+que o necessário. A cópia cifrada resolve as duas coisas: o que sai é sempre o que foi oferecido, e
+apagar a linha do banco torna a cópia ilegível, pelo mesmo crypto-shredding de §7.5.
+
+O teto de 7 dias é decisão do mantenedor (issue #82): o segredo da transferência passa a viver em
+repouso além de uma execução do app, e quem tiver o aparelho destrancado nesse intervalo lê o staging e
+a cópia. O teto limita essa janela para uma transferência que ninguém vai terminar.
+
+A cópia também permite ao emissor voltar atrás: na LAN, um receptor que retoma do staging pode recuar
+para um bloco que já tinha confirmado (o bloco de 65535 × 1024 B não fecha em página), e o emissor
+remonta a partir da cópia em vez de ficar parado adiante dele (`docs/protocol.md` §7.5).
+
+**Custo:** o disco ocupado pelo arquivo dobra durante o envio, e cada retomada relê a cópia inteira
+para conferir a raiz. Quando a transferência termina de um lado só sem o aviso chegar ao outro
+(`FILE_COMPLETE` perdido, emissor que desiste), o outro lado retoma a cada reconexão até o teto, limitado
+a 2 minutos de laço por vez (issue #108). Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
+um transporte que aceite símbolos desse tamanho.
+
+**Custo de reverter:** sem a cópia, a retomada teria de reler o original e conviver com o arquivo
+sumido ou alterado, detectado só no fim. Sem o teto, uma transferência abandonada deixaria segredo e
+conteúdo cifrados no aparelho indefinidamente.
+
+---
+
+## D29 — Expiração das mensagens efêmeras e atualização da timeline dirigidas pelo Rust
+**Spec:** a spec de arquitetura pede chaves efêmeras por mensagem, destruídas ao vencer (crypto-shredding),
+mas não diz quem acorda para destruí-las nem como a interface fica sabendo.
+**Aqui:** uma `std::thread` por `Core` dorme até o menor `expires_at` do banco e então apaga as chaves
+vencidas. Ela sobe quando o Dart assina `Core::subscribe_message_events` e acaba junto com a `Core`. Com
+o banco trancado ela espera, e `unlock` e qualquer mensagem nova a acordam. A `Core` do cofre-isca nunca
+assina, então nunca varre, como já acontecia com o timer do Dart. Cada escrita em mensagem passa pelo
+`Store`, que avisa um observador; o aviso vira um evento só com o identificador da mensagem e o tipo
+(`Added`, `Updated`, `KeyExpired`, `ReactionsChanged`). O conteúdo da linha o Dart lê com
+`Core::get_message`, então nenhum texto nem emoji atravessa o stream.
+
+Um timer de 60 s no Dart fazia a varredura e uma mensagem podia ficar até um minuto além do prazo na
+tela. Pior para a regra do projeto, a chave só era destruída se o Dart estivesse vivo para pedir. Quem
+guarda a chave é quem sabe quando ela vence. O mesmo vale para a timeline, que era relida inteira depois
+de cada ação porque só o Dart "sabia" que algo podia ter mudado.
+
+**Custo:** o Rust passa a executar código sem ser chamado, a única thread própria do núcleo. Ela não toca
+em sessão nem em identidade, só no `Store`, e não segura a `Core`. O sono usa relógio monotônico, que o
+Linux e o Android não contam com o aparelho suspenso: ao voltar do segundo plano o Dart chama
+`Core::check_message_expiry` para o que venceu nesse intervalo sair já. Não há varredura de reserva: se a
+thread não subir (a assinatura tenta de novo na vez seguinte), as chaves vencidas ficam até subir. Um aviso
+emitido sem assinante se perde; a carga inicial da timeline, feita depois de assinar, cobre o que já existia.
+
+**Custo de reverter:** voltar ao timer do Dart e à releitura da lista: a varredura só roda com o app
+aberto e a tela atrasa até 60 s, e cada ação da pessoa volta a custar uma releitura completa da conversa.
+
+---
+
+## D30 — Fila offline de arquivo e nota de voz: enfileirar é gravar a transferência sem sessão
+**Spec:** §7.5 e §7.7 supõem que o `FILE_METADATA` sai na hora em que o envio começa, e o prazo de
+§7.7 item 5 vale só para arquivos. Nada diz o que fazer quando a pessoa envia sem sessão com o contato.
+**Aqui:** `Core::queue_send_file` e `queue_send_audio` fazem a metade do `start_send` que não depende de
+sessão: copiam o arquivo para `outgoing/` (D28), gravam a linha de `file_transfers` e a mensagem
+`Pending`, e param. Não selam oferta nem instalam handle. Quando a sessão chega a `Established`,
+`resume_transfers` reconstrói o handle e devolve `needs_offer`, e o laço de envio do Dart faz o resto,
+exatamente como num envio retomado depois de bloqueio. Não há tabela nem caminho de drenagem próprios.
+Cada contato aceita no máximo 10 envios sem resposta (`MAX_QUEUED_TRANSFERS`), contando os já
+oferecidos; o 11º recebe `FfiError::QueueFull` antes de qualquer cópia. O teto é de melhor esforço:
+enfileiramentos simultâneos podem passá-lo por um ou dois itens, e `start_send` com sessão não o aplica. O prazo de 24 h da oferta
+sem resposta passa a valer também para nota de voz, contado do enfileiramento.
+
+Duas consequências, ambas decididas com a pessoa na issue #79. A nota de voz sanitizada em claro é
+apagada assim que o enfileiramento volta; em disco fica só a cópia cifrada de D28, sob chave que
+morre com a linha do banco. E o arquivo genérico também é copiado, em vez de guardar só o caminho:
+o caminho do seletor pode apontar para um cache que o sistema apaga, e o conteúdo pode mudar entre
+enfileirar e enviar (as mesmas razões de D28).
+
+**Custo:** um arquivo enfileirado ocupa o dobro em disco até ser enviado ou expirar; o teto de 10
+envios limita o pior caso, e não há limite de tamanho por arquivo. Sem sessão, o `use_lan` do
+manifesto é só uma aposta: quem enfileira no DataChannel manda símbolos de 16384 B mesmo se a
+conexão acabar sendo pela LAN. Não há como cancelar um item da fila: a saída é a validade de 24 h
+(follow-up pedido). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
+o que antes só acontecia aos 7 dias.
+
+**Custo de reverter:** enfileirar sem a cópia exigiria guardar o caminho em claro e tratar arquivo
+sumido ou alterado só na drenagem (o problema de D28). Voltar o prazo de voz a 7 dias é restaurar o
+filtro de `kind` em `store::transfers::list_due`, ao preço de uma nota enfileirada ficar até uma
+semana no aparelho.
