@@ -129,6 +129,33 @@ pub enum TransferEventKind {
     /// A oferta deixou de estar pendente: aceita, recusada, cancelada ou
     /// descartada no bloqueio do cofre.
     OfferGone,
+    /// O estado de um envio mudou e vale pedir o próximo bloco: chegou um
+    /// `FILE_FEEDBACK`, ou a transferência acabou (concluída, recusada,
+    /// cancelada ou largada no bloqueio). Quem bombeia o envio acorda e
+    /// reconsulta, em vez de dormir um tempo fixo.
+    ChunkReleased,
+}
+
+/// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.
+/// Só identificadores: o conteúdo o Dart lê com `Core::get_message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageEventDto {
+    pub peer_device_id: Vec<u8>,
+    pub message_id: i64,
+    pub kind: MessageEventKind,
+}
+
+/// O que aconteceu com a mensagem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageEventKind {
+    /// Linha nova na timeline. Repetida para a mesma linha é inofensiva.
+    Added,
+    /// Estado de entrega ou ligação com o arquivo mudou.
+    Updated,
+    /// A chave efêmera foi destruída: a linha continua, mas sem o conteúdo.
+    KeyExpired,
+    /// As reações da mensagem mudaram.
+    ReactionsChanged,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão

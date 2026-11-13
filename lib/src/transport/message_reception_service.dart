@@ -20,13 +20,6 @@ sealed class MessageReceptionEvent {
   final ContactId contactId;
 }
 
-/// Mensagem nova decifrada e persistida no banco, ou metadados de arquivo
-/// gravados no SQLite via `receiveIncoming`.
-class MessageReceivedEvent extends MessageReceptionEvent {
-  const MessageReceivedEvent(super.contactId, {this.message});
-  final IncomingMessageDto? message;
-}
-
 /// Indicador efêmero de digitação recebido do contato.
 class TypingIndicatorEvent extends MessageReceptionEvent {
   const TypingIndicatorEvent(super.contactId);
@@ -68,6 +61,15 @@ class OffersChangedEvent extends MessageReceptionEvent {
   final TransferEventKind kind;
 }
 
+/// O Rust avisou que uma mensagem da conversa mudou: apareceu, mudou de estado,
+/// perdeu a chave efêmera ou ganhou reação. É só um aviso de "releia essa
+/// linha": o conteúdo vem de `Core.getMessage`, nunca do evento.
+class MessageChangedEvent extends MessageReceptionEvent {
+  const MessageChangedEvent(super.contactId, {required this.messageId, required this.kind});
+  final int messageId;
+  final MessageEventKind kind;
+}
+
 /// Arquivo genérico recebido, verificado por Merkle root e salvo em disco.
 class FileReceivedEvent extends MessageReceptionEvent {
   const FileReceivedEvent(
@@ -107,9 +109,11 @@ class MessageReceptionService {
     TransferForegroundService? foregroundService,
     Duration renewalHold = defaultRenewalHold,
     Duration idleLimit = defaultIdleLimit,
+    Duration releaseFallback = defaultReleaseFallback,
   })  : _core = core,
         _renewalHold = renewalHold,
         _idleLimit = idleLimit,
+        _releaseFallback = releaseFallback,
         _router = router,
         _foregroundService = foregroundService ?? TransferForegroundService.shared,
         _appDirPath = appDirPath,
@@ -131,6 +135,16 @@ class MessageReceptionService {
       _handleTransferEvent,
       onError: (Object e) {
         if (kDebugMode) debugPrint('[MessageReceptionService] Erro no stream de transferências: $e');
+      },
+    );
+    // Mudanças em mensagens, uma só assinatura como as demais. Assinar também
+    // põe a expiração das mensagens efêmeras para correr no Rust. Não há
+    // replay: quem abre uma conversa assina primeiro (este construtor) e só
+    // depois carrega a timeline, e o que mudar no meio chega como evento.
+    _messageEventsSub = _core.subscribeMessageEvents().listen(
+      _handleMessageEvent,
+      onError: (Object e) {
+        if (kDebugMode) debugPrint('[MessageReceptionService] Erro no stream de mensagens: $e');
       },
     );
     // Garante que qualquer transporte criado no roteador (por envio,
@@ -163,6 +177,7 @@ class MessageReceptionService {
   static const _retryDelay = Duration(seconds: 5);
   StreamSubscription<SessionStateEventDto>? _sessionEventsSub;
   StreamSubscription<TransferEventDto>? _transferEventsSub;
+  StreamSubscription<MessageEventDto>? _messageEventsSub;
   final Map<ContactId, SessionStateChangedEvent> _sessionStates = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingSubs = {};
   final Map<ContactId, StreamSubscription<Uint8List>> _incomingFileSubs = {};
@@ -176,7 +191,13 @@ class MessageReceptionService {
   /// isto só impede que um par que sumiu, ou que encerrou a transferência sem o
   /// aviso chegar (issue #108), deixe o laço rodando até o teto de 7 dias.
   static const defaultIdleLimit = Duration(minutes: 2);
+
+  /// Teto da espera de um envio por um `ChunkReleased`. Não dá ritmo ao envio:
+  /// só garante que um aviso perdido não pare o laço (e o limite de inatividade
+  /// ainda seja conferido) sem ninguém perceber.
+  static const defaultReleaseFallback = Duration(seconds: 5);
   final Duration _idleLimit;
+  final Duration _releaseFallback;
 
   /// Cadência de `FILE_FEEDBACK` de §7.4.
   static const _feedbackInterval = Duration(milliseconds: 500);
@@ -248,8 +269,20 @@ class MessageReceptionService {
   final Duration _renewalHold;
   final Map<ContactId, Timer> _renewalTimers = {};
 
+  void _handleMessageEvent(MessageEventDto dto) {
+    if (_disposed) return;
+    _eventsController.add(
+      MessageChangedEvent(ContactId(dto.peerDeviceId), messageId: dto.messageId.toInt(), kind: dto.kind),
+    );
+  }
+
   void _handleTransferEvent(TransferEventDto dto) {
     if (_disposed) return;
+    // O envio acordou: não é novidade para nenhuma tela.
+    if (dto.kind == TransferEventKind.chunkReleased) {
+      _signalRelease(dto.fileId);
+      return;
+    }
     _eventsController.add(
       OffersChangedEvent(ContactId(dto.peerDeviceId), fileId: dto.fileId, kind: dto.kind),
     );
@@ -289,6 +322,9 @@ class MessageReceptionService {
     final transport = _router.transportFor(contactId);
     if (transport == null || identical(_boundTransports[contactId], transport)) return;
     _boundTransports[contactId] = transport;
+    // Um canal novo muda por onde o envio sai: quem espera um `ChunkReleased`
+    // reconsulta já, em vez de esperar o teto.
+    _wakePumps();
     _retryTimers.remove(contactId)?.cancel();
     _lostTransports.remove(contactId);
     unawaited(_incomingSubs.remove(contactId)?.cancel());
@@ -299,6 +335,9 @@ class MessageReceptionService {
       if (event.state == TransportConnectionState.failed ||
           event.state == TransportConnectionState.closed) {
         _lostTransports.add(contactId);
+        // Nenhum aviso do Rust acompanha a queda do canal, e o laço de envio
+        // precisa vê-la para sair (ou seguir o canal novo).
+        _wakePumps();
         _scheduleRetry(contactId, transport);
       }
     });
@@ -382,10 +421,6 @@ class MessageReceptionService {
         if (incoming?.messageId != null) {
           unawaited(_sendReceipt(contactId, incoming!.messageId.toString()));
         }
-
-        // Notifica com a mensagem decifrada ou atualização de timeline (metadados
-        // de arquivo salvos como efeito colateral no Rust).
-        _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
       }
 
       // Qualquer pacote decifrado pode ter criado a cadeia de envio do
@@ -700,9 +735,6 @@ class MessageReceptionService {
           rethrow;
         }
       }
-      if (sealed.isNotEmpty) {
-        _eventsController.add(MessageReceivedEvent(contactId));
-      }
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');
     }
@@ -793,7 +825,6 @@ class MessageReceptionService {
       if (cycle.done.isCompleted) return;
       await _core.markMessageSent(messageId: messageId);
       cycle.done.complete();
-      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
       // O que sobra do laço só espera um eventual recuo do receptor: não vale
       // manter a notificação de envio em curso por ele.
       await lease?.release();
@@ -819,7 +850,6 @@ class MessageReceptionService {
         cycle.done.completeError(e, stack);
       }
     } finally {
-      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
       await lease?.release();
     }
   }
@@ -832,46 +862,75 @@ class MessageReceptionService {
     var completed = false;
     String? lastProgress;
     var idleSince = clock.now();
-    while (true) {
-      // Sair em silêncio antes de completar deixaria quem chamou marcar o envio
-      // como concluído; depois de completar, sair é o fim normal.
-      if (_disposed || _router.transportFor(contactId) == null) {
-        if (completed) return;
-        throw const TransportUnavailableException();
+    final hexId = _hex(fileId);
+    try {
+      while (true) {
+        // Sair em silêncio antes de completar deixaria quem chamou marcar o envio
+        // como concluído; depois de completar, sair é o fim normal.
+        if (_disposed || _router.transportFor(contactId) == null) {
+          if (completed) return;
+          throw const TransportUnavailableException();
+        }
+        // Armar antes de ler o emissor: um `ChunkReleased` que chegue entre a
+        // leitura e a espera não se perde, só faz a espera acabar na hora.
+        final released = _armRelease(hexId);
+        // Segue o transporte atual do contato: o roteador recria o canal que
+        // caiu, e o emissor no Rust é o mesmo; o que se perdeu em voo o feedback
+        // pede de novo.
+        final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
+        if (chunk != null) {
+          await _router.sendFileToContact(contactId, chunk);
+          idleSince = clock.now();
+          continue;
+        }
+        final progress = await _core.transferProgress(fileId: fileId);
+        if (progress == null) return;
+        if (progress.isComplete && !completed) {
+          completed = true;
+          await onComplete();
+        }
+        final current = _progressMark(progress);
+        if (current != lastProgress) {
+          lastProgress = current;
+          idleSince = clock.now();
+        } else if (clock.now().difference(idleSince) >= _idleLimit) {
+          if (completed) return;
+          // O receptor sumiu ou já encerrou a transferência sem que o aviso
+          // chegasse (issue #108). A oferta ainda sem resposta não conta: o
+          // aceite de uma oferta grande espera a pessoa (§7.6).
+          if (!progress.awaitingAnswer) throw const TransferStalledException();
+        }
+        // Emissor esgotou o que tinha para o bloco atual — espera o
+        // `FILE_FEEDBACK` do receptor (processado como efeito colateral dentro
+        // de `Core.receiveIncoming`, já dirigido por `_handleIncomingRaw`)
+        // liberar o próximo bloco. Quem sabe é o Rust, que avisa com
+        // `ChunkReleased`; o teto só cobre um aviso perdido.
+        await released.future.timeout(_releaseFallback, onTimeout: () {});
       }
-      // Segue o transporte atual do contato: o roteador recria o canal que caiu,
-      // e o emissor no Rust é o mesmo; o que se perdeu em voo o feedback pede de
-      // novo.
-      final chunk = await _core.nextOutgoingWireChunk(fileId: fileId);
-      if (chunk != null) {
-        await _router.sendFileToContact(contactId, chunk);
-        idleSince = clock.now();
-        continue;
-      }
-      final progress = await _core.transferProgress(fileId: fileId);
-      if (progress == null) return;
-      if (progress.isComplete && !completed) {
-        completed = true;
-        await onComplete();
-      }
-      final current = _progressMark(progress);
-      if (current != lastProgress) {
-        lastProgress = current;
-        idleSince = clock.now();
-      } else if (clock.now().difference(idleSince) >= _idleLimit) {
-        if (completed) return;
-        // O receptor sumiu ou já encerrou a transferência sem que o aviso
-        // chegasse (issue #108). A oferta ainda sem resposta não conta: o aceite
-        // de uma oferta grande espera a pessoa (§7.6).
-        if (!progress.awaitingAnswer) throw const TransferStalledException();
-      }
-      // Emissor esgotou o que tinha para o bloco atual — espera o
-      // `FILE_FEEDBACK` do receptor (processado como efeito colateral dentro de
-      // `Core.receiveIncoming`, já dirigido por `_handleIncomingRaw`) liberar o
-      // próximo bloco. Espera curta, não *polling* de descoberta — a novidade em
-      // si (oferta/conclusão) já chega por evento, isto só dá ritmo ao laço.
-      await Future<void>.delayed(completed ? const Duration(seconds: 1) : const Duration(milliseconds: 100));
+    } finally {
+      _releaseSignals.remove(hexId);
     }
+  }
+
+  /// Um sinal por envio em curso: o laço espera nele, e o stream de
+  /// transferências o dispara.
+  final Map<String, Completer<void>> _releaseSignals = {};
+
+  Completer<void> _armRelease(String hexId) => _releaseSignals[hexId] ??= Completer<void>();
+
+  /// Acorda todos os laços de envio para reverem o transporte; cada um refaz a
+  /// leitura e, se nada mudou para ele, volta a esperar.
+  void _wakePumps() {
+    final waiting = _releaseSignals.values.toList();
+    _releaseSignals.clear();
+    for (final signal in waiting) {
+      if (!signal.isCompleted) signal.complete();
+    }
+  }
+
+  void _signalRelease(Uint8List fileId) {
+    final signal = _releaseSignals.remove(_hex(fileId));
+    if (signal != null && !signal.isCompleted) signal.complete();
   }
 
   /// Retomadas em curso por contato: o evento de sessão e o canal novo costumam
@@ -904,8 +963,6 @@ class MessageReceptionService {
       return;
     }
     if (resumed.isEmpty || _disposed) return;
-    // A mensagem do envio pode ter voltado de `failed` a `pending`.
-    _eventsController.add(MessageReceivedEvent(contactId));
     for (final transfer in resumed) {
       switch (transfer.direction) {
         case ResumedDirectionDto.send:
@@ -981,6 +1038,9 @@ class MessageReceptionService {
     _disposed = true;
     unawaited(_sessionEventsSub?.cancel());
     unawaited(_transferEventsSub?.cancel());
+    unawaited(_messageEventsSub?.cancel());
+    // Acorda os laços de envio para eles verem o serviço encerrado e saírem.
+    _wakePumps();
     for (final timer in _retryTimers.values) {
       timer.cancel();
     }

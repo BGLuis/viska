@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D28). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D29). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -531,3 +531,31 @@ um transporte que aceite símbolos desse tamanho.
 **Custo de reverter:** sem a cópia, a retomada teria de reler o original e conviver com o arquivo
 sumido ou alterado, detectado só no fim. Sem o teto, uma transferência abandonada deixaria segredo e
 conteúdo cifrados no aparelho indefinidamente.
+
+---
+
+## D29 — Expiração das mensagens efêmeras e atualização da timeline dirigidas pelo Rust
+**Spec:** a spec de arquitetura pede chaves efêmeras por mensagem, destruídas ao vencer (crypto-shredding),
+mas não diz quem acorda para destruí-las nem como a interface fica sabendo.
+**Aqui:** uma `std::thread` por `Core` dorme até o menor `expires_at` do banco e então apaga as chaves
+vencidas. Ela sobe quando o Dart assina `Core::subscribe_message_events` e acaba junto com a `Core`. Com
+o banco trancado ela espera, e `unlock` e qualquer mensagem nova a acordam. A `Core` do cofre-isca nunca
+assina, então nunca varre, como já acontecia com o timer do Dart. Cada escrita em mensagem passa pelo
+`Store`, que avisa um observador; o aviso vira um evento só com o identificador da mensagem e o tipo
+(`Added`, `Updated`, `KeyExpired`, `ReactionsChanged`). O conteúdo da linha o Dart lê com
+`Core::get_message`, então nenhum texto nem emoji atravessa o stream.
+
+Um timer de 60 s no Dart fazia a varredura e uma mensagem podia ficar até um minuto além do prazo na
+tela. Pior para a regra do projeto, a chave só era destruída se o Dart estivesse vivo para pedir. Quem
+guarda a chave é quem sabe quando ela vence. O mesmo vale para a timeline, que era relida inteira depois
+de cada ação porque só o Dart "sabia" que algo podia ter mudado.
+
+**Custo:** o Rust passa a executar código sem ser chamado, a única thread própria do núcleo. Ela não toca
+em sessão nem em identidade, só no `Store`, e não segura a `Core`. O sono usa relógio monotônico, que o
+Linux e o Android não contam com o aparelho suspenso: ao voltar do segundo plano o Dart chama
+`Core::check_message_expiry` para o que venceu nesse intervalo sair já. Não há varredura de reserva: se a
+thread não subir (a assinatura tenta de novo na vez seguinte), as chaves vencidas ficam até subir. Um aviso
+emitido sem assinante se perde; a carga inicial da timeline, feita depois de assinar, cobre o que já existia.
+
+**Custo de reverter:** voltar ao timer do Dart e à releitura da lista: a varredura só roda com o app
+aberto e a tela atrasa até 60 s, e cada ação da pessoa volta a custar uma releitura completa da conversa.

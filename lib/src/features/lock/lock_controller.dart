@@ -39,7 +39,6 @@ class LockController with WidgetsBindingObserver {
     instance = this;
     WidgetsBinding.instance.addObserver(this);
     _resetInactivityTimer();
-    _startEphemeralSweepTimer();
     _loadSecurityConfig();
   }
 
@@ -120,7 +119,6 @@ class LockController with WidgetsBindingObserver {
   int? get duressPinLength => _duressPinLength;
 
   Timer? _inactivityTimer;
-  Timer? _ephemeralSweepTimer;
 
   int _transientOperationsCount = 0;
 
@@ -372,17 +370,6 @@ class LockController with WidgetsBindingObserver {
     }
   }
 
-  void _startEphemeralSweepTimer() {
-    _ephemeralSweepTimer?.cancel();
-    _ephemeralSweepTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
-      if (!isLocked.value && !isDecoyVault.value) {
-        try {
-          await core.sweepExpiredMessages();
-        } catch (_) {}
-      }
-    });
-  }
-
   /// Bloqueia o aplicativo imediatamente:
   /// - Zera e descarta sessões ativas do Rust.
   /// - Fecha a conexão com o banco SQLite.
@@ -582,10 +569,8 @@ class LockController with WidgetsBindingObserver {
     isDecoyVault.value = false;
     _resetInactivityTimer();
 
-    try {
-      await core.sweepExpiredMessages();
-    } catch (_) {}
-
+    // A expiração das mensagens efêmeras corre no Rust; ele mesmo retoma a
+    // varredura ao destrancar.
     return true;
   }
 
@@ -596,7 +581,6 @@ class LockController with WidgetsBindingObserver {
   /// - Trava o app.
   Future<void> emergencyErase() async {
     _inactivityTimer?.cancel();
-    _ephemeralSweepTimer?.cancel();
 
     _normalPinHash = null;
     _duressPinHash = null;
@@ -678,7 +662,9 @@ class LockController with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.resumed) {
       if (!isLocked.value && !isDecoyVault.value) {
         _resetInactivityTimer();
-        core.sweepExpiredMessages().catchError((_) => 0);
+        // O Rust dorme até o próximo vencimento num relógio que não conta o
+        // aparelho suspenso: o que venceu enquanto isso sai agora.
+        core.checkMessageExpiry().catchError((_) {});
       }
     }
   }
@@ -689,7 +675,6 @@ class LockController with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.removeObserver(this);
     _inactivityTimer?.cancel();
-    _ephemeralSweepTimer?.cancel();
     isLocked.dispose();
     isDecoyVault.dispose();
   }

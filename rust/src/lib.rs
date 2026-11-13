@@ -17,6 +17,8 @@
 
 mod frb_generated; // Gerado por `flutter_rust_bridge_codegen generate`.
 pub mod ffi;
+mod expiry;
+mod message_events;
 mod session_events;
 #[cfg(test)]
 mod test_support;

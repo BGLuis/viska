@@ -20,7 +20,7 @@ class _MockSmokeCore implements Core {
   final List<ContactDto> _contacts;
   int lockCalls = 0;
   int unlockCalls = 0;
-  int sweepCalls = 0;
+  int expiryChecks = 0;
 
   @override
   Future<String?> myNickname() async => nickname;
@@ -66,9 +66,8 @@ class _MockSmokeCore implements Core {
   }
 
   @override
-  Future<int> sweepExpiredMessages() async {
-    sweepCalls++;
-    return 0;
+  Future<void> checkMessageExpiry() async {
+    expiryChecks++;
   }
 
   @override
@@ -109,6 +108,9 @@ class _MockSmokeCore implements Core {
 
   @override
   Stream<TransferEventDto> subscribeTransferEvents() => const Stream.empty();
+
+  @override
+  Stream<MessageEventDto> subscribeMessageEvents() => const Stream.empty();
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

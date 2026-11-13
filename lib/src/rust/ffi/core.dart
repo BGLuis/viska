@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `maintain_transfers_at_rest`, `reset_inflight_state`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `fmt`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
 abstract class Core implements RustOpaqueInterface {
@@ -44,6 +44,12 @@ abstract class Core implements RustOpaqueInterface {
   /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
   /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
   Future<void> cancelTransfer({required List<int> fileId});
+
+  /// Pede à thread de expiração que reconte o próximo vencimento. O sono dela
+  /// usa relógio monotônico, que o Linux/Android não conta com o aparelho
+  /// suspenso: ao voltar do segundo plano o Dart chama isto para o que venceu
+  /// enquanto dormia sair já, em vez de esperar o resto do sono.
+  Future<void> checkMessageExpiry();
 
   /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
   /// entre aparelhos próximos em pareamento.
@@ -142,6 +148,11 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Consulta o TTL efêmero configurado para o contato.
   Future<PlatformInt64> getEphemeralTtl({required List<int> contactDeviceId});
+
+  /// Uma mensagem pelo `id`, para o Dart atualizar só aquela linha quando um
+  /// `MessageEventDto` chega. `None` se ela já não existe (ou se a lista a
+  /// esconde, como os comandos de reação).
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId});
 
   /// Alimenta um pacote cru recebido no canal `file` do WebRTC — descobre
   /// sozinho a qual transferência ele pertence (D17: `file_id` vai em
@@ -461,6 +472,12 @@ abstract class Core implements RustOpaqueInterface {
     required bool useLan,
   });
 
+  /// Passa a receber os eventos de mudança em mensagens e põe a expiração
+  /// para correr no Rust. Não há replay: quem assina lê a timeline depois,
+  /// e o que mudar entre as duas coisas chega como evento. Uma nova
+  /// assinatura substitui a anterior.
+  Stream<MessageEventDto> subscribeMessageEvents();
+
   /// Passa a receber os eventos de mudança de estado das sessões, a partir
   /// do estado atual de cada uma (replay): um evento emitido antes da
   /// assinatura não se perderia para o Dart. Uma nova assinatura substitui
@@ -471,9 +488,6 @@ abstract class Core implements RustOpaqueInterface {
   /// retidas (replay): um evento emitido antes da assinatura não se perderia
   /// para o Dart. Uma nova assinatura substitui a anterior.
   Stream<TransferEventDto> subscribeTransferEvents();
-
-  /// Varre e destrói chaves de mensagens efêmeras expiradas.
-  Future<int> sweepExpiredMessages();
 
   /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
   /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
