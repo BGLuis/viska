@@ -753,7 +753,13 @@ class ChatController extends ChangeNotifier {
           audioPath: sanitizedPath,
           useLan: activeTransport == ActiveTransportType.lanDirect,
         );
-        await _cacheVoiceNote(queued.fileId, sanitizedPath);
+        // Já enfileirada: falhar em cachear o áudio só tira a prévia local, e não
+        // pode virar "não foi possível enviar".
+        try {
+          await _cacheVoiceNote(queued.fileId, sanitizedPath);
+        } catch (e) {
+          if (kDebugMode) debugPrint('[ChatController] áudio enfileirado sem cache local: $e');
+        }
         unawaited(_receptionService.resumeTransfers(_contactId));
         return;
       }
@@ -780,7 +786,7 @@ class ChatController extends ChangeNotifier {
     } finally {
       // O sanitizado em claro nunca sobrevive à chamada: a fila guarda só a
       // cópia cifrada do Rust, e uma falha também não pode deixá-lo no temp.
-      unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
+      await File(sanitizedPath).delete().catchError((_) => File(sanitizedPath));
       _sendingVoice = false;
       notifyListeners();
     }

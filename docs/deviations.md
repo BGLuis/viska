@@ -571,7 +571,8 @@ sessão: copiam o arquivo para `outgoing/` (D28), gravam a linha de `file_transf
 `resume_transfers` reconstrói o handle e devolve `needs_offer`, e o laço de envio do Dart faz o resto,
 exatamente como num envio retomado depois de bloqueio. Não há tabela nem caminho de drenagem próprios.
 Cada contato aceita no máximo 10 envios sem resposta (`MAX_QUEUED_TRANSFERS`), contando os já
-oferecidos; o 11º recebe `FfiError::QueueFull` antes de qualquer cópia. O prazo de 24 h da oferta
+oferecidos; o 11º recebe `FfiError::QueueFull` antes de qualquer cópia. O teto é de melhor esforço:
+enfileiramentos simultâneos podem passá-lo por um ou dois itens, e `start_send` com sessão não o aplica. O prazo de 24 h da oferta
 sem resposta passa a valer também para nota de voz, contado do enfileiramento.
 
 Duas consequências, ambas decididas com a pessoa na issue #79. A nota de voz sanitizada em claro é

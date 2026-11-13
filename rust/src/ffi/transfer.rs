@@ -127,7 +127,9 @@ pub(super) fn seal_file_reject(session: &mut viska_proto::session::Session, file
 pub(super) const OFFER_RESPONSE_TIMEOUT_SECS: i64 = 24 * 60 * 60;
 
 /// Quantos envios sem resposta um contato pode ter de uma vez, contando os já
-/// oferecidos: limita o disco que a fila offline cifrada ocupa (D30).
+/// oferecidos: limita o disco que a fila offline cifrada ocupa (D30). Só
+/// `queue_send` o aplica, e a contagem não é atômica com a gravação: dois
+/// enfileiramentos simultâneos podem passar do teto por um ou dois itens.
 pub(super) const MAX_QUEUED_TRANSFERS: usize = 10;
 
 /// Resultado de [`Core::stage_send`]: o que já está gravado e, se havia
@@ -135,8 +137,14 @@ pub(super) const MAX_QUEUED_TRANSFERS: usize = 10;
 struct StagedSend {
     file_id: [u8; FILE_ID_LEN],
     message_id: i64,
-    sealed_metadata: Option<Vec<u8>>,
-    handle: Option<OutgoingHandle>,
+    /// `None` quando só se enfileirou, sem sessão para selar.
+    offer: Option<StagedOffer>,
+}
+
+/// A oferta selada e o handle que a acompanha: nascem juntos ou não nascem.
+struct StagedOffer {
+    sealed_metadata: Vec<u8>,
+    handle: OutgoingHandle,
 }
 
 /// Apaga a cópia de envio se `start_send` falhar depois de gravá-la.
@@ -311,9 +319,8 @@ impl Core {
 
         // A linha existe: daqui em diante a cópia é dela, e quem a apaga é o fim
         // da transferência ou o prazo de retenção.
-        let (Some(sealed_metadata), Some(handle)) = (staged.sealed_metadata, staged.handle) else {
-            return Err(FfiError::Internal);
-        };
+        // `seal` de `start_send` sempre devolve a oferta; `None` seria um defeito.
+        let StagedOffer { sealed_metadata, handle } = staged.offer.ok_or(FfiError::Internal)?;
         if !self.install_handle(staged.file_id, TransferHandle::Send(handle), None)? {
             // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
             // retoma depois do desbloqueio.
@@ -374,6 +381,9 @@ impl Core {
     ) -> Result<QueuedTransferDto, FfiError> {
         self.ensure_not_locked()?;
         let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes de tudo, de propósito: a bolha "Na fila" não pode
+        // depender de o Dart chamar `resume_transfers` em seguida.
+        let _publish = self.publish_on_exit(device_id);
         // Antes de copiar: recusar com a fila cheia não pode custar a leitura
         // de um arquivo grande.
         if self.store.count_unanswered_sending_transfers(&device_id)? >= MAX_QUEUED_TRANSFERS {
@@ -457,7 +467,11 @@ impl Core {
         let message_id =
             self.store
                 .insert_pending_message(device_id, packet_type, &message_body(&file_id), created_at)?;
-        self.store.set_message_file_id(message_id, &file_id)?;
+        if let Err(err) = self.store.set_message_file_id(message_id, &file_id) {
+            // Sem a ligação, nada expiraria a mensagem: ficaria "Na fila" para sempre.
+            let _ = self.store.mark_message_failed(message_id);
+            return Err(err.into());
+        }
         let inserted = self.store.insert_file_transfer(
             &file_id,
             Direction::Sending,
@@ -473,19 +487,14 @@ impl Core {
         }
         copy_guard.path = None;
 
-        let (sealed_metadata, handle) = match (sealed, reader) {
-            (Some((sealed, generation)), Some(reader)) => (
-                Some(sealed),
-                Some(OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false)),
-            ),
-            _ => (None, None),
+        let offer = match (sealed, reader) {
+            (Some((sealed_metadata, generation)), Some(reader)) => Some(StagedOffer {
+                sealed_metadata,
+                handle: OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false),
+            }),
+            _ => None,
         };
-        Ok(StagedSend {
-            file_id,
-            message_id,
-            sealed_metadata,
-            handle,
-        })
+        Ok(StagedSend { file_id, message_id, offer })
     }
 
     /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
