@@ -609,7 +609,9 @@ class MessageReceptionService {
       );
     } catch (_) {
       // Só um `Err` antes do commit chega aqui: o destino está incompleto.
-      unawaited(File(destPath).delete().catchError((_) => File(destPath)));
+      // Esperado de propósito: a próxima tentativa recria o mesmo caminho, e
+      // uma exclusão atrasada apagaria o arquivo novo.
+      await File(destPath).delete().catchError((_) => File(destPath));
       return false;
     }
     _receivedFilePaths[_hex(fileId)] = destPath;
@@ -638,7 +640,8 @@ class MessageReceptionService {
     } catch (_) {
       return false;
     } finally {
-      unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
+      // Esperado, pelo mesmo motivo do arquivo: a próxima tentativa usa o mesmo caminho.
+      await File(internalPath).delete().catchError((_) => File(internalPath));
     }
   }
 

@@ -264,7 +264,6 @@ impl StagingWriter {
             let last = Zeroizing::new(self.buffer.clone());
             self.flush_page(&last)?;
             self.buffer.zeroize();
-            self.buffer.clear();
         }
         self.file
             .sync_all()
@@ -722,9 +721,9 @@ mod tests {
         let original: Vec<u8> = (0..PAGE_LEN + 777).map(|i| (i % 239) as u8).collect();
         let mut writer = StagingWriter::create(dir.path(), [12; FILE_ID_LEN], chave_de_teste(12)).unwrap();
         writer.write(&original).unwrap();
-        // Uma tentativa anterior que morreu no meio da última página.
-        let path = staging_path(dir.path(), &[12; FILE_ID_LEN]);
-        fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(&[0xEE; 100]).unwrap();
+        // Uma tentativa anterior que morreu no meio da última página: os bytes
+        // saíram pelo próprio arquivo do escritor, que ficou adiante deles.
+        writer.file.write_all(&[0xEE; 100]).unwrap();
 
         writer.finish().unwrap();
 

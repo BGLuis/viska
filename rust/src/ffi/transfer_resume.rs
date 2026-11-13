@@ -313,6 +313,12 @@ impl Core {
             Claim::Busy => return Ok(Rebuild::Later),
             Claim::Claimed(guard) => guard,
         };
+        // `stored` vem de uma listagem anterior: a transferência pode ter
+        // acabado (um `finish` concluído) entre a listagem e a reserva, e o
+        // staging que sumiu por isso não é um staging perdido.
+        if !self.store.file_transfer_exists(&stored.file_id)? {
+            return Ok(Rebuild::Later);
+        }
         if !staging::staging_path(dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
             return Ok(Rebuild::Ended);
@@ -1166,6 +1172,25 @@ mod tests {
 
         assert!(pair.core_b.transfer_progress(started.file_id.clone()).unwrap().unwrap().is_complete);
         assert_eq!(finish(&pair, &started.file_id, &dir_dst), vec![3u8; 5_000]);
+    }
+
+    #[test]
+    fn a_resume_working_from_a_stale_row_does_not_reject_a_finished_receive() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = write_temp_file(&dir_src, "a.bin", &[5u8; 5_000]);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata).unwrap();
+        drive(&pair, &started.file_id, 1);
+        // A retomada listou a linha antes de o recebimento terminar.
+        let stale = pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
+        let dst = dir_dst.path().join("a.bin");
+        pair.core_b
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), dst.to_str().unwrap().to_owned())
+            .unwrap();
+
+        let device_a: [u8; DEVICE_ID_LEN] = pair.device_id_a.clone().try_into().unwrap();
+        assert!(pair.core_b.resume_one(&device_a, &stale).unwrap().is_none());
     }
 
     #[test]

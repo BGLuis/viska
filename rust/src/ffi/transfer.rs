@@ -588,8 +588,8 @@ impl Core {
             std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
         let (handle, claim) = self.take_for_finish(file_id)?.ok_or(FfiError::Internal)?;
         let TransferHandle::Receive(mut recv) = handle else {
-            // Devolve o handle de envio — `finish_receive_*` não é o
-            // método certo para ele — em vez de descartá-lo em silêncio.
+            // Defensivo: a linha conferida acima é de recebimento, então o handle
+            // também é. Se não for, ele volta ao mapa em vez de sumir.
             self.install_handle(file_id, handle, Some(claim))?;
             return Err(FfiError::Internal);
         };
@@ -609,9 +609,8 @@ impl Core {
                 return Err(err.into());
             }
         };
-        // A reserva vai até a linha sumir: uma retomada que listou as linhas
-        // antes disso não pode reservar o `file_id`, achar o staging apagado e
-        // mandar um `FILE_REJECT` por uma transferência que acabou de dar certo.
+        // A reserva vai até a linha sumir; uma retomada que reservar depois disso
+        // confere a linha antes de concluir que o staging se perdeu (`rebuild`).
         self.end_transfer(&file_id)?;
         drop(claim);
 

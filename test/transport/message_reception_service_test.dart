@@ -1340,7 +1340,12 @@ void main() {
 
         complete = true;
         transport.emitIncomingFile(Uint8List.fromList([3]));
-        await pumpEventQueue();
+        // O serviço só cai depois do commit, que passa por E/S de arquivo de
+        // verdade: espera por ele em vez de contar voltas da fila de eventos.
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (!serviceCalls.contains('stop') && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
         expect(serviceCalls, ['start', 'stop']);
       });
 
