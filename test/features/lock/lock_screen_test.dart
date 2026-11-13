@@ -12,7 +12,7 @@ class _FakeCore implements Core {
   Future<void> unlock() async {}
 
   @override
-  Future<int> sweepExpiredMessages() async => 0;
+  Future<void> checkMessageExpiry() async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

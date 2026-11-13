@@ -336,8 +336,8 @@ class ChatController extends ChangeNotifier {
   Future<void> markViewOnceOpened(int messageId) async {
     _openedViewOnceMessageIds.add(messageId);
     try {
+      // O Rust destrói a chave e avisa com `KeyExpired`; a linha se atualiza pelo evento.
       await _core.markMessageRead(messageId: messageId);
-      await _refreshMessages();
     } catch (e) {
       if (kDebugMode) debugPrint('[ChatController] Erro ao marcar visualização única como lida: $e');
     }
@@ -346,14 +346,13 @@ class ChatController extends ChangeNotifier {
 
 
   /// Reenvia um texto em `unknown`. A confirmação com o aviso de duplicata é
-  /// da tela; aqui só se pede o reenvio e se relê a lista.
+  /// da tela; aqui só se pede o reenvio, e a linha muda pelo evento do Rust.
   Future<void> resendUnknown(int messageId) async {
     try {
       await _receptionService.resendUnknown(_contactId, messageId);
     } catch (e) {
       if (kDebugMode) debugPrint('[ChatController] Erro ao reenviar mensagem incerta: $e');
     }
-    await _refreshMessages();
     notifyListeners();
   }
 
@@ -370,10 +369,13 @@ class ChatController extends ChangeNotifier {
   /// formos iniciador. Chamar uma vez, normalmente em `initState`.
   Future<void> initialize() async {
     try {
-      await _refreshMessages();
-
       _receptionService.ensureListening(_contactId);
+      // Assina antes de carregar: o que mudar durante a carga fica na fila
+      // atrás dela e é aplicado por id depois, sem se perder nem duplicar. É
+      // isto que dispensa um retrato do Rust ao assinar.
       _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
+      _changeQueue = _loadMessages();
+      await _changeQueue;
       _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
 
       // Eventos que passaram antes de esta conversa abrir já estão no serviço.
@@ -400,12 +402,12 @@ class ChatController extends ChangeNotifier {
 
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
-      case MessageReceivedEvent(:final message):
-        if (message != null && message.messageId != null) {
-          _fetchIncrementalMessages();
-        } else {
-          _refreshMessages();
-        }
+      case MessageReceivedEvent():
+        // A linha chega como `MessageChangedEvent`; este evento só diz que algo
+        // foi recebido.
+        break;
+      case MessageChangedEvent(:final messageId):
+        _enqueueChange(messageId);
       case TypingIndicatorEvent():
         break;
       case SessionStateChangedEvent(:final state, :final needsRehandshake):
@@ -415,10 +417,10 @@ class ChatController extends ChangeNotifier {
         unawaited(loadUnconfirmedOffers());
       case FileReceivedEvent(:final fileId, :final path):
         _receivedFilePaths[_hex(fileId)] = path;
-        _fetchIncrementalMessages();
+        notifyListeners();
       case VoiceNoteReceivedEvent(:final fileId, :final internalBytes):
         _voiceNoteAudio[_hex(fileId)] = internalBytes;
-        _fetchIncrementalMessages();
+        notifyListeners();
     }
   }
 
@@ -450,7 +452,6 @@ class ChatController extends ChangeNotifier {
         peerDeviceId: _contactId.deviceId,
         body: payload,
       );
-      await _refreshMessages();
       if (sealed.bytes != null) {
         await _trySendSealed(sealed.messageId, sealed.bytes!);
       }
@@ -482,7 +483,6 @@ class ChatController extends ChangeNotifier {
       peerDeviceId: _contactId.deviceId,
       body: payload,
     );
-    await _refreshMessages();
     if (sealed.bytes != null) {
       await _trySendSealed(sealed.messageId, sealed.bytes!);
     }
@@ -530,7 +530,6 @@ class ChatController extends ChangeNotifier {
       startedMessageId = started.messageId;
       _receivedFilePaths[_hex(started.fileId)] = filePath;
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
-      await _refreshMessages();
       handedOff = true;
       // Esta tela já segura o serviço em primeiro plano desde antes de conectar.
       await _receptionService.runOutgoingTransfer(
@@ -540,7 +539,6 @@ class ChatController extends ChangeNotifier {
         messageId: started.messageId,
         holdForeground: false,
       );
-      await _refreshMessages();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar arquivo: $e\n$stack');
       _fileError = await _sendFailureMessage('Não foi possível enviar o arquivo.');
@@ -560,7 +558,6 @@ class ChatController extends ChangeNotifier {
     if (messageId == null) return;
     try {
       if (!handedOff) await _core.markMessageFailed(messageId: messageId);
-      await _refreshMessages();
     } catch (e) {
       if (kDebugMode) debugPrint('[ChatController] falha ao marcar envio como falho: $e');
     }
@@ -727,7 +724,6 @@ class ChatController extends ChangeNotifier {
       _receptionService.cacheVoiceNoteAudio(started.fileId, internalBytes);
       unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
 
-      await _refreshMessages();
       handedOff = true;
       await _receptionService.runOutgoingTransfer(
         _contactId,
@@ -736,7 +732,6 @@ class ChatController extends ChangeNotifier {
         messageId: started.messageId,
         holdForeground: false,
       );
-      await _refreshMessages();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar nota de voz: $e\n$stack');
       _voiceError = await _sendFailureMessage('Não foi possível enviar a nota de voz.');
@@ -833,7 +828,6 @@ class ChatController extends ChangeNotifier {
       if (kDebugMode) debugPrint('[ChatController] envio falhou, mensagem volta à fila: $e');
       try {
         await _core.requeueMessage(messageId: messageId);
-        await _refreshMessages();
       } catch (e) {
         // Fica `Sending` até a Core reabrir ou travar; só dá para registrar.
         if (kDebugMode) debugPrint('[ChatController] falha ao devolver $messageId à fila: $e');
@@ -853,77 +847,77 @@ class ChatController extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      await _markSentAndRefresh(messageId);
+      await _core.markMessageSent(messageId: messageId);
     } catch (e) {
       // Os bytes já saíram: falha local ao marcar não é queda de conexão.
       if (kDebugMode) debugPrint('[ChatController] falha ao marcar como enviada: $e');
     }
   }
 
-  Future<void> _markSentAndRefresh(int messageId) async {
-    await _core.markMessageSent(messageId: messageId);
-    final idx = _messages.indexWhere((m) => m.id == messageId);
-    if (idx != -1) {
-      final old = _messages[idx];
-      _messages[idx] = MessageDto(
-        id: old.id,
-        globalId: old.globalId,
-        direction: old.direction,
-        kind: old.kind,
-        body: old.body,
-        audioFileId: old.audioFileId,
-        deliveryState: DeliveryStateDto.sent,
-        createdAtUnixSecs: old.createdAtUnixSecs,
-        isEphemeral: old.isEphemeral,
-        replyToId: old.replyToId,
-        viewOnce: old.viewOnce,
-        reactions: old.reactions,
-      );
+  /// Mudanças já avisadas pelo Rust, aplicadas uma depois da outra: duas
+  /// leituras da mesma linha em voo poderiam terminar fora de ordem e deixar a
+  /// mais antiga por cima. A carga inicial é o primeiro elo.
+  Future<void> _changeQueue = Future<void>.value();
+
+  void _enqueueChange(int messageId) {
+    _changeQueue = _changeQueue.catchError((Object _) {}).then((_) => _applyMessageChange(messageId));
+  }
+
+  /// Troca só a linha de [messageId] pelo que o Rust tem agora: entra se é nova,
+  /// sai se sumiu (ou se a lista a esconde). A leitura é sempre a atual, então
+  /// aplicar duas vezes o mesmo aviso dá o mesmo resultado.
+  Future<void> _applyMessageChange(int messageId) async {
+    try {
+      final fresh = await _core.getMessage(messageId: messageId);
+      if (_disposed) return;
+      final index = _messages.indexWhere((m) => m.id == messageId);
+      if (fresh == null) {
+        if (index == -1) return;
+        _messages.removeAt(index);
+      } else if (index != -1) {
+        _messages[index] = fresh;
+      } else {
+        _insertInOrder(fresh);
+        _markReadWhenShown(fresh);
+      }
+      _aggregateReactions();
       notifyListeners();
-    } else {
-      await _fetchIncrementalMessages();
+    } catch (e) {
+      // Trancada, ou banco indisponível: o que a pessoa vê só se acerta na
+      // próxima mudança ou ao reabrir a conversa.
+      if (kDebugMode) debugPrint('[ChatController] Falha ao atualizar a mensagem $messageId: $e');
     }
   }
 
-  Future<void> _fetchIncrementalMessages() async {
-    final lastId = _messages.isNotEmpty ? _messages.last.id : null;
-    if (lastId == null) {
-      await _refreshMessages();
-      return;
+  /// A lista segue a ordem do Rust: criação e depois `id`.
+  void _insertInOrder(MessageDto message) {
+    var at = _messages.length;
+    while (at > 0 && _isAfter(_messages[at - 1], message)) {
+      at--;
     }
-    final newMessages = await _core.listMessagesPaginated(
-      peerDeviceId: _contactId.deviceId,
-      sinceId: lastId,
-    );
-    if (_disposed || newMessages.isEmpty) return;
-
-    for (final m in newMessages) {
-      _messages.add(m);
-      for (final emoji in m.reactions) {
-        final map = _reactions.putIfAbsent(m.id, () => <String, int>{});
-        map[emoji] = (map[emoji] ?? 0) + 1;
-      }
-      if (m.direction == MessageDirectionDto.incoming && !m.viewOnce) {
-        _core.markMessageRead(messageId: m.id).catchError((_) {});
-      }
-    }
-    notifyListeners();
+    _messages.insert(at, message);
   }
 
-  Future<void> _refreshMessages() async {
+  bool _isAfter(MessageDto a, MessageDto b) {
+    if (a.createdAtUnixSecs != b.createdAtUnixSecs) return a.createdAtUnixSecs > b.createdAtUnixSecs;
+    return a.id > b.id;
+  }
+
+  /// Mensagens de visualização única só são marcadas como lidas quando a pessoa
+  /// as abre na tela (U-04), para não destruir a chave antes da leitura.
+  void _markReadWhenShown(MessageDto message) {
+    if (message.direction == MessageDirectionDto.incoming && !message.viewOnce) {
+      _core.markMessageRead(messageId: message.id).catchError((_) {});
+    }
+  }
+
+  /// Carga inicial da conversa. Daqui em diante a lista só muda por evento.
+  Future<void> _loadMessages() async {
     final loaded = await _core.listMessages(peerDeviceId: _contactId.deviceId);
     if (_disposed) return;
     _messages = loaded;
     _aggregateReactions();
-    for (final m in loaded) {
-      if (m.direction == MessageDirectionDto.incoming) {
-        // Mensagens de visualização única só são marcadas como lidas quando o usuário
-        // explicitamente as abrir na tela (U-04), para não destruir a chave antes da leitura.
-        if (!m.viewOnce) {
-          _core.markMessageRead(messageId: m.id).catchError((_) {});
-        }
-      }
-    }
+    loaded.forEach(_markReadWhenShown);
     notifyListeners();
   }
 

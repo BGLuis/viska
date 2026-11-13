@@ -54,7 +54,7 @@ class _FakeP2PTransport implements P2PTransport {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
-class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements Core {
+class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents implements Core {
   _FakeReceptionCore() {
     peerDeviceId = List.generate(16, (i) => i);
   }
@@ -323,9 +323,13 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
   final outgoingChunks = <Uint8List>[];
   final nextChunkCalls = <Uint8List>[];
 
+  /// Roda dentro da leitura do emissor: um aviso do Rust que chega justo ali.
+  void Function()? onNextChunkRead;
+
   @override
   Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) async {
     nextChunkCalls.add(Uint8List.fromList(fileId));
+    onNextChunkRead?.call();
     return outgoingChunks.isEmpty ? null : outgoingChunks.removeAt(0);
   }
 
@@ -615,9 +619,12 @@ void main() {
         core.sessionState = SessionStateKind.established;
         await service.start();
         await pumpEventQueue();
-        // O emissor espera feedback; o transporte cai nesse meio-tempo.
+        // O emissor espera feedback; o transporte cai nesse meio-tempo. A queda
+        // acorda o laço, que não tem nenhum aviso do Rust para esperar.
+        final dropped = transport;
         await router.closeContact(contact);
-        await Future<void>.delayed(const Duration(milliseconds: 250));
+        dropped.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.failed));
+        await pumpEventQueue();
 
         expect(core.markSentCalls, isNot(contains(5)));
         expect(core.markFailedCalls, contains(5));
@@ -709,13 +716,97 @@ void main() {
         transport = replacement;
         router.incomingFor(contact);
         core.outgoingChunks.add(Uint8List.fromList([4]));
-        await Future<void>.delayed(const Duration(milliseconds: 250));
+        // O canal novo acorda o laço sem esperar um aviso do Rust.
+        await pumpEventQueue();
 
         expect(replacement.sendFileCalls, [Uint8List.fromList([4])]);
         expect(core.markFailedCalls, isEmpty);
         core.receiveProgress = null;
         await run;
         expect(core.markSentCalls, contains(5));
+      });
+
+      test('the pump waits for ChunkReleased instead of polling, with a long fallback', () {
+        fakeAsync((async) {
+          final waitingService = MessageReceptionService(core: core, router: router);
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          unawaited(waitingService.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object _) {}));
+          async.flushMicrotasks();
+          final reads = core.nextChunkCalls.length;
+
+          // Um chunk que o Rust liberou sem avisar não é visto pelo laço: não há
+          // mais espera curta de 100 ms para achá-lo.
+          core.outgoingChunks.add(Uint8List.fromList([7]));
+          async.elapse(const Duration(seconds: 4));
+          expect(core.nextChunkCalls.length, reads);
+          expect(transport.sendFileCalls, isEmpty);
+
+          // O teto de segurança reconsulta mesmo sem aviso.
+          async.elapse(const Duration(seconds: 2));
+          expect(transport.sendFileCalls, [Uint8List.fromList([7])]);
+
+          core.receiveProgress = null;
+          unawaited(waitingService.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('ChunkReleased for another file does not wake the pump', () {
+        fakeAsync((async) {
+          final waitingService = MessageReceptionService(core: core, router: router);
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          unawaited(waitingService.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object _) {}));
+          async.flushMicrotasks();
+          final reads = core.nextChunkCalls.length;
+
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: Uint8List.fromList(List.filled(16, 0x01)),
+            kind: TransferEventKind.chunkReleased,
+          ));
+          async.flushMicrotasks();
+          expect(core.nextChunkCalls.length, reads);
+
+          core.receiveProgress = null;
+          unawaited(waitingService.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('ChunkReleased arriving while the sender is being read is not lost', () async {
+        core.receiveProgress = waiting();
+        core.outgoingChunks.add(Uint8List.fromList([2]));
+        // O aviso chega durante a leitura do emissor, antes de o laço esperar.
+        core.onNextChunkRead = () {
+          core.onNextChunkRead = null;
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: fileId,
+            kind: TransferEventKind.chunkReleased,
+          ));
+        };
+        await service.start();
+        await pumpEventQueue();
+        final run = service.runOutgoingTransfer(contact, fileId, messageId: 5, offer: Uint8List.fromList([1]));
+        await pumpEventQueue();
+        core.outgoingChunks.add(Uint8List.fromList([3]));
+        core.emitTransferEvent(TransferEventDto(
+          peerDeviceId: Uint8List.fromList(contact.deviceId),
+          fileId: fileId,
+          kind: TransferEventKind.chunkReleased,
+        ));
+        await pumpEventQueue();
+
+        expect(transport.sendFileCalls, [Uint8List.fromList([2]), Uint8List.fromList([3])]);
+        core.receiveProgress = null;
+        core.emitTransferEvent(TransferEventDto(
+          peerDeviceId: Uint8List.fromList(contact.deviceId),
+          fileId: fileId,
+          kind: TransferEventKind.chunkReleased,
+        ));
+        await run;
       });
 
       test('a completed send keeps pumping when the sender rewinds, then stops quietly', () {
@@ -742,7 +833,12 @@ void main() {
           // O receptor retomou atrás: o emissor recuou e tem o que mandar de novo.
           core.receiveProgress = waiting();
           core.outgoingChunks.add(Uint8List.fromList([9]));
-          async.elapse(const Duration(seconds: 2));
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: fileId,
+            kind: TransferEventKind.chunkReleased,
+          ));
+          async.flushMicrotasks();
           expect(transport.sendFileCalls.where((b) => listEquals(b, [9])), hasLength(1));
 
           async.elapse(const Duration(minutes: 3));
@@ -997,6 +1093,37 @@ void main() {
       expect(events.single.contactId, contact);
       expect(events.single.fileId, fileId);
       expect(events.single.kind, TransferEventKind.offerAppeared);
+      await sub.cancel();
+    });
+
+    test('republishes Rust message events as MessageChangedEvent with only identifiers', () async {
+      await service.start();
+      final events = <MessageChangedEvent>[];
+      final sub = service.events.where((e) => e is MessageChangedEvent).cast<MessageChangedEvent>().listen(events.add);
+
+      core.emitMessageEvent(42, MessageEventKind.keyExpired, peer: contact.deviceId);
+      await pumpEventQueue();
+
+      expect(events, hasLength(1));
+      expect(events.single.contactId, contact);
+      expect(events.single.messageId, 42);
+      expect(events.single.kind, MessageEventKind.keyExpired);
+      await sub.cancel();
+    });
+
+    test('ChunkReleased is not republished as an offer event', () async {
+      await service.start();
+      final events = <MessageReceptionEvent>[];
+      final sub = service.events.listen(events.add);
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: Uint8List.fromList(List.filled(16, 4)),
+        kind: TransferEventKind.chunkReleased,
+      ));
+      await pumpEventQueue();
+
+      expect(events.whereType<OffersChangedEvent>(), isEmpty);
       await sub.cancel();
     });
 

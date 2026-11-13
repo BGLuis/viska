@@ -78,3 +78,27 @@ mixin FakeTransferEvents {
 
   Stream<TransferEventDto> subscribeTransferEvents() => _transferEvents.stream;
 }
+
+/// Reproduz, num `Core` falso, `Core.subscribeMessageEvents` e
+/// `Core.checkMessageExpiry`: avisos de mudança em mensagem empurrados por
+/// [emitMessageEvent], só com identificadores (o conteúdo vem de `getMessage`).
+mixin FakeMessageEvents {
+  final _messageEvents = StreamController<MessageEventDto>.broadcast(sync: true);
+
+  void emitMessageEvent(
+    int messageId,
+    MessageEventKind kind, {
+    List<int>? peer,
+  }) =>
+      _messageEvents.add(MessageEventDto(
+        peerDeviceId: Uint8List.fromList(peer ?? List.generate(16, (i) => i)),
+        messageId: messageId,
+        kind: kind,
+      ));
+
+  Stream<MessageEventDto> subscribeMessageEvents() => _messageEvents.stream;
+
+  var checkMessageExpiryCalls = 0;
+
+  Future<void> checkMessageExpiry() async => checkMessageExpiryCalls++;
+}

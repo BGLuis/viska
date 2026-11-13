@@ -274,7 +274,13 @@ class _FakeCore implements Core {
   Stream<TransferEventDto> subscribeTransferEvents() => throw UnimplementedError();
 
   @override
-  Future<int> sweepExpiredMessages() => throw UnimplementedError();
+  Future<void> checkMessageExpiry() => throw UnimplementedError();
+
+  @override
+  Stream<MessageEventDto> subscribeMessageEvents() => throw UnimplementedError();
+
+  @override
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId}) => throw UnimplementedError();
 
   @override
   Future<void> unlock() => throw UnimplementedError();
