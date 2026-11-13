@@ -402,10 +402,6 @@ class ChatController extends ChangeNotifier {
 
   void _handleReceptionEvent(MessageReceptionEvent event) {
     switch (event) {
-      case MessageReceivedEvent():
-        // A linha chega como `MessageChangedEvent`; este evento só diz que algo
-        // foi recebido.
-        break;
       case MessageChangedEvent(:final messageId):
         _enqueueChange(messageId);
       case TypingIndicatorEvent():

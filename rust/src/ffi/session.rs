@@ -625,8 +625,11 @@ impl Core {
     pub(crate) fn set_message_event_sink(&self, sink: MessageEventSink) -> Result<(), FfiError> {
         self.message_events.lock().map_err(|_| FfiError::Internal)?.set_sink(sink);
         // Quem assina é a `Core` de verdade; a do cofre-isca nunca chega aqui.
-        if !self.expiry_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            crate::expiry::spawn(Arc::clone(&self.store), Arc::clone(&self.expiry_wake));
+        if !self.expiry_started.swap(true, std::sync::atomic::Ordering::AcqRel)
+            && !crate::expiry::spawn(Arc::clone(&self.store), Arc::clone(&self.expiry_wake))
+        {
+            // Só conta como iniciada se a thread subiu; a próxima assinatura tenta de novo.
+            self.expiry_started.store(false, std::sync::atomic::Ordering::Release);
         }
         Ok(())
     }

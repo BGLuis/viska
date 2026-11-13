@@ -20,13 +20,6 @@ sealed class MessageReceptionEvent {
   final ContactId contactId;
 }
 
-/// Mensagem nova decifrada e persistida no banco, ou metadados de arquivo
-/// gravados no SQLite via `receiveIncoming`.
-class MessageReceivedEvent extends MessageReceptionEvent {
-  const MessageReceivedEvent(super.contactId, {this.message});
-  final IncomingMessageDto? message;
-}
-
 /// Indicador efêmero de digitação recebido do contato.
 class TypingIndicatorEvent extends MessageReceptionEvent {
   const TypingIndicatorEvent(super.contactId);
@@ -428,10 +421,6 @@ class MessageReceptionService {
         if (incoming?.messageId != null) {
           unawaited(_sendReceipt(contactId, incoming!.messageId.toString()));
         }
-
-        // Notifica com a mensagem decifrada ou atualização de timeline (metadados
-        // de arquivo salvos como efeito colateral no Rust).
-        _eventsController.add(MessageReceivedEvent(contactId, message: incoming));
       }
 
       // Qualquer pacote decifrado pode ter criado a cadeia de envio do
@@ -746,9 +735,6 @@ class MessageReceptionService {
           rethrow;
         }
       }
-      if (sealed.isNotEmpty) {
-        _eventsController.add(MessageReceivedEvent(contactId));
-      }
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');
     }
@@ -839,7 +825,6 @@ class MessageReceptionService {
       if (cycle.done.isCompleted) return;
       await _core.markMessageSent(messageId: messageId);
       cycle.done.complete();
-      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
       // O que sobra do laço só espera um eventual recuo do receptor: não vale
       // manter a notificação de envio em curso por ele.
       await lease?.release();
@@ -865,7 +850,6 @@ class MessageReceptionService {
         cycle.done.completeError(e, stack);
       }
     } finally {
-      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
       await lease?.release();
     }
   }
@@ -979,8 +963,6 @@ class MessageReceptionService {
       return;
     }
     if (resumed.isEmpty || _disposed) return;
-    // A mensagem do envio pode ter voltado de `failed` a `pending`.
-    _eventsController.add(MessageReceivedEvent(contactId));
     for (final transfer in resumed) {
       switch (transfer.direction) {
         case ResumedDirectionDto.send:

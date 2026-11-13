@@ -553,8 +553,9 @@ de cada ação porque só o Dart "sabia" que algo podia ter mudado.
 **Custo:** o Rust passa a executar código sem ser chamado, a única thread própria do núcleo. Ela não toca
 em sessão nem em identidade, só no `Store`, e não segura a `Core`. O sono usa relógio monotônico, que o
 Linux e o Android não contam com o aparelho suspenso: ao voltar do segundo plano o Dart chama
-`Core::check_message_expiry` para o que venceu nesse intervalo sair já. Um aviso emitido sem assinante
-se perde; a carga inicial da timeline, feita depois de assinar, cobre o que já existia.
+`Core::check_message_expiry` para o que venceu nesse intervalo sair já. Não há varredura de reserva: se a
+thread não subir (a assinatura tenta de novo na vez seguinte), as chaves vencidas ficam até subir. Um aviso
+emitido sem assinante se perde; a carga inicial da timeline, feita depois de assinar, cobre o que já existia.
 
 **Custo de reverter:** voltar ao timer do Dart e à releitura da lista: a varredura só roda com o app
 aberto e a tela atrasa até 60 s, e cada ação da pessoa volta a custar uma releitura completa da conversa.

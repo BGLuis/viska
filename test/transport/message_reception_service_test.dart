@@ -389,7 +389,7 @@ void main() {
       expect(transport.connectCalls, 1);
     });
 
-    test('decrypts incoming text message and emits MessageReceivedEvent', () async {
+    test('decrypts incoming text message and acknowledges it, leaving the timeline to Rust events', () async {
       core.sessionState = SessionStateKind.established;
       await service.start();
 
@@ -400,17 +400,14 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(core.decryptIncomingCalls, [Uint8List.fromList([1, 2, 3])]);
-      expect(events, hasLength(1));
-      expect(events.first, isA<MessageReceivedEvent>());
-      final received = events.first as MessageReceivedEvent;
-      expect(received.message?.body, 'Decifrado com sucesso');
+      expect(events, isEmpty, reason: 'a linha chega como MessageChangedEvent, não por aqui');
       expect(core.sealOutgoingReceiptCalls, ['42']);
       expect(transport.sendCalls, [Uint8List.fromList([0x11, 1, 2, 3])]);
 
       await sub.cancel();
     });
 
-    test('ephemeral typing indicator emits TypingIndicatorEvent and not MessageReceivedEvent', () async {
+    test('ephemeral typing indicator emits only TypingIndicatorEvent', () async {
       core.sessionState = SessionStateKind.established;
       core.decryptIncomingHandler = (_) => IncomingMessageDto(
             messageId: null,

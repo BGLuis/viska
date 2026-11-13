@@ -178,11 +178,12 @@ impl Core {
         Ok(true)
     }
 
-    /// Acorda quem bombeia cada envio em memória, antes de o bloqueio os largar:
-    /// sem isso o laço só notaria o bloqueio no fim do sono de segurança.
-    pub(super) fn release_send_pumps(&self) {
+    /// Contato e `file_id` de cada envio em memória, para avisar quem o bombeia
+    /// depois de o bloqueio largar os handles: sem isso o laço só notaria o
+    /// bloqueio no fim do sono de segurança.
+    pub(super) fn send_pump_targets(&self) -> Vec<([u8; 16], [u8; FILE_ID_LEN])> {
         let Ok(transfers) = self.lock_transfers() else {
-            return;
+            return Vec::new();
         };
         let sending: Vec<[u8; FILE_ID_LEN]> = transfers
             .iter()
@@ -190,11 +191,13 @@ impl Core {
             .map(|(file_id, _)| *file_id)
             .collect();
         drop(transfers);
-        for file_id in sending {
-            if let Ok(Some(stored)) = self.store.find_file_transfer(&file_id) {
-                self.emit_chunk_released(stored.contact_device_id, file_id);
-            }
-        }
+        sending
+            .into_iter()
+            .filter_map(|file_id| {
+                let stored = self.store.find_file_transfer(&file_id).ok()??;
+                Some((stored.contact_device_id, file_id))
+            })
+            .collect()
     }
 
     /// Último passo de toda transferência que acaba, por qualquer motivo:

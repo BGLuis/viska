@@ -59,13 +59,15 @@ impl ExpiryWake {
 
 /// Sobe a thread de varredura. Os eventos de `KeyExpired` saem do próprio
 /// `Store::sweep_expired_ephemeral_messages`.
-pub(crate) fn spawn(store: Arc<Store>, wake: Arc<ExpiryWake>) {
-    // Falha ao criar a thread (limite do sistema) deixa só a expiração em
-    // tempo real de fora; a mensagem continua expirando na próxima varredura
-    // de quem a lê. Sem `expect`: nada aqui justifica derrubar o app.
-    let _ = std::thread::Builder::new()
+/// Devolve se a thread subiu. Se não subiu (limite do sistema), quem chama não
+/// deve dar a expiração por ativa: a próxima assinatura tenta de novo. Não há
+/// outra varredura, então enquanto isso as chaves vencidas ficam (D29).
+pub(crate) fn spawn(store: Arc<Store>, wake: Arc<ExpiryWake>) -> bool {
+    // Sem `expect`: nada aqui justifica derrubar o app.
+    std::thread::Builder::new()
         .name("viska-expiry".into())
-        .spawn(move || run(&store, &wake));
+        .spawn(move || run(&store, &wake))
+        .is_ok()
 }
 
 fn run(store: &Store, wake: &ExpiryWake) {
@@ -117,4 +119,34 @@ fn run(store: &Store, wake: &ExpiryWake) {
 
 fn now() -> i64 {
     viska_proto::util::time::unix_seconds() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poke_before_the_wait_is_not_lost() {
+        let wake = ExpiryWake::default();
+        wake.poke();
+        let state = wake.state.lock().unwrap();
+        assert!(state.poked, "o aviso fica marcado até a thread refazer a conta");
+    }
+
+    #[test]
+    fn stop_ends_the_thread_and_releases_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = viska_proto::crypto::kdf::Key::from_bytes([5u8; 32]);
+        let store = Arc::new(Store::open(&dir.path().join("t.sqlite3"), &key).unwrap());
+        let wake = Arc::new(ExpiryWake::default());
+        assert!(spawn(Arc::clone(&store), Arc::clone(&wake)));
+
+        wake.stop();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while Arc::strong_count(&store) > 1 {
+            assert!(std::time::Instant::now() < deadline, "a thread não largou o Store");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }

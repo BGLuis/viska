@@ -168,7 +168,10 @@ impl Core {
         // O Dart não pode seguir achando que há sessão estabelecida.
         self.publish_all_sessions();
         self.clear_unconfirmed_offers()?;
-        self.release_send_pumps();
+        // Quem espera é avisado só depois de os handles saírem: um aviso antes
+        // acordaria o laço com o handle ainda lá, e ele voltaria a dormir o teto
+        // inteiro sem segundo sinal. O contato se acha agora, com o banco aberto.
+        let sending = self.send_pump_targets();
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         reset_inflight_state(&self.store);
 
@@ -177,6 +180,9 @@ impl Core {
         // arquivo durante o bloqueio pode ter inserido um handle depois da
         // primeira limpeza, e `install_handle` só recusa vendo o banco fechado.
         self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
+        for (contact, file_id) in sending {
+            self.emit_chunk_released(contact, file_id);
+        }
         keyring::clear_injected_master_secret();
         Ok(notices)
     }
