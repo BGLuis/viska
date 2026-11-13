@@ -6,7 +6,9 @@
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'error.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `maintain_transfers_at_rest`, `reset_inflight_state`
@@ -274,6 +276,30 @@ abstract class Core implements RustOpaqueInterface {
   /// [`Core::pending_audio_offers`] para notas de voz.
   Future<List<FileOfferDto>> pendingFileOffers({
     required List<int> peerDeviceId,
+  });
+
+  /// Como [`Core::queue_send_file`], para uma nota de voz já sanitizada (ver
+  /// [`Core::start_send_audio`]). O arquivo em `audio_path` pode ser apagado
+  /// assim que a chamada volta: o que fica em disco é a cópia cifrada.
+  Future<QueuedTransferDto> queueSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  });
+
+  /// Enfileira um arquivo para o contato sem exigir sessão (D30): grava a
+  /// cópia cifrada, a linha da transferência e a mensagem `Pending`, e para
+  /// aí. Não sela oferta nem instala handle — `resume_transfers` faz as duas
+  /// coisas quando a sessão chega a `Established`, pelo mesmo caminho de um
+  /// envio retomado depois de bloqueio (D28). Recusa com
+  /// `FfiError::QueueFull` quando o contato já tem [`MAX_QUEUED_TRANSFERS`]
+  /// envios sem resposta. `use_lan` é só a melhor aposta do momento: o
+  /// transporte real só se conhece ao conectar, e um símbolo de DataChannel
+  /// anda também pela LAN.
+  Future<QueuedTransferDto> queueSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
   });
 
   /// Entrada única dos bytes que chegam do par — `docs/protocol.md` §11.4.

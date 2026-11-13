@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D29). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D30). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -559,3 +559,36 @@ emitido sem assinante se perde; a carga inicial da timeline, feita depois de ass
 
 **Custo de reverter:** voltar ao timer do Dart e à releitura da lista: a varredura só roda com o app
 aberto e a tela atrasa até 60 s, e cada ação da pessoa volta a custar uma releitura completa da conversa.
+
+---
+
+## D30 — Fila offline de arquivo e nota de voz: enfileirar é gravar a transferência sem sessão
+**Spec:** §7.5 e §7.7 supõem que o `FILE_METADATA` sai na hora em que o envio começa, e o prazo de
+§7.7 item 5 vale só para arquivos. Nada diz o que fazer quando a pessoa envia sem sessão com o contato.
+**Aqui:** `Core::queue_send_file` e `queue_send_audio` fazem a metade do `start_send` que não depende de
+sessão: copiam o arquivo para `outgoing/` (D28), gravam a linha de `file_transfers` e a mensagem
+`Pending`, e param. Não selam oferta nem instalam handle. Quando a sessão chega a `Established`,
+`resume_transfers` reconstrói o handle e devolve `needs_offer`, e o laço de envio do Dart faz o resto,
+exatamente como num envio retomado depois de bloqueio. Não há tabela nem caminho de drenagem próprios.
+Cada contato aceita no máximo 10 envios sem resposta (`MAX_QUEUED_TRANSFERS`), contando os já
+oferecidos; o 11º recebe `FfiError::QueueFull` antes de qualquer cópia. O teto é de melhor esforço:
+enfileiramentos simultâneos podem passá-lo por um ou dois itens, e `start_send` com sessão não o aplica. O prazo de 24 h da oferta
+sem resposta passa a valer também para nota de voz, contado do enfileiramento.
+
+Duas consequências, ambas decididas com a pessoa na issue #79. A nota de voz sanitizada em claro é
+apagada assim que o enfileiramento volta; em disco fica só a cópia cifrada de D28, sob chave que
+morre com a linha do banco. E o arquivo genérico também é copiado, em vez de guardar só o caminho:
+o caminho do seletor pode apontar para um cache que o sistema apaga, e o conteúdo pode mudar entre
+enfileirar e enviar (as mesmas razões de D28).
+
+**Custo:** um arquivo enfileirado ocupa o dobro em disco até ser enviado ou expirar; o teto de 10
+envios limita o pior caso, e não há limite de tamanho por arquivo. Sem sessão, o `use_lan` do
+manifesto é só uma aposta: quem enfileira no DataChannel manda símbolos de 16384 B mesmo se a
+conexão acabar sendo pela LAN. Não há como cancelar um item da fila: a saída é a validade de 24 h
+(follow-up pedido). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
+o que antes só acontecia aos 7 dias.
+
+**Custo de reverter:** enfileirar sem a cópia exigiria guardar o caminho em claro e tratar arquivo
+sumido ou alterado só na drenagem (o problema de D28). Voltar o prazo de voz a 7 dias é restaurar o
+filtro de `kind` em `store::transfers::list_due`, ao preço de uma nota enfileirada ficar até uma
+semana no aparelho.

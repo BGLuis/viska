@@ -91,7 +91,7 @@ use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
 use crate::ffi::transfer_handles::{can_seal_now, OutgoingHandle, TransferHandle};
 use crate::ffi::types::{
-    FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
+    FileOfferDto, IngestedChunkDto, QueuedTransferDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
     TransferEventDto, TransferEventKind, TransferProgressDto,
 };
 use crate::frb_generated::StreamSink;
@@ -125,6 +125,27 @@ pub(super) fn seal_file_reject(session: &mut viska_proto::session::Session, file
 /// receptor já avisa, então isto só cobre o aviso que não chegou, e não deve
 /// matar a oferta de quem ainda está decidindo.
 pub(super) const OFFER_RESPONSE_TIMEOUT_SECS: i64 = 24 * 60 * 60;
+
+/// Quantos envios sem resposta um contato pode ter de uma vez, contando os já
+/// oferecidos: limita o disco que a fila offline cifrada ocupa (D30). Só
+/// `queue_send` o aplica, e a contagem não é atômica com a gravação: dois
+/// enfileiramentos simultâneos podem passar do teto por um ou dois itens.
+pub(super) const MAX_QUEUED_TRANSFERS: usize = 10;
+
+/// Resultado de [`Core::stage_send`]: o que já está gravado e, se havia
+/// sessão para selar, a oferta e o handle.
+struct StagedSend {
+    file_id: [u8; FILE_ID_LEN],
+    message_id: i64,
+    /// `None` quando só se enfileirou, sem sessão para selar.
+    offer: Option<StagedOffer>,
+}
+
+/// A oferta selada e o handle que a acompanha: nascem juntos ou não nascem.
+struct StagedOffer {
+    sealed_metadata: Vec<u8>,
+    handle: OutgoingHandle,
+}
 
 /// Apaga a cópia de envio se `start_send` falhar depois de gravá-la.
 struct OutgoingCopyGuard {
@@ -285,6 +306,109 @@ impl Core {
             return Err(FfiError::NoActiveSession);
         }
 
+        let staged = self.stage_send(&device_id, &file_path, use_lan, kind, message_body, |manifest, secret| {
+            let mut sessions = self.lock_sessions()?;
+            let session = sessions.get_mut(&device_id).ok_or(FfiError::NoActiveSession)?;
+            if !session.is_established() {
+                return Err(FfiError::NoActiveSession);
+            }
+            let body = transfer::encode_metadata_body(kind, secret, manifest)?;
+            let sealed = session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?;
+            Ok(Some((sealed, session.generation())))
+        })?;
+
+        // A linha existe: daqui em diante a cópia é dela, e quem a apaga é o fim
+        // da transferência ou o prazo de retenção.
+        // `seal` de `start_send` sempre devolve a oferta; `None` seria um defeito.
+        let StagedOffer { sealed_metadata, handle } = staged.offer.ok_or(FfiError::Internal)?;
+        if !self.install_handle(staged.file_id, TransferHandle::Send(handle), None)? {
+            // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
+            // retoma depois do desbloqueio.
+            return Err(FfiError::Locked);
+        }
+
+        Ok(StartedTransfer {
+            file_id: staged.file_id,
+            sealed_metadata,
+            message_id: staged.message_id,
+        })
+    }
+
+    /// Enfileira um arquivo para o contato sem exigir sessão (D30): grava a
+    /// cópia cifrada, a linha da transferência e a mensagem `Pending`, e para
+    /// aí. Não sela oferta nem instala handle — `resume_transfers` faz as duas
+    /// coisas quando a sessão chega a `Established`, pelo mesmo caminho de um
+    /// envio retomado depois de bloqueio (D28). Recusa com
+    /// `FfiError::QueueFull` quando o contato já tem [`MAX_QUEUED_TRANSFERS`]
+    /// envios sem resposta. `use_lan` é só a melhor aposta do momento: o
+    /// transporte real só se conhece ao conectar, e um símbolo de DataChannel
+    /// anda também pela LAN.
+    pub fn queue_send_file(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_path: String,
+        use_lan: bool,
+    ) -> Result<QueuedTransferDto, FfiError> {
+        let file_name = Path::new(&file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(FfiError::Internal)?
+            .to_owned();
+        self.queue_send(peer_device_id, file_path, use_lan, TransferKind::File, |_| file_name)
+    }
+
+    /// Como [`Core::queue_send_file`], para uma nota de voz já sanitizada (ver
+    /// [`Core::start_send_audio`]). O arquivo em `audio_path` pode ser apagado
+    /// assim que a chamada volta: o que fica em disco é a cópia cifrada.
+    pub fn queue_send_audio(
+        &self,
+        peer_device_id: Vec<u8>,
+        audio_path: String,
+        use_lan: bool,
+    ) -> Result<QueuedTransferDto, FfiError> {
+        self.queue_send(peer_device_id, audio_path, use_lan, TransferKind::Audio, |file_id| {
+            hex::encode(file_id)
+        })
+    }
+
+    fn queue_send(
+        &self,
+        peer_device_id: Vec<u8>,
+        file_path: String,
+        use_lan: bool,
+        kind: TransferKind,
+        message_body: impl FnOnce(&[u8; FILE_ID_LEN]) -> String,
+    ) -> Result<QueuedTransferDto, FfiError> {
+        self.ensure_not_locked()?;
+        let device_id = to_device_id(peer_device_id)?;
+        // Declarado antes de tudo, de propósito: a bolha "Na fila" não pode
+        // depender de o Dart chamar `resume_transfers` em seguida.
+        let _publish = self.publish_on_exit(device_id);
+        // Antes de copiar: recusar com a fila cheia não pode custar a leitura
+        // de um arquivo grande.
+        if self.store.count_unanswered_sending_transfers(&device_id)? >= MAX_QUEUED_TRANSFERS {
+            return Err(FfiError::QueueFull);
+        }
+        let staged = self.stage_send(&device_id, &file_path, use_lan, kind, message_body, |_, _| Ok(None))?;
+        Ok(QueuedTransferDto {
+            file_id: staged.file_id.to_vec(),
+            message_id: staged.message_id,
+        })
+    }
+
+    /// Parte de um envio que não depende de sessão: segredo, cópia cifrada,
+    /// manifesto, mensagem e linha. `seal` recebe o manifesto e o segredo e
+    /// devolve a oferta selada com a geração da sessão, ou `None` para só
+    /// enfileirar; só quando devolve algo o handle é montado.
+    fn stage_send(
+        &self,
+        device_id: &[u8; DEVICE_ID_LEN],
+        file_path: &str,
+        use_lan: bool,
+        kind: TransferKind,
+        message_body: impl FnOnce(&[u8; FILE_ID_LEN]) -> String,
+        seal: impl FnOnce(&Manifest, &[u8; TRANSFER_SECRET_LEN]) -> Result<Option<(Vec<u8>, u32)>, FfiError>,
+    ) -> Result<StagedSend, FfiError> {
         let symbol_size: u16 = if use_lan {
             LAN_SYMBOL_SIZE
         } else {
@@ -298,7 +422,7 @@ impl Core {
         let mut transfer_secret = zeroize::Zeroizing::new([0u8; TRANSFER_SECRET_LEN]);
         viska_proto::util::rng::fill(&mut *transfer_secret)?;
 
-        let name = Path::new(&file_path)
+        let name = Path::new(file_path)
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or(FfiError::Internal)?;
@@ -306,7 +430,7 @@ impl Core {
 
         // Raiz e tamanho vêm da cópia, não de uma leitura à parte do original:
         // o que se oferece é exatamente o que será lido na retomada.
-        let source = File::open(&file_path).map_err(|_| FfiError::Internal)?;
+        let source = File::open(file_path).map_err(|_| FfiError::Internal)?;
         let mut copy_guard = OutgoingCopyGuard {
             path: Some(staging::staging_path(&self.outgoing_dir, &file_id)),
         };
@@ -325,21 +449,11 @@ impl Core {
             name_encrypted,
         };
 
-        let sealed_metadata = {
-            let mut sessions = self.lock_sessions()?;
-            let session = sessions
-                .get_mut(&device_id)
-                .ok_or(FfiError::NoActiveSession)?;
-            if !session.is_established() {
-                return Err(FfiError::NoActiveSession);
-            }
-            let body = transfer::encode_metadata_body(kind, &transfer_secret, &manifest)?;
-            let sealed = session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?;
-            (sealed, session.generation())
+        let sealed = seal(&manifest, &transfer_secret)?;
+        let reader = match sealed {
+            Some(_) => Some(outgoing::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?),
+            None => None,
         };
-        let (sealed_metadata, generation) = sealed_metadata;
-
-        let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?;
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
@@ -352,12 +466,16 @@ impl Core {
         };
         let message_id =
             self.store
-                .insert_pending_message(&device_id, packet_type, &message_body(&file_id), created_at)?;
-        self.store.set_message_file_id(message_id, &file_id)?;
+                .insert_pending_message(device_id, packet_type, &message_body(&file_id), created_at)?;
+        if let Err(err) = self.store.set_message_file_id(message_id, &file_id) {
+            // Sem a ligação, nada expiraria a mensagem: ficaria "Na fila" para sempre.
+            let _ = self.store.mark_message_failed(message_id);
+            return Err(err.into());
+        }
         let inserted = self.store.insert_file_transfer(
             &file_id,
             Direction::Sending,
-            &device_id,
+            device_id,
             &manifest_cbor,
             &*transfer_secret,
             created_at,
@@ -367,22 +485,16 @@ impl Core {
             let _ = self.store.mark_message_failed(message_id);
             return Err(err.into());
         }
-        // A linha existe: daqui em diante a cópia é dela, e quem a apaga é o fim
-        // da transferência ou o prazo de retenção.
         copy_guard.path = None;
 
-        let handle = OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false);
-        if !self.install_handle(file_id, TransferHandle::Send(handle), None)? {
-            // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
-            // retoma depois do desbloqueio.
-            return Err(FfiError::Locked);
-        }
-
-        Ok(StartedTransfer {
-            file_id,
-            sealed_metadata,
-            message_id,
-        })
+        let offer = match (sealed, reader) {
+            (Some((sealed_metadata, generation)), Some(reader)) => Some(StagedOffer {
+                sealed_metadata,
+                handle: OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false),
+            }),
+            _ => None,
+        };
+        Ok(StagedSend { file_id, message_id, offer })
     }
 
     /// Próximo pacote a mandar no canal `file` do WebRTC — já selado com
