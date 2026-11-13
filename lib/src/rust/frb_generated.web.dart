@@ -51,6 +51,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<MessageEventDto> dco_decode_StreamSink_message_event_dto_Sse(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<SessionStateEventDto>
   dco_decode_StreamSink_session_state_event_dto_Sse(dynamic raw);
 
@@ -76,6 +81,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IngestedChunkDto dco_decode_box_autoadd_ingested_chunk_dto(dynamic raw);
+
+  @protected
+  MessageDto dco_decode_box_autoadd_message_dto(dynamic raw);
 
   @protected
   SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw);
@@ -156,6 +164,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto dco_decode_message_dto(dynamic raw);
 
   @protected
+  MessageEventDto dco_decode_message_event_dto(dynamic raw);
+
+  @protected
+  MessageEventKind dco_decode_message_event_kind(dynamic raw);
+
+  @protected
   MessageKindDto dco_decode_message_kind_dto(dynamic raw);
 
   @protected
@@ -174,6 +188,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IngestedChunkDto? dco_decode_opt_box_autoadd_ingested_chunk_dto(dynamic raw);
+
+  @protected
+  MessageDto? dco_decode_opt_box_autoadd_message_dto(dynamic raw);
 
   @protected
   SessionStateKind? dco_decode_opt_box_autoadd_session_state_kind(dynamic raw);
@@ -284,6 +301,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<MessageEventDto> sse_decode_StreamSink_message_event_dto_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<SessionStateEventDto>
   sse_decode_StreamSink_session_state_event_dto_Sse(
     SseDeserializer deserializer,
@@ -315,6 +337,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   IngestedChunkDto sse_decode_box_autoadd_ingested_chunk_dto(
     SseDeserializer deserializer,
   );
+
+  @protected
+  MessageDto sse_decode_box_autoadd_message_dto(SseDeserializer deserializer);
 
   @protected
   SessionStateKind sse_decode_box_autoadd_session_state_kind(
@@ -419,6 +444,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto sse_decode_message_dto(SseDeserializer deserializer);
 
   @protected
+  MessageEventDto sse_decode_message_event_dto(SseDeserializer deserializer);
+
+  @protected
+  MessageEventKind sse_decode_message_event_kind(SseDeserializer deserializer);
+
+  @protected
   MessageKindDto sse_decode_message_kind_dto(SseDeserializer deserializer);
 
   @protected
@@ -439,6 +470,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   IngestedChunkDto? sse_decode_opt_box_autoadd_ingested_chunk_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  MessageDto? sse_decode_opt_box_autoadd_message_dto(
     SseDeserializer deserializer,
   );
 
@@ -579,6 +615,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_message_event_dto_Sse(
+    RustStreamSink<MessageEventDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_session_state_event_dto_Sse(
     RustStreamSink<SessionStateEventDto> self,
     SseSerializer serializer,
@@ -617,6 +659,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_ingested_chunk_dto(
     IngestedChunkDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_message_dto(
+    MessageDto self,
     SseSerializer serializer,
   );
 
@@ -750,6 +798,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
 
   @protected
+  void sse_encode_message_event_dto(
+    MessageEventDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_message_event_kind(
+    MessageEventKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_message_kind_dto(
     MessageKindDto self,
     SseSerializer serializer,
@@ -779,6 +839,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_ingested_chunk_dto(
     IngestedChunkDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_message_dto(
+    MessageDto? self,
     SseSerializer serializer,
   );
 

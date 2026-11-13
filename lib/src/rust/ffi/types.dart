@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -293,6 +293,48 @@ class MessageDto {
           replyToId == other.replyToId &&
           viewOnce == other.viewOnce &&
           reactions == other.reactions;
+}
+
+/// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.
+/// Só identificadores: o conteúdo o Dart lê com `Core::get_message`.
+class MessageEventDto {
+  final Uint8List peerDeviceId;
+  final PlatformInt64 messageId;
+  final MessageEventKind kind;
+
+  const MessageEventDto({
+    required this.peerDeviceId,
+    required this.messageId,
+    required this.kind,
+  });
+
+  @override
+  int get hashCode =>
+      peerDeviceId.hashCode ^ messageId.hashCode ^ kind.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MessageEventDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          messageId == other.messageId &&
+          kind == other.kind;
+}
+
+/// O que aconteceu com a mensagem.
+enum MessageEventKind {
+  /// Linha nova na timeline. Repetida para a mesma linha é inofensiva.
+  added,
+
+  /// Estado de entrega ou ligação com o arquivo mudou.
+  updated,
+
+  /// A chave efêmera foi destruída: a linha continua, mas sem o conteúdo.
+  keyExpired,
+
+  /// As reações da mensagem mudaram.
+  reactionsChanged,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
@@ -664,6 +706,12 @@ enum TransferEventKind {
   /// A oferta deixou de estar pendente: aceita, recusada, cancelada ou
   /// descartada no bloqueio do cofre.
   offerGone,
+
+  /// O estado de um envio mudou e vale pedir o próximo bloco: chegou um
+  /// `FILE_FEEDBACK`, ou a transferência acabou (concluída, recusada,
+  /// cancelada ou largada no bloqueio). Quem bombeia o envio acorda e
+  /// reconsulta, em vez de dormir um tempo fixo.
+  chunkReleased,
 }
 
 /// Progresso de uma transferência em andamento, de qualquer lado.
