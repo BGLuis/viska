@@ -270,6 +270,16 @@ pub struct SendFileStartedDto {
     pub message_id: i64,
 }
 
+/// Envio enfileirado sem sessão (`Core::queue_send_file`/`queue_send_audio`,
+/// D30): só o que a UI precisa para ligar a linha da timeline. A oferta sai
+/// depois, por `Core::resume_transfers`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedTransferDto {
+    pub file_id: Vec<u8>,
+    /// `id` na tabela `messages`, já `Pending`.
+    pub message_id: i64,
+}
+
 /// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumedDirectionDto {

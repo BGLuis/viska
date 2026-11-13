@@ -645,6 +645,11 @@ impl Store {
         self.with_conn(|conn| transfers::mark_answered(conn, file_id))
     }
 
+    /// Quantos envios ao contato ainda esperam resposta (a fila offline, D30).
+    pub fn count_unanswered_sending_transfers(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
+        self.with_conn(|conn| transfers::count_unanswered_sending(conn, contact_device_id))
+    }
+
     /// Transferências de um contato numa direção.
     pub fn list_file_transfers_for_contact(
         &self,

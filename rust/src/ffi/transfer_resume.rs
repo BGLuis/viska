@@ -1255,4 +1255,102 @@ mod tests {
 
         assert_eq!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().unwrap().blocks_done, 1);
     }
+
+    /// Dois `Core` só pareados, sem nenhum handshake: o estado de quem enfileira
+    /// um envio antes de o contato estar alcançável.
+    fn paired_without_session() -> (tempfile::TempDir, Core, Vec<u8>) {
+        let (dir_a, dir_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (core_a, core_b) = (open_core(&dir_a), open_core(&dir_b));
+        let contact_b = core_a.pair_from_qr(core_b.my_qr_payload(), None).unwrap();
+        (dir_a, core_a, contact_b.device_id)
+    }
+
+    #[test]
+    fn queued_send_without_session_leaves_row_copy_and_pending_message_but_no_handle() {
+        let (_dir, core, peer) = paired_without_session();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "fila.bin", &[1u8; 3_000]);
+
+        let queued = core.queue_send_file(peer.clone(), path.clone(), false).unwrap();
+
+        let row = core.store.find_file_transfer(&fid(&queued.file_id)).unwrap().unwrap();
+        assert!(!row.answered);
+        assert!(outgoing_copy_exists(&core, &queued.file_id));
+        assert!(core.transfer_progress(queued.file_id.clone()).unwrap().is_none());
+        let timeline = core.list_messages(peer).unwrap();
+        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Pending);
+        assert_eq!(timeline[0].id, queued.message_id);
+        // O original pode sumir: a cópia cifrada é o que será enviado.
+        std::fs::remove_file(path).unwrap();
+        assert!(outgoing_copy_exists(&core, &queued.file_id));
+    }
+
+    #[test]
+    fn queued_file_is_offered_by_resume_after_restart_and_completes() {
+        let mut pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let original: Vec<u8> = (0..30_000u32).map(|i| (i % 251) as u8).collect();
+        let path = write_temp_file(&dir_src, "enfileirado.bin", &original);
+        let queued = pair.core_a.queue_send_file(pair.device_id_b.clone(), path, false).unwrap();
+
+        pair.core_a = open_core(&pair._dir_a);
+        reconnect(&pair, true);
+        let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert!(resumed[0].needs_offer, "nenhuma oferta saiu ainda");
+        assert_eq!(resumed[0].message_id, Some(queued.message_id));
+
+        let offer = pair
+            .core_a
+            .seal_resumed_offer(pair.device_id_b.clone(), queued.file_id.clone())
+            .unwrap()
+            .expect("a sessão cifra");
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), offer).unwrap();
+
+        assert_eq!(finish(&pair, &queued.file_id, &dir_dst), original);
+        assert_sender_clean(&pair, &queued.file_id);
+    }
+
+    #[test]
+    fn queue_refuses_beyond_the_cap_without_leaving_a_copy() {
+        let (_dir, core, peer) = paired_without_session();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "a.bin", b"x");
+        for _ in 0..crate::ffi::transfer::MAX_QUEUED_TRANSFERS {
+            core.queue_send_file(peer.clone(), path.clone(), false).unwrap();
+        }
+        let before = std::fs::read_dir(&core.outgoing_dir).unwrap().count();
+
+        assert_eq!(core.queue_send_file(peer.clone(), path, false), Err(FfiError::QueueFull));
+
+        assert_eq!(std::fs::read_dir(&core.outgoing_dir).unwrap().count(), before);
+        assert_eq!(core.list_messages(peer).unwrap().len(), crate::ffi::transfer::MAX_QUEUED_TRANSFERS);
+    }
+
+    #[test]
+    fn queue_with_missing_source_fails_and_leaves_nothing() {
+        let (_dir, core, peer) = paired_without_session();
+
+        assert_eq!(
+            core.queue_send_file(peer.clone(), "/nao/existe/arquivo.bin".to_owned(), false),
+            Err(FfiError::Internal)
+        );
+
+        assert!(core.list_messages(peer).unwrap().is_empty());
+    }
+
+    #[test]
+    fn queued_voice_note_expires_after_the_offer_deadline() {
+        let (_dir, core, peer) = paired_without_session();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "voz.bin", &[5u8; 2_000]);
+        let queued = core.queue_send_audio(peer.clone(), path, false).unwrap();
+        let queued_at = created_at(&core, &queued.file_id);
+
+        core.enforce_transfer_deadlines_at(queued_at + OFFER_RESPONSE_TIMEOUT_SECS + 1).unwrap();
+
+        assert!(core.store.find_file_transfer(&fid(&queued.file_id)).unwrap().is_none());
+        assert!(!outgoing_copy_exists(&core, &queued.file_id));
+        assert_eq!(core.list_messages(peer).unwrap()[0].delivery_state, DeliveryStateDto::Expired);
+    }
 }

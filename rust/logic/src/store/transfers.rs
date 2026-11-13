@@ -149,8 +149,11 @@ pub struct DueTransfer {
     pub offer_expired: bool,
 }
 
-/// Transferências criadas até `retention_cutoff` (qualquer uma) ou envios de
-/// arquivo sem resposta criados até `offer_cutoff` (§7.5, §7.7 item 5).
+/// Transferências criadas até `retention_cutoff` (qualquer uma) ou envios,
+/// de arquivo ou de voz, sem resposta criados até `offer_cutoff` (§7.5, §7.7
+/// item 5). A voz entra porque a nota enfileirada sem sessão precisa da mesma
+/// validade de 24 h do arquivo (D30); numa nota já oferecida, o primeiro
+/// `FILE_FEEDBACK` do receptor, que aceita sozinho, encerra o prazo igual.
 pub fn list_due(
     conn: &rusqlite::Connection,
     retention_cutoff: i64,
@@ -161,17 +164,12 @@ pub fn list_due(
             "SELECT file_id, contact_device_id, direction, created_at_unix_secs > ?1
              FROM file_transfers
              WHERE created_at_unix_secs <= ?1
-                OR (direction = ?3 AND kind = ?4 AND answered = 0 AND created_at_unix_secs <= ?2)",
+                OR (direction = ?3 AND answered = 0 AND created_at_unix_secs <= ?2)",
         )
         .map_err(|_| Error::Store)?;
     let rows = statement
         .query_map(
-            rusqlite::params![
-                retention_cutoff,
-                offer_cutoff,
-                Direction::Sending as i64,
-                TransferKind::File as i64
-            ],
+            rusqlite::params![retention_cutoff, offer_cutoff, Direction::Sending as i64],
             |row| {
                 let file_id: Vec<u8> = row.get(0)?;
                 let contact: Vec<u8> = row.get(1)?;
@@ -191,6 +189,20 @@ pub fn list_due(
         due.push(row.map_err(|_| Error::Store)?);
     }
     Ok(due)
+}
+
+/// Envios ainda sem resposta do contato: o que ocupa a fila offline (D30),
+/// sem tirar segredo do banco.
+pub fn count_unanswered_sending(conn: &rusqlite::Connection, contact_device_id: &[u8; 16]) -> Result<usize> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_transfers
+             WHERE contact_device_id = ?1 AND direction = ?2 AND answered = 0",
+            rusqlite::params![contact_device_id.as_slice(), Direction::Sending as i64],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::Store)?;
+    usize::try_from(count).map_err(|_| Error::Store)
 }
 
 /// A transferência ainda tem linha — sem tirar o segredo do banco.
@@ -357,7 +369,7 @@ mod tests {
         let rows = [
             ([1u8; 16], Direction::Sending, TransferKind::File, 100), // oferta vencida
             ([2u8; 16], Direction::Sending, TransferKind::File, 100), // respondida: não vence
-            ([3u8; 16], Direction::Sending, TransferKind::Audio, 100), // voz: sem prazo de oferta
+            ([3u8; 16], Direction::Sending, TransferKind::Audio, 100), // voz sem resposta: vence igual
             ([4u8; 16], Direction::Receiving, TransferKind::File, 100), // recebimento: sem prazo de oferta
             ([5u8; 16], Direction::Receiving, TransferKind::File, 10), // passou do teto
             ([6u8; 16], Direction::Sending, TransferKind::File, 500), // ainda no prazo
@@ -371,13 +383,29 @@ mod tests {
         let due = list_due(&conn, 10, 100).unwrap();
 
         let ids: Vec<_> = due.iter().map(|d| d.file_id[0]).collect();
-        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        let voice = due.iter().find(|d| d.file_id == [3u8; 16]).unwrap();
+        assert!(voice.offer_expired);
         let offer = due.iter().find(|d| d.file_id == [1u8; 16]).unwrap();
         assert!(offer.offer_expired);
         assert_eq!(offer.direction, Direction::Sending);
         let ceiling = due.iter().find(|d| d.file_id == [5u8; 16]).unwrap();
         assert!(!ceiling.offer_expired);
         assert_eq!(ceiling.contact_device_id, contact);
+    }
+
+    #[test]
+    fn counts_only_unanswered_sends_of_the_contact() {
+        let contact = [8u8; 16];
+        let conn = conn_with_contact(contact);
+        insert(&conn, &[1u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
+        insert(&conn, &[2u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::Audio).unwrap();
+        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
+        insert(&conn, &[4u8; 16], Direction::Receiving, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
+        mark_answered(&conn, &[3u8; 16]).unwrap();
+
+        assert_eq!(count_unanswered_sending(&conn, &contact).unwrap(), 2);
+        assert_eq!(count_unanswered_sending(&conn, &[9u8; 16]).unwrap(), 0);
     }
 
     #[test]
