@@ -59,7 +59,7 @@
 //! - **Recusa e perda no lock avisam o emissor só em melhor esforço**:
 //!   `reject_file_offer` e `Core::lock` selam um `FILE_REJECT` (§7.7), mas sem
 //!   sessão ou transporte o aviso se perde. O emissor cobre o resto com o prazo
-//!   de [`OFFER_RESPONSE_TIMEOUT_SECS`], que vive só em RAM como o envio (U-03).
+//!   de [`OFFER_RESPONSE_TIMEOUT_SECS`], contado a partir do banco.
 //! - **Ofertas não confirmadas vivem só em RAM**: um auto-lock (`Core::lock`) ou
 //!   fechamento do app limpa as ofertas retidas com zeroize.
 //! - **`block_symbols` sempre no teto de D6 (1024), `symbol_size` só
@@ -72,13 +72,24 @@
 //!   (Fase 5, F1) — a chamada que desmonta o Ogg original do gravador é
 //!   outro método FFI, deliberadamente separado para poder ser testado (e
 //!   falhar) de forma independente do envio.
+//!
+//! ## Retomada depois de bloqueio ou reinício (§7.5)
+//!
+//! O handle em memória é descartável: `Core::lock` o joga fora com as chaves,
+//! e [`Core::resume_transfers`] o reconstrói do banco quando a sessão com o
+//! contato volta a `Established`. O emissor lê de uma cópia cifrada do
+//! arquivo-fonte em `outgoing/`, gravada em `start_send` e conferida contra a
+//! raiz a cada reconstrução; o receptor reabre o próprio `.staging`. Quem
+//! recebe o arquivo nada precisa saber: o bitmap de `FILE_FEEDBACK` já faz o
+//! emissor pular o que chegou. Uma transferência enfileirada sem sessão (#79)
+//! entra pelo mesmo caminho: basta existir a linha e a cópia.
 
-use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
+use crate::ffi::transfer_handles::{can_seal_now, OutgoingHandle, TransferHandle};
 use crate::ffi::types::{
     FileOfferDto, IngestedChunkDto, SealedNoticeDto, SendAudioStartedDto, SendFileStartedDto,
     TransferEventDto, TransferEventKind, TransferProgressDto,
@@ -87,26 +98,20 @@ use crate::frb_generated::StreamSink;
 use crate::transfer_events::TransferEventSink;
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{self, Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE, MAX_BLOCK_SYMBOLS};
-use viska_proto::file::merkle;
+use viska_proto::file::outgoing;
+use viska_proto::file::staging;
 use viska_proto::file::transfer::{
-    self, FileFeedback, ReceiveTransfer, SendTransfer, TransferKind, TransferMode, TransferProgress,
+    self, FileFeedback, ReceiveTransfer, TransferKind, TransferProgress,
     TRANSFER_SECRET_LEN,
 };
 use viska_proto::store::transfers::Direction;
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
 
-/// Um lado (emissor ou receptor) de uma transferência em memória, indexado
-/// por `file_id` em `Core::transfers`.
-pub(super) enum TransferHandle {
-    Send(SendTransfer<File>),
-    Receive(ReceiveTransfer),
-}
-
 /// Sela o `FILE_REJECT` de `file_id`, ou `None` sem sessão estabelecida ou se
 /// selar falhar. Recusa e bloqueio passam por aqui para o emissor não poder
 /// distinguir um do outro (§7.7 item 1).
-fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; FILE_ID_LEN]) -> Option<Vec<u8>> {
+pub(super) fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; FILE_ID_LEN]) -> Option<Vec<u8>> {
     if !session.is_established() {
         return None;
     }
@@ -120,6 +125,19 @@ fn seal_file_reject(session: &mut viska_proto::session::Session, file_id: &[u8; 
 /// receptor já avisa, então isto só cobre o aviso que não chegou, e não deve
 /// matar a oferta de quem ainda está decidindo.
 pub(super) const OFFER_RESPONSE_TIMEOUT_SECS: i64 = 24 * 60 * 60;
+
+/// Apaga a cópia de envio se `start_send` falhar depois de gravá-la.
+struct OutgoingCopyGuard {
+    path: Option<std::path::PathBuf>,
+}
+
+impl Drop for OutgoingCopyGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
 
 /// Teto padrão em bytes para aceitação automática de arquivos (100 MiB).
 /// Ofertas que excederem este valor ficam retidas aguardando confirmação explícita
@@ -166,9 +184,10 @@ impl std::fmt::Debug for UnconfirmedOffer {
 struct StartedTransfer {
     file_id: [u8; FILE_ID_LEN],
     sealed_metadata: Vec<u8>,
+    message_id: i64,
 }
 
-fn to_device_id(bytes: Vec<u8>) -> Result<[u8; DEVICE_ID_LEN], FfiError> {
+pub(super) fn to_device_id(bytes: Vec<u8>) -> Result<[u8; DEVICE_ID_LEN], FfiError> {
     bytes.try_into().map_err(|_| FfiError::Internal)
 }
 
@@ -176,12 +195,13 @@ fn to_file_id(bytes: Vec<u8>) -> Result<[u8; FILE_ID_LEN], FfiError> {
     bytes.try_into().map_err(|_| FfiError::Internal)
 }
 
-fn progress_dto(progress: TransferProgress) -> TransferProgressDto {
+fn progress_dto(progress: TransferProgress, awaiting_answer: bool) -> TransferProgressDto {
     TransferProgressDto {
         blocks_done: progress.blocks_done,
         total_blocks: progress.total_blocks,
         bytes_done: progress.bytes_done,
         is_complete: progress.is_complete(),
+        awaiting_answer,
     }
 }
 
@@ -200,8 +220,6 @@ impl Core {
         file_path: String,
         use_lan: bool,
     ) -> Result<SendFileStartedDto, FfiError> {
-        let device_id = to_device_id(peer_device_id.clone())?;
-
         // Extrai o nome do arquivo para usar como corpo da mensagem na timeline
         // — o mesmo `name` que vai cifrado no manifesto, mas aqui em claro
         // para exibição local. Não é segredo: o receptor também verá.
@@ -211,22 +229,12 @@ impl Core {
             .ok_or(FfiError::Internal)?
             .to_owned();
 
-        let started = self.start_send(peer_device_id, file_path, use_lan, TransferKind::File)?;
-
-        let created_at = viska_proto::util::time::unix_seconds() as i64;
-        let message_id = self.store.insert_pending_message(
-            &device_id,
-            PacketType::FileMetadata,
-            &file_name,
-            created_at,
-        )?;
-        self.store.set_message_file_id(message_id, &started.file_id)?;
-        self.lock_unanswered_offers()?.insert(started.file_id, created_at);
+        let started = self.start_send(peer_device_id, file_path, use_lan, TransferKind::File, |_| file_name)?;
 
         Ok(SendFileStartedDto {
             file_id: started.file_id.to_vec(),
             sealed_metadata: started.sealed_metadata,
-            message_id,
+            message_id: started.message_id,
         })
     }
 
@@ -246,52 +254,43 @@ impl Core {
         audio_path: String,
         use_lan: bool,
     ) -> Result<SendAudioStartedDto, FfiError> {
-        let device_id = to_device_id(peer_device_id.clone())?;
-        let started = self.start_send(peer_device_id, audio_path, use_lan, TransferKind::Audio)?;
-
-        let created_at = viska_proto::util::time::unix_seconds() as i64;
-        let message_id = self.store.insert_pending_message(
-            &device_id,
-            PacketType::AudioChunk,
-            &hex::encode(started.file_id),
-            created_at,
-        )?;
-        // Nota de voz não recebe `FILE_REJECT` (sem oferta); a ligação fica por simetria.
-        self.store.set_message_file_id(message_id, &started.file_id)?;
+        let started =
+            self.start_send(peer_device_id, audio_path, use_lan, TransferKind::Audio, |file_id| hex::encode(file_id))?;
 
         Ok(SendAudioStartedDto {
             file_id: started.file_id.to_vec(),
             sealed_metadata: started.sealed_metadata,
-            message_id,
+            message_id: started.message_id,
         })
     }
 
+    /// Núcleo de `start_send_file`/`start_send_audio`. `message_body` monta o
+    /// corpo da linha da timeline a partir do `file_id` (nome do arquivo, ou
+    /// `hex(file_id)` numa nota de voz, ver doc do módulo).
     fn start_send(
         &self,
         peer_device_id: Vec<u8>,
         file_path: String,
         use_lan: bool,
         kind: TransferKind,
+        message_body: impl FnOnce(&[u8; FILE_ID_LEN]) -> String,
     ) -> Result<StartedTransfer, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
 
-        let file_size = std::fs::metadata(&file_path)
-            .map_err(|_| FfiError::Internal)?
-            .len();
+        // Sem sessão não há como oferecer; checar antes de copiar poupa a
+        // leitura inteira do arquivo. A sessão é conferida de novo ao selar.
+        if !self.lock_sessions()?.get(&device_id).is_some_and(can_seal_now) {
+            return Err(FfiError::NoActiveSession);
+        }
+
         let symbol_size: u16 = if use_lan {
             LAN_SYMBOL_SIZE
         } else {
             Transport::DataChannel.max_bucket() as u16
         };
         let block_symbols = MAX_BLOCK_SYMBOLS;
-        let block_bytes = symbol_size as u64 * block_symbols as u64;
-        let source_blocks: u32 = if file_size == 0 {
-            0
-        } else {
-            file_size.div_ceil(block_bytes) as u32
-        };
 
         let file_id: [u8; FILE_ID_LEN] = viska_proto::util::rng::array::<FILE_ID_LEN>()?;
         // Preenche in loco: `rng::array` devolveria o array `Copy` por valor e
@@ -299,16 +298,22 @@ impl Core {
         let mut transfer_secret = zeroize::Zeroizing::new([0u8; TRANSFER_SECRET_LEN]);
         viska_proto::util::rng::fill(&mut *transfer_secret)?;
 
-        let merkle_root: [u8; 32] = {
-            let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
-            *merkle::merkle_root(file)?.as_bytes()
-        };
-
         let name = Path::new(&file_path)
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or(FfiError::Internal)?;
         let name_encrypted = manifest::encrypt_name(&*transfer_secret, &file_id, name)?;
+
+        // Raiz e tamanho vêm da cópia, não de uma leitura à parte do original:
+        // o que se oferece é exatamente o que será lido na retomada.
+        let source = File::open(&file_path).map_err(|_| FfiError::Internal)?;
+        let mut copy_guard = OutgoingCopyGuard {
+            path: Some(staging::staging_path(&self.outgoing_dir, &file_id)),
+        };
+        let (merkle_root, file_size) =
+            outgoing::stage_outgoing_copy(source, &self.outgoing_dir, file_id, &*transfer_secret)?;
+        let block_bytes = symbol_size as u64 * block_symbols as u64;
+        let source_blocks = u32::try_from(file_size.div_ceil(block_bytes)).map_err(|_| FfiError::Internal)?;
 
         let manifest = Manifest {
             file_id,
@@ -329,16 +334,27 @@ impl Core {
                 return Err(FfiError::NoActiveSession);
             }
             let body = transfer::encode_metadata_body(kind, &transfer_secret, &manifest)?;
-            session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?
+            let sealed = session.encrypt_outgoing(PacketType::FileMetadata, body, Transport::DataChannel)?;
+            (sealed, session.generation())
         };
+        let (sealed_metadata, generation) = sealed_metadata;
 
-        let file = File::open(&file_path).map_err(|_| FfiError::Internal)?;
-        let mode = if use_lan { TransferMode::Offset } else { TransferMode::Fountain };
-        let send = SendTransfer::new(manifest.clone(), kind, &*transfer_secret, file).with_mode(mode);
+        let reader = outgoing::read_outgoing_copy(&self.outgoing_dir, &manifest, &*transfer_secret)?;
 
         let manifest_cbor = manifest.encode()?;
         let created_at = viska_proto::util::time::unix_seconds() as i64;
-        self.store.insert_file_transfer(
+        // A mensagem vem antes da linha da transferência: uma linha sem mensagem
+        // seria retomada sem que a pessoa a visse. Uma mensagem sem linha (o app
+        // fechou entre as duas) vira falha na próxima abertura.
+        let packet_type = match kind {
+            TransferKind::File => PacketType::FileMetadata,
+            TransferKind::Audio => PacketType::AudioChunk,
+        };
+        let message_id =
+            self.store
+                .insert_pending_message(&device_id, packet_type, &message_body(&file_id), created_at)?;
+        self.store.set_message_file_id(message_id, &file_id)?;
+        let inserted = self.store.insert_file_transfer(
             &file_id,
             Direction::Sending,
             &device_id,
@@ -346,14 +362,26 @@ impl Core {
             &*transfer_secret,
             created_at,
             kind,
-        )?;
+        );
+        if let Err(err) = inserted {
+            let _ = self.store.mark_message_failed(message_id);
+            return Err(err.into());
+        }
+        // A linha existe: daqui em diante a cópia é dela, e quem a apaga é o fim
+        // da transferência ou o prazo de retenção.
+        copy_guard.path = None;
 
-        self.lock_transfers()?
-            .insert(file_id, TransferHandle::Send(send));
+        let handle = OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false);
+        if !self.install_handle(file_id, TransferHandle::Send(handle), None)? {
+            // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
+            // retoma depois do desbloqueio.
+            return Err(FfiError::Locked);
+        }
 
         Ok(StartedTransfer {
             file_id,
             sealed_metadata,
+            message_id,
         })
     }
 
@@ -365,10 +393,13 @@ impl Core {
     /// para o estado atual. Serve arquivo e áudio por igual — nada aqui
     /// depende de `kind`.
     pub fn next_outgoing_wire_chunk(&self, file_id: Vec<u8>) -> Result<Option<Vec<u8>>, FfiError> {
+        // Trancada, o handle sumiu e `None` pareceria "nada a mandar agora": o
+        // laço do Dart daria o envio por concluído (§7.5).
+        self.ensure_not_locked()?;
         let file_id = to_file_id(file_id)?;
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
-            Some(TransferHandle::Send(send)) => Ok(send.next_sealed_symbol()?),
+            Some(TransferHandle::Send(send)) => Ok(send.transfer.next_sealed_symbol()?),
             _ => Ok(None),
         }
     }
@@ -376,11 +407,14 @@ impl Core {
     /// Progresso de uma transferência conhecida, de qualquer lado (arquivo
     /// ou áudio) — `None` se `file_id` não corresponde a nada em andamento.
     pub fn transfer_progress(&self, file_id: Vec<u8>) -> Result<Option<TransferProgressDto>, FfiError> {
+        // Mesmo motivo de `next_outgoing_wire_chunk`: `None` trancada seria lido
+        // como transferência terminada.
+        self.ensure_not_locked()?;
         let file_id = to_file_id(file_id)?;
         let transfers = self.lock_transfers()?;
         Ok(match transfers.get(&file_id) {
-            Some(TransferHandle::Send(send)) => Some(progress_dto(send.progress())),
-            Some(TransferHandle::Receive(recv)) => Some(progress_dto(recv.progress())),
+            Some(TransferHandle::Send(send)) => Some(progress_dto(send.transfer.progress(), !send.answered)),
+            Some(TransferHandle::Receive(recv)) => Some(progress_dto(recv.progress(), false)),
             None => None,
         })
     }
@@ -453,7 +487,7 @@ impl Core {
         let mut transfers = self.lock_transfers()?;
         match transfers.get_mut(&file_id) {
             Some(TransferHandle::Receive(recv)) => {
-                let progress = progress_dto(recv.ingest_sealed_symbol(sealed)?);
+                let progress = progress_dto(recv.ingest_sealed_symbol(sealed)?, false);
                 Ok(Some(IngestedChunkDto {
                     file_id: file_id.to_vec(),
                     progress,
@@ -466,15 +500,20 @@ impl Core {
     /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
     /// decifra para `destination_path`, remove o `.staging` e o registro em
     /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-    /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-    /// emissor pelo canal `control`.
+    /// D15).
+    ///
+    /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
+    /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
+    /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
+    /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
+    /// emissor só para pelo limite de inatividade (issue #108).
     pub fn finish_receive_file(
         &self,
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
-        self.finish_receive(peer_device_id, file_id, destination_path)
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.finish_receive(peer_device_id, file_id, destination_path, TransferKind::File)
     }
 
     /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
@@ -486,8 +525,8 @@ impl Core {
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
-        self.finish_receive(peer_device_id, file_id, destination_path)
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.finish_receive(peer_device_id, file_id, destination_path, TransferKind::Audio)
     }
 
     /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
@@ -532,37 +571,61 @@ impl Core {
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
+        kind: TransferKind,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
         let file_id = to_file_id(file_id)?;
-
-        let handle = self
-            .lock_transfers()?
-            .remove(&file_id)
-            .ok_or(FfiError::Internal)?;
-        let TransferHandle::Receive(recv) = handle else {
-            // Devolve o handle de envio — `finish_receive_*` não é o
-            // método certo para ele — em vez de descartá-lo em silêncio.
-            self.lock_transfers()?.insert(file_id, handle);
+        // Um arquivo fechado como nota de voz seria lido inteiro para a memória e
+        // apagado; o tipo vem do `FILE_METADATA`, não de quem chama.
+        let stored = self.store.find_file_transfer(&file_id)?.ok_or(FfiError::Internal)?;
+        if stored.kind != kind || stored.direction != Direction::Receiving {
             return Err(FfiError::Internal);
-        };
+        }
 
         let destination =
             std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
-        let complete = recv.finish(&self.staging_dir, destination)?;
-        self.store.delete_file_transfer(&file_id)?;
+        let (handle, claim) = self.take_for_finish(file_id)?.ok_or(FfiError::Internal)?;
+        let TransferHandle::Receive(mut recv) = handle else {
+            // Defensivo: a linha conferida acima é de recebimento, então o handle
+            // também é. Se não for, ele volta ao mapa em vez de sumir.
+            self.install_handle(file_id, handle, Some(claim))?;
+            return Err(FfiError::Internal);
+        };
 
+        let complete = match recv.finish(&self.staging_dir, destination) {
+            Ok(complete) => complete,
+            // A raiz não bate: receber de novo daria o mesmo arquivo errado.
+            Err(viska_proto::Error::MerkleMismatch) => {
+                self.end_transfer(&file_id)?;
+                return Err(viska_proto::Error::MerkleMismatch.into());
+            }
+            // Qualquer outra falha (E/S no destino, Core trancada no meio) devolve o
+            // handle, ainda completo: a próxima tentativa só decifra de novo, sem
+            // receber nada (§7.5).
+            Err(err) => {
+                self.install_handle(file_id, TransferHandle::Receive(recv), Some(claim))?;
+                return Err(err.into());
+            }
+        };
+        // A reserva vai até a linha sumir; uma retomada que reservar depois disso
+        // confere a linha antes de concluir que o staging se perdeu (`rebuild`).
+        self.end_transfer(&file_id)?;
+        drop(claim);
+
+        // Daqui em diante o arquivo já está no destino e a transferência acabou:
+        // uma falha ao selar não pode virar `Err`, que faria quem chama apagar o
+        // arquivo recebido.
         let mut sessions = self.lock_sessions()?;
-        let session = sessions
+        Ok(sessions
             .get_mut(&device_id)
-            .ok_or(FfiError::NoActiveSession)?;
-        Ok(session.encrypt_outgoing(
-            PacketType::FileComplete,
-            complete.encode(),
-            Transport::DataChannel,
-        )?)
+            .filter(|session| can_seal_now(session))
+            .and_then(|session| {
+                session
+                    .encrypt_outgoing(PacketType::FileComplete, complete.encode(), Transport::DataChannel)
+                    .ok()
+            }))
     }
 
     /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
@@ -593,23 +656,12 @@ impl Core {
     }
 
     /// Cancela uma transferência (de qualquer lado): remove o handle em
-    /// memória e o registro em `store`. Do lado receptor, também apaga o
-    /// `.staging` — mesma garantia de "abortar destrói a chave" de
-    /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
-    /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
-    /// foi fechado a cada bloco completado). Ver §7.5/D15.
+    /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
+    /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
         self.remove_unconfirmed_offer(&file_id)?;
-        self.lock_transfers()?.remove(&file_id);
-        self.lock_unanswered_offers()?.remove(&file_id);
-        self.store.delete_file_transfer(&file_id)?;
-        let mut active = HashSet::new();
-        for id in self.store.list_active_file_transfer_ids()? {
-            active.insert(id);
-        }
-        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &active)?;
-        Ok(())
+        self.end_transfer(&file_id)
     }
 
     /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
@@ -617,19 +669,6 @@ impl Core {
         self.ensure_not_locked()?;
         let ids = self.store.list_active_file_transfer_ids()?;
         Ok(ids.into_iter().map(|id| id.to_vec()).collect())
-    }
-
-    fn lock_transfers(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], TransferHandle>>, FfiError>
-    {
-        self.transfers.lock().map_err(|_| FfiError::Internal)
-    }
-
-    fn lock_unanswered_offers(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], i64>>, FfiError> {
-        self.unanswered_offers.lock().map_err(|_| FfiError::Internal)
     }
 
     /// Sela um `FILE_REJECT` para cada oferta retida, para `Core::lock` entregar
@@ -652,48 +691,6 @@ impl Core {
                 })
             })
             .collect()
-    }
-
-    /// Dá por expiradas as ofertas enviadas há mais de [`OFFER_RESPONSE_TIMEOUT_SECS`]
-    /// sem resposta: marca a mensagem, para o bombeamento e apaga a linha.
-    pub(super) fn expire_unanswered_offers(&self) -> Result<(), FfiError> {
-        self.expire_unanswered_offers_at(viska_proto::util::time::unix_seconds() as i64)
-    }
-
-    fn expire_unanswered_offers_at(&self, now: i64) -> Result<(), FfiError> {
-        // Tirar do mapa no mesmo lock em que se seleciona: um feedback que chegue
-        // agora já não encontra a entrada e não pode ser expirado por engano.
-        let due: Vec<([u8; FILE_ID_LEN], i64)> = {
-            let mut offers = self.lock_unanswered_offers()?;
-            let (due, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut *offers)
-                .into_iter()
-                .partition(|(_, sent_at)| now.saturating_sub(*sent_at) >= OFFER_RESPONSE_TIMEOUT_SECS);
-            offers.extend(keep);
-            due
-        };
-        // Uma falha não pode custar o prazo das demais: todas são tentadas, e as
-        // que falharem voltam ao mapa para a próxima leitura repetir.
-        let mut first_error = None;
-        for (file_id, sent_at) in due {
-            if let Err(e) = self.expire_offer(&file_id) {
-                if let Ok(mut offers) = self.lock_unanswered_offers() {
-                    offers.insert(file_id, sent_at);
-                }
-                first_error.get_or_insert(e);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    fn expire_offer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
-        if let Some(stored) = self.store.find_file_transfer(file_id)? {
-            // A mensagem vem antes, como em `handle_incoming_file_reject`.
-            self.store
-                .mark_message_expired_by_file_id(file_id, &stored.contact_device_id)?;
-            self.lock_transfers()?.remove(file_id);
-            self.store.delete_file_transfer(file_id)?;
-        }
-        Ok(())
     }
 
     fn lock_unconfirmed_offers(
@@ -891,8 +888,9 @@ impl Core {
             )?;
         }
 
-        self.lock_transfers()?
-            .insert(manifest.file_id, TransferHandle::Receive(receive));
+        if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive), None)? {
+            return Err(FfiError::Locked);
+        }
         Ok(())
     }
 
@@ -907,6 +905,13 @@ impl Core {
         body: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(), FfiError> {
         let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
+        // O emissor reenvia a oferta ao retomar, enquanto não tiver resposta
+        // (§7.5): uma oferta que já virou recebimento é ignorada, e uma retida
+        // é tratada logo abaixo. Um `file_id` de envio nosso também, sem erro
+        // distinguível.
+        if self.store.file_transfer_exists(&manifest.file_id)? {
+            return Ok(());
+        }
         let manifest_cbor = manifest.encode()?;
         let received_at = viska_proto::util::time::unix_seconds() as i64;
 
@@ -982,24 +987,24 @@ impl Core {
             .map_err(|_| FfiError::Internal)?;
         // Expirar antes de aceitar: feedback depois do prazo não ressuscita a oferta.
         // Falha da varredura não impede processar o feedback.
-        let _ = self.expire_unanswered_offers();
+        let _ = self.enforce_transfer_deadlines();
         let stored = self
             .store
             .find_file_transfer(&file_id)?
             .ok_or(FfiError::Internal)?;
         // Só o destinatário da oferta a responde, e só ele encerra o prazo.
-        if stored.contact_device_id != contact_device_id {
+        if stored.contact_device_id != contact_device_id || stored.direction != Direction::Sending {
             return Ok(());
         }
         let manifest = Manifest::decode(&stored.manifest_cbor)?;
 
         let feedback = FileFeedback::decode(body, manifest.source_blocks)?;
-        // O primeiro feedback prova que a oferta foi aceita: o prazo acaba aqui.
-        self.lock_unanswered_offers()?.remove(&file_id);
-        if let Some(TransferHandle::Send(send)) = self.lock_transfers()?.get_mut(&file_id) {
-            send.ingest_feedback(&feedback)?;
+        // O primeiro feedback prova que a oferta foi aceita: o prazo acaba aqui,
+        // e a retomada deixa de reenviar a oferta.
+        if !stored.answered {
+            self.store.mark_file_transfer_answered(&file_id)?;
         }
-        Ok(())
+        self.ingest_send_feedback(&stored, &manifest, &feedback)
     }
 
     /// Chamado de dentro de `Core::decrypt_incoming` quando um
@@ -1008,10 +1013,7 @@ impl Core {
     /// transferência.
     pub(super) fn handle_incoming_file_complete(&self, body: &[u8]) -> Result<(), FfiError> {
         let complete = transfer::FileComplete::decode(body)?;
-        self.lock_transfers()?.remove(&complete.file_id);
-        self.lock_unanswered_offers()?.remove(&complete.file_id);
-        self.store.delete_file_transfer(&complete.file_id)?;
-        Ok(())
+        self.end_transfer(&complete.file_id)
     }
 
     /// Chamado de dentro de `Core::decrypt_incoming` quando um `FILE_REJECT`
@@ -1035,10 +1037,7 @@ impl Core {
         // ainda existe e um novo `FILE_REJECT` consegue repetir o caminho todo.
         self.store
             .mark_message_rejected_by_file_id(&file_id, &contact_device_id)?;
-        self.lock_transfers()?.remove(&file_id);
-        self.lock_unanswered_offers()?.remove(&file_id);
-        self.store.delete_file_transfer(&file_id)?;
-        Ok(())
+        self.end_transfer(&file_id)
     }
 }
 
@@ -1051,13 +1050,13 @@ fn offer_event(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::ffi::core::Core;
     use crate::ffi::types::{DeliveryStateDto, MessageKindDto, SessionStateKind};
     use std::io::Write;
 
-    fn open_core(dir: &tempfile::TempDir) -> Core {
+    pub(crate) fn open_core(dir: &tempfile::TempDir) -> Core {
         Core::open(dir.path().to_str().unwrap().to_owned()).unwrap()
     }
 
@@ -1065,16 +1064,16 @@ mod tests {
     /// `establish()` em `ffi/session.rs`, mas próprio deste módulo (padrão
     /// já usado por `ffi/signaling.rs`: cada arquivo de teste monta o par
     /// que precisa, em vez de compartilhar um helper entre arquivos).
-    struct EstablishedPair {
-        _dir_a: tempfile::TempDir,
-        core_a: Core,
-        device_id_a: Vec<u8>,
-        _dir_b: tempfile::TempDir,
-        core_b: Core,
-        device_id_b: Vec<u8>,
+    pub(crate) struct EstablishedPair {
+        pub(crate) _dir_a: tempfile::TempDir,
+        pub(crate) core_a: Core,
+        pub(crate) device_id_a: Vec<u8>,
+        pub(crate) _dir_b: tempfile::TempDir,
+        pub(crate) core_b: Core,
+        pub(crate) device_id_b: Vec<u8>,
     }
 
-    fn established_pair() -> EstablishedPair {
+    pub(crate) fn established_pair() -> EstablishedPair {
         let dir_a = tempfile::tempdir().unwrap();
         let dir_b = tempfile::tempdir().unwrap();
         let core_a = open_core(&dir_a);
@@ -1120,11 +1119,11 @@ mod tests {
         pair
     }
 
-    fn fid(bytes: &[u8]) -> [u8; FILE_ID_LEN] {
+    pub(crate) fn fid(bytes: &[u8]) -> [u8; FILE_ID_LEN] {
         bytes.try_into().unwrap()
     }
 
-    fn write_temp_file(dir: &tempfile::TempDir, name: &str, content: &[u8]) -> String {
+    pub(crate) fn write_temp_file(dir: &tempfile::TempDir, name: &str, content: &[u8]) -> String {
         let path = dir.path().join(name);
         std::fs::File::create(&path)
             .unwrap()
@@ -1321,7 +1320,7 @@ mod tests {
             .is_some());
 
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
 
         assert!(pair
@@ -1477,7 +1476,7 @@ mod tests {
         // FILE_COMPLETE de volta ao emissor: o registro de transferência
         // dele (não a linha da timeline, que fica como histórico) some.
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
         assert!(pair
             .core_a
@@ -1619,7 +1618,7 @@ mod tests {
     }
 
     /// Leva a sessão de A com B a `Failed` por AEAD adulterado repetido (§11.2).
-    fn force_session_failed(pair: &EstablishedPair) {
+    pub(crate) fn force_session_failed(pair: &EstablishedPair) {
         // `core_b` precisa de cadeia de envio para adulterar mensagens a `core_a`.
         let hello = pair
             .core_a
@@ -1643,7 +1642,7 @@ mod tests {
             == SessionStateKind::Failed);
     }
 
-    fn state_of(pair: &EstablishedPair, message_id: i64) -> DeliveryStateDto {
+    pub(crate) fn state_of(pair: &EstablishedPair, message_id: i64) -> DeliveryStateDto {
         pair.core_a
             .list_messages(pair.device_id_b.clone())
             .unwrap()
@@ -1654,23 +1653,22 @@ mod tests {
     }
 
     #[test]
-    fn reset_session_fails_sent_unanswered_offer() {
+    fn reset_session_keeps_unanswered_offer_for_resume() {
         let dir_src = tempfile::tempdir().unwrap();
         let (pair, started) = pair_with_pending_offer(&dir_src);
         // O fim do bombeamento no Dart promove a mensagem a `Sent`.
         pair.core_a.mark_message_sent(started.message_id).unwrap();
-        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
         force_session_failed(&pair);
 
         pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
 
-        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
-        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
+        let row = pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
+        assert!(!row.answered, "a oferta continua sem resposta e será reenviada na retomada");
     }
 
     #[test]
-    fn reset_session_fails_accepted_but_incomplete_transfer() {
+    fn reset_session_keeps_accepted_transfer() {
         let dir_src = tempfile::tempdir().unwrap();
         let (pair, started) = pair_with_pending_offer(&dir_src);
         pair.core_a.mark_message_sent(started.message_id).unwrap();
@@ -1684,7 +1682,10 @@ mod tests {
 
         pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
 
-        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
+        let row = pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
+        assert!(row.answered);
+        assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().is_some());
     }
 
     #[test]
@@ -1722,12 +1723,12 @@ mod tests {
         pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
 
         assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Sent);
-        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
-        assert_eq!(pair.core_a.lock_unanswered_offers().unwrap().len(), 1);
+        let row = pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().unwrap();
+        assert!(!row.answered);
     }
 
     #[test]
-    fn reset_session_cancels_outgoing_transfer_and_fails_its_row() {
+    fn reset_session_keeps_outgoing_transfer_running() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let src_path = write_temp_file(&dir_src, "a.bin", &[7u8; 4096]);
@@ -1739,16 +1740,9 @@ mod tests {
 
         pair.core_a.reset_session(pair.device_id_b.clone()).unwrap();
 
-        assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().is_none());
-        assert!(pair.core_a.list_active_file_transfer_ids().unwrap().is_empty());
-        let row = pair
-            .core_a
-            .list_messages(pair.device_id_b.clone())
-            .unwrap()
-            .into_iter()
-            .find(|m| m.id == started.message_id)
-            .unwrap();
-        assert_eq!(row.delivery_state, DeliveryStateDto::Failed);
+        assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().is_some());
+        assert_eq!(pair.core_a.list_active_file_transfer_ids().unwrap(), vec![started.file_id.clone()]);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Pending);
     }
 
     /// Testa que transferência multibloko (> 16 MiB no DataChannel WebRTC, D6)
@@ -1873,7 +1867,7 @@ mod tests {
         assert_eq!(received, original);
 
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
 
         assert!(pair
@@ -1888,46 +1882,6 @@ mod tests {
             .find_file_transfer(&fid(&started.file_id))
             .unwrap()
             .is_none());
-    }
-
-    #[test]
-    fn transfer_interrupted_by_lock_and_unlock_cleans_active_ids_and_staging() {
-        let pair = established_pair();
-        let dir_src = tempfile::tempdir().unwrap();
-        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
-        let src_path = write_temp_file(&dir_src, "test_abort.bin", &original);
-
-        let started = pair
-            .core_a
-            .start_send_file(pair.device_id_b.clone(), src_path, false)
-            .unwrap();
-
-        pair.core_b
-            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata)
-            .unwrap();
-
-        let active_b_before = pair.core_b.list_active_file_transfer_ids().unwrap();
-        assert_eq!(active_b_before.len(), 1);
-        assert_eq!(active_b_before[0], started.file_id);
-
-        let staging_file = pair
-            .core_b
-            .staging_dir
-            .join(format!("{}.staging", hex::encode(&started.file_id)));
-        assert!(staging_file.exists(), ".staging deve existir enquanto ativa");
-
-        pair.core_b.lock().unwrap();
-        pair.core_b.unlock().unwrap();
-
-        let active_b_after = pair.core_b.list_active_file_transfer_ids().unwrap();
-        assert!(
-            active_b_after.is_empty(),
-            "transferências sem handle devem ser tratadas como abortadas após lock/unlock"
-        );
-        assert!(
-            !staging_file.exists(),
-            ".staging deve sumir após aborto por lock/unlock"
-        );
     }
 
     #[test]
@@ -2107,7 +2061,7 @@ mod tests {
 
     /// Monta A (emissor) e B (receptor com auto-aceite baixo), com a oferta de
     /// A já retida em B. Devolve o par e o `SendFileStartedDto`.
-    fn pair_with_pending_offer(dir_src: &tempfile::TempDir) -> (EstablishedPair, SendFileStartedDto) {
+    pub(crate) fn pair_with_pending_offer(dir_src: &tempfile::TempDir) -> (EstablishedPair, SendFileStartedDto) {
         let pair = established_pair();
         pair.core_b.set_auto_accept_file_size_limit(5_000).unwrap();
         let original: Vec<u8> = (0..15_000u32).map(|i| (i % 251) as u8).collect();
@@ -2862,111 +2816,6 @@ mod tests {
         let pair = established_pair();
 
         assert!(pair.core_b.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn unanswered_offer_expires_exactly_at_the_deadline() {
-        let dir_src = tempfile::tempdir().unwrap();
-        let (pair, started) = pair_with_pending_offer(&dir_src);
-        let sent_at = *pair.core_a.lock_unanswered_offers().unwrap().get(&fid(&started.file_id)).unwrap();
-
-        pair.core_a
-            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS - 1)
-            .unwrap();
-        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
-
-        pair.core_a
-            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS)
-            .unwrap();
-        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
-        assert_eq!(pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap(), None);
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
-        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
-        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Expired);
-
-        // O fim tardio do bombeamento no Dart não apaga o estado final.
-        pair.core_a.mark_message_sent(started.message_id).unwrap();
-        let timeline = pair.core_a.list_messages(pair.device_id_b.clone()).unwrap();
-        assert_eq!(timeline[0].delivery_state, DeliveryStateDto::Expired);
-    }
-
-    #[test]
-    fn first_feedback_ends_the_offer_deadline() {
-        let pair = established_pair();
-        let dir_src = tempfile::tempdir().unwrap();
-        let src_path = write_temp_file(&dir_src, "aceito.bin", &vec![7u8; 4_000]);
-        let started = pair
-            .core_a
-            .start_send_file(pair.device_id_b.clone(), src_path, false)
-            .unwrap();
-        pair.core_b
-            .decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone())
-            .unwrap();
-        assert_eq!(pair.core_a.lock_unanswered_offers().unwrap().len(), 1);
-
-        let feedback = pair
-            .core_b
-            .file_feedback(pair.device_id_a.clone(), started.file_id.clone())
-            .unwrap();
-        pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), feedback)
-            .unwrap();
-
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
-        pair.core_a.expire_unanswered_offers_at(i64::MAX / 2).unwrap();
-        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
-    }
-
-    #[test]
-    fn rejected_or_cancelled_offer_leaves_no_deadline_behind() {
-        let dir_src = tempfile::tempdir().unwrap();
-        let (pair, started) = pair_with_pending_offer(&dir_src);
-        let sealed = pair.core_b.reject_file_offer(started.file_id.clone()).unwrap().unwrap();
-        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), sealed).unwrap();
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
-
-        let src_path = write_temp_file(&dir_src, "cancelado.bin", &vec![1u8; 4_000]);
-        let second = pair
-            .core_a
-            .start_send_file(pair.device_id_b.clone(), src_path, false)
-            .unwrap();
-        pair.core_a.cancel_transfer(second.file_id).unwrap();
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
-    }
-
-    #[test]
-    fn locking_the_sender_clears_pending_deadlines() {
-        let dir_src = tempfile::tempdir().unwrap();
-        let (pair, _started) = pair_with_pending_offer(&dir_src);
-
-        pair.core_a.lock().unwrap();
-
-        assert!(pair.core_a.lock_unanswered_offers().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_failing_expiry_does_not_drop_the_other_deadlines() {
-        let dir_src = tempfile::tempdir().unwrap();
-        let pair = established_pair();
-        let mut ids = Vec::new();
-        for name in ["a.bin", "b.bin"] {
-            let path = write_temp_file(&dir_src, name, &vec![3u8; 2_000]);
-            let started = pair
-                .core_a
-                .start_send_file(pair.device_id_b.clone(), path, false)
-                .unwrap();
-            ids.push(fid(&started.file_id));
-        }
-        let sent_at = *pair.core_a.lock_unanswered_offers().unwrap().get(&ids[0]).unwrap();
-        pair.core_a.store.close().unwrap();
-
-        let result = pair
-            .core_a
-            .expire_unanswered_offers_at(sent_at + OFFER_RESPONSE_TIMEOUT_SECS);
-
-        assert!(result.is_err());
-        let offers = pair.core_a.lock_unanswered_offers().unwrap();
-        assert!(ids.iter().all(|id| offers.contains_key(id)));
     }
 
     type SeenOffers = std::sync::Arc<std::sync::Mutex<Vec<TransferEventDto>>>;

@@ -48,6 +48,16 @@ class TransportUnavailableException implements Exception {
   String toString() => 'TransportUnavailableException: $message';
 }
 
+/// Um envio já aceito ficou sem progresso pelo limite de inatividade: o par
+/// sumiu ou encerrou a transferência sem o aviso chegar. Ela continua no banco
+/// e volta na próxima retomada (docs/protocol.md §7.5).
+class TransferStalledException implements Exception {
+  const TransferStalledException();
+
+  @override
+  String toString() => 'TransferStalledException: envio sem progresso';
+}
+
 /// Um transporte P2P com um único contato — Fase 3, F5.
 ///
 /// `WebrtcP2PTransport` é a única implementação nesta fase; a Fase 6 (rádios

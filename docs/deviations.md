@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D27). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D28). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -266,12 +266,10 @@ retomar uma transferência não depende de reconstruir um estado de ratchet espe
 sem recomeçar do zero, a menos que uma primitiva nova de chave "recuperável mas de uso único" seja
 desenhada dentro do ratchet — projeto à parte.
 
-**Estado atual (pendente):** a retomada que esta decisão torna possível ainda **não existe**. `Core::lock`
-e a abertura do app tratam toda transferência sem handle em memória como abortada e apagam a linha e o
-`transfer_secret` (U-03, issue #9), de modo que o segredo persistido hoje nunca é lido de volta. O
-envio de arquivo, em particular, não sobrevive a bloqueio nem a reinício, e por isso o prazo de oferta
-sem resposta do §7.7 item 5 também vive só em memória. Reconstruir `SendTransfer`/`ReceiveTransfer` a
-partir do banco no `unlock` é trabalho à parte.
+**Estado atual:** a retomada existe desde a issue #82 (`docs/protocol.md` §7.5, D28). O segredo
+persistido sobrevive a bloqueio e reinício, e `Core::resume_transfers` reconstrói `SendTransfer` e
+`ReceiveTransfer` do banco quando a sessão com o contato volta. O prazo de oferta sem resposta do §7.7
+item 5 passou a ser contado a partir do banco.
 
 ---
 
@@ -497,3 +495,39 @@ mais uma vez, ao custo de um handshake.
 **Custo de reverter:** voltar à lacuna anterior: reset, reinício e trancamento de um lado só deixam o
 outro com uma sessão que ninguém mais lê, até ele também falhar (8 falhas de AEAD) e a pessoa tocar
 em reconectar nos dois aparelhos. A alternativa com marcador de tipo em claro reabre D4.
+
+---
+
+## D28 — Retomada do envio a partir de cópia cifrada local, com teto de retenção
+**Spec:** §7.5 só descreve o staging do receptor e não diz de onde o emissor relê o arquivo numa
+retomada, nem por quanto tempo uma transferência parada fica no aparelho.
+**Aqui:** ao iniciar um envio, o emissor copia o arquivo-fonte para `<app_dir>/outgoing/`, cifrado por
+página sob uma chave local nova, `K_outgoing = derive_key("viska-outgoing-staging-v1", K_file)`, que
+nunca vai ao fio. A raiz do manifesto é calculada sobre a cópia, na mesma leitura. Toda retomada relê
+só a cópia e confere a raiz antes de mandar o primeiro símbolo. Qualquer transferência (envio ou
+recebimento) é apagada ao passar de 7 dias desde a criação, mesmo sem conclusão.
+
+O caminho que o app recebe do seletor de arquivos aponta, no Android, para uma cópia no cache, que o
+sistema pode apagar. O arquivo também pode mudar entre o bloqueio e a retomada. Retomar do original
+mandaria conteúdo diferente do oferecido, e o receptor só descobriria no fim, ao comparar a raiz (D26),
+depois de baixar tudo. Guardar o caminho original em claro no banco também diria mais sobre a pessoa do
+que o necessário. A cópia cifrada resolve as duas coisas: o que sai é sempre o que foi oferecido, e
+apagar a linha do banco torna a cópia ilegível, pelo mesmo crypto-shredding de §7.5.
+
+O teto de 7 dias é decisão do mantenedor (issue #82): o segredo da transferência passa a viver em
+repouso além de uma execução do app, e quem tiver o aparelho destrancado nesse intervalo lê o staging e
+a cópia. O teto limita essa janela para uma transferência que ninguém vai terminar.
+
+A cópia também permite ao emissor voltar atrás: na LAN, um receptor que retoma do staging pode recuar
+para um bloco que já tinha confirmado (o bloco de 65535 × 1024 B não fecha em página), e o emissor
+remonta a partir da cópia em vez de ficar parado adiante dele (`docs/protocol.md` §7.5).
+
+**Custo:** o disco ocupado pelo arquivo dobra durante o envio, e cada retomada relê a cópia inteira
+para conferir a raiz. Quando a transferência termina de um lado só sem o aviso chegar ao outro
+(`FILE_COMPLETE` perdido, emissor que desiste), o outro lado retoma a cada reconexão até o teto, limitado
+a 2 minutos de laço por vez (issue #108). Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
+um transporte que aceite símbolos desse tamanho.
+
+**Custo de reverter:** sem a cópia, a retomada teria de reler o original e conviver com o arquivo
+sumido ou alterado, detectado só no fim. Sem o teto, uma transferência abandonada deixaria segredo e
+conteúdo cifrados no aparelho indefinidamente.

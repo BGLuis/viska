@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1962525881;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 410914115;
 
 // Section: executor
 
@@ -2611,6 +2611,59 @@ fn wire__crate__ffi__core__Core_restore_encrypted_backup_impl(
         },
     )
 }
+fn wire__crate__ffi__core__Core_resume_transfers_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_resume_transfers",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_peer_device_id = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::resume_transfers(
+                        &*api_that_guard,
+                        api_peer_device_id,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__ffi__core__Core_safety_number_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2822,6 +2875,61 @@ fn wire__crate__ffi__core__Core_seal_outgoing_text_impl(
                         &*api_that_guard,
                         api_peer_device_id,
                         api_body,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__ffi__core__Core_seal_resumed_offer_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Core_seal_resumed_offer",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>,
+            >>::sse_decode(&mut deserializer);
+            let api_peer_device_id = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_file_id = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::ffi::error::FfiError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok = crate::ffi::core::Core::seal_resumed_offer(
+                        &*api_that_guard,
+                        api_peer_device_id,
+                        api_file_id,
                     )?;
                     std::result::Result::Ok(output_ok)
                 })())
@@ -4208,6 +4316,20 @@ impl SseDecode for Vec<u8> {
     }
 }
 
+impl SseDecode for Vec<crate::ffi::types::ResumedTransferDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::ffi::types::ResumedTransferDto>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::ffi::types::SealedMessageDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4447,6 +4569,37 @@ impl SseDecode for (Option<Vec<u8>>, Vec<u8>) {
     }
 }
 
+impl SseDecode for crate::ffi::types::ResumedDirectionDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::ffi::types::ResumedDirectionDto::Send,
+            1 => crate::ffi::types::ResumedDirectionDto::Receive,
+            2 => crate::ffi::types::ResumedDirectionDto::Abandoned,
+            _ => unreachable!("Invalid variant for ResumedDirectionDto: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::ffi::types::ResumedTransferDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_fileId = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_direction = <crate::ffi::types::ResumedDirectionDto>::sse_decode(deserializer);
+        let mut var_needsOffer = <bool>::sse_decode(deserializer);
+        let mut var_sealedNotice = <Option<Vec<u8>>>::sse_decode(deserializer);
+        let mut var_messageId = <Option<i64>>::sse_decode(deserializer);
+        return crate::ffi::types::ResumedTransferDto {
+            file_id: var_fileId,
+            direction: var_direction,
+            needs_offer: var_needsOffer,
+            sealed_notice: var_sealedNotice,
+            message_id: var_messageId,
+        };
+    }
+}
+
 impl SseDecode for crate::ffi::types::SafetyNumberDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4601,11 +4754,13 @@ impl SseDecode for crate::ffi::types::TransferProgressDto {
         let mut var_totalBlocks = <u32>::sse_decode(deserializer);
         let mut var_bytesDone = <u64>::sse_decode(deserializer);
         let mut var_isComplete = <bool>::sse_decode(deserializer);
+        let mut var_awaitingAnswer = <bool>::sse_decode(deserializer);
         return crate::ffi::types::TransferProgressDto {
             blocks_done: var_blocksDone,
             total_blocks: var_totalBlocks,
             bytes_done: var_bytesDone,
             is_complete: var_isComplete,
+            awaiting_answer: var_awaitingAnswer,
         };
     }
 }
@@ -4804,93 +4959,97 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        50 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
+        50 => wire__crate__ffi__core__Core_resume_transfers_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__ffi__core__Core_safety_number_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__ffi__core__Core_sanitize_and_stage_audio_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        52 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
+        53 => wire__crate__ffi__core__Core_seal_outgoing_receipt_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        53 => {
+        54 => {
             wire__crate__ffi__core__Core_seal_outgoing_text_impl(port, ptr, rust_vec_len, data_len)
         }
-        54 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
+        55 => {
+            wire__crate__ffi__core__Core_seal_resumed_offer_impl(port, ptr, rust_vec_len, data_len)
+        }
+        56 => wire__crate__ffi__core__Core_seal_signaling_payload_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        55 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
+        57 => wire__crate__ffi__core__Core_session_status_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__ffi__core__Core_set_auto_accept_file_size_limit_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        57 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
-        58 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
+        59 => wire__crate__ffi__core__Core_set_config_impl(port, ptr, rust_vec_len, data_len),
+        60 => wire__crate__ffi__core__Core_set_contact_nickname_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        59 => {
+        61 => {
             wire__crate__ffi__core__Core_set_ephemeral_ttl_impl(port, ptr, rust_vec_len, data_len)
         }
-        60 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
-        61 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
-        62 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
-        63 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
-        64 => wire__crate__ffi__core__Core_subscribe_session_events_impl(
+        62 => wire__crate__ffi__core__Core_set_my_nickname_impl(port, ptr, rust_vec_len, data_len),
+        63 => wire__crate__ffi__core__Core_signaling_topics_impl(port, ptr, rust_vec_len, data_len),
+        64 => wire__crate__ffi__core__Core_start_send_audio_impl(port, ptr, rust_vec_len, data_len),
+        65 => wire__crate__ffi__core__Core_start_send_file_impl(port, ptr, rust_vec_len, data_len),
+        66 => wire__crate__ffi__core__Core_subscribe_session_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        65 => wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
+        67 => wire__crate__ffi__core__Core_subscribe_transfer_events_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
+        68 => wire__crate__ffi__core__Core_sweep_expired_messages_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        67 => {
+        69 => {
             wire__crate__ffi__core__Core_transfer_progress_impl(port, ptr, rust_vec_len, data_len)
         }
-        68 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
+        70 => wire__crate__ffi__core__Core_unconfirmed_file_offers_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        69 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
-        70 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
-        71 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
+        71 => wire__crate__ffi__core__Core_unlock_impl(port, ptr, rust_vec_len, data_len),
+        72 => wire__crate__ffi__core__Core_verify_contact_impl(port, ptr, rust_vec_len, data_len),
+        73 => wire__crate__ffi__framing__extract_frame_from_local_socket_buffer_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__ffi__framing__frame_for_local_socket_impl(
+        74 => wire__crate__ffi__framing__frame_for_local_socket_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        73 => wire__crate__ffi__pin__pin_check_impl(port, ptr, rust_vec_len, data_len),
-        74 => wire__crate__ffi__pin__pin_hash_impl(port, ptr, rust_vec_len, data_len),
-        75 => {
+        75 => wire__crate__ffi__pin__pin_check_impl(port, ptr, rust_vec_len, data_len),
+        76 => wire__crate__ffi__pin__pin_hash_impl(port, ptr, rust_vec_len, data_len),
+        77 => {
             wire__crate__ffi__jitter__sample_jitter_delay_ms_impl(port, ptr, rust_vec_len, data_len)
         }
         _ => unreachable!(),
@@ -5226,6 +5385,52 @@ impl flutter_rust_bridge::IntoIntoDart<crate::ffi::pin::PinMatchDto>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::ResumedDirectionDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Send => 0.into_dart(),
+            Self::Receive => 1.into_dart(),
+            Self::Abandoned => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::ResumedDirectionDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::ResumedDirectionDto>
+    for crate::ffi::types::ResumedDirectionDto
+{
+    fn into_into_dart(self) -> crate::ffi::types::ResumedDirectionDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::ffi::types::ResumedTransferDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.file_id.into_into_dart().into_dart(),
+            self.direction.into_into_dart().into_dart(),
+            self.needs_offer.into_into_dart().into_dart(),
+            self.sealed_notice.into_into_dart().into_dart(),
+            self.message_id.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::ffi::types::ResumedTransferDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::ffi::types::ResumedTransferDto>
+    for crate::ffi::types::ResumedTransferDto
+{
+    fn into_into_dart(self) -> crate::ffi::types::ResumedTransferDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::ffi::types::SafetyNumberDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5472,6 +5677,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::TransferProgressDto {
             self.total_blocks.into_into_dart().into_dart(),
             self.bytes_done.into_into_dart().into_dart(),
             self.is_complete.into_into_dart().into_dart(),
+            self.awaiting_answer.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -5735,6 +5941,16 @@ impl SseEncode for Vec<u8> {
     }
 }
 
+impl SseEncode for Vec<crate::ffi::types::ResumedTransferDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::ffi::types::ResumedTransferDto>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::ffi::types::SealedMessageDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5939,6 +6155,34 @@ impl SseEncode for (Option<Vec<u8>>, Vec<u8>) {
     }
 }
 
+impl SseEncode for crate::ffi::types::ResumedDirectionDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::ffi::types::ResumedDirectionDto::Send => 0,
+                crate::ffi::types::ResumedDirectionDto::Receive => 1,
+                crate::ffi::types::ResumedDirectionDto::Abandoned => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::ffi::types::ResumedTransferDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.file_id, serializer);
+        <crate::ffi::types::ResumedDirectionDto>::sse_encode(self.direction, serializer);
+        <bool>::sse_encode(self.needs_offer, serializer);
+        <Option<Vec<u8>>>::sse_encode(self.sealed_notice, serializer);
+        <Option<i64>>::sse_encode(self.message_id, serializer);
+    }
+}
+
 impl SseEncode for crate::ffi::types::SafetyNumberDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6058,6 +6302,7 @@ impl SseEncode for crate::ffi::types::TransferProgressDto {
         <u32>::sse_encode(self.total_blocks, serializer);
         <u64>::sse_encode(self.bytes_done, serializer);
         <bool>::sse_encode(self.is_complete, serializer);
+        <bool>::sse_encode(self.awaiting_answer, serializer);
     }
 }
 

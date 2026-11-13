@@ -21,6 +21,8 @@ pub mod pin;
 pub mod session;
 pub mod signaling;
 pub mod transfer;
+pub mod transfer_handles;
+pub mod transfer_resume;
 pub mod types;
 
 pub use self::core::Core;

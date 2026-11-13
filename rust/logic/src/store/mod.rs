@@ -306,9 +306,22 @@ impl Store {
         self.with_conn(|conn| messages::requeue_sending_for_contact(conn, contact_device_id))
     }
 
-    /// Marca como falha os envios de arquivo e voz `Pending` de um contato.
-    pub fn fail_pending_transfers_for_contact(&self, contact_device_id: &[u8; 16]) -> Result<usize> {
-        self.with_conn(|conn| messages::fail_pending_transfers_for_contact(conn, contact_device_id))
+    /// `id` da mensagem de saída ligada a `file_id` deste contato.
+    pub fn outgoing_message_id_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<i64>> {
+        self.with_conn(|conn| messages::outgoing_id_by_file_id(conn, file_id, contact_device_id))
+    }
+
+    /// Devolve a `Pending` o envio de arquivo marcado como falha que vai retomar.
+    pub fn reopen_failed_message_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        self.with_conn(|conn| messages::reopen_failed_by_file_id(conn, file_id, contact_device_id))
     }
 
     /// Marca uma mensagem de saída `Pending` como falha.
@@ -339,7 +352,7 @@ impl Store {
         self.with_conn(|conn| messages::mark_expired_by_file_id(conn, file_id, contact_device_id))
     }
 
-    /// Marca como falha a mensagem de arquivo deste contato (envio cancelado pelo reset).
+    /// Marca como falha a mensagem de arquivo deste contato (envio que não retoma mais).
     pub fn mark_message_failed_by_file_id(
         &self,
         file_id: &[u8; 16],
@@ -348,7 +361,7 @@ impl Store {
         self.with_conn(|conn| messages::mark_failed_by_file_id(conn, file_id, contact_device_id))
     }
 
-    /// Marca como falha os envios de arquivo/voz que ficaram `Pending`.
+    /// Marca como falha os envios de arquivo/voz `Pending` que não podem retomar.
     pub fn fail_pending_transfers(&self) -> Result<usize> {
         self.with_conn(messages::fail_pending_transfers)
     }
@@ -473,6 +486,25 @@ impl Store {
         file_id: &[u8; 16],
     ) -> Result<Option<transfers::StoredTransfer>> {
         self.with_conn(|conn| transfers::find(conn, file_id))
+    }
+
+    /// Transferências que passaram do teto de retenção ou da oferta sem resposta.
+    pub fn list_due_file_transfers(
+        &self,
+        retention_cutoff: i64,
+        offer_cutoff: i64,
+    ) -> Result<Vec<transfers::DueTransfer>> {
+        self.with_conn(|conn| transfers::list_due(conn, retention_cutoff, offer_cutoff))
+    }
+
+    /// A transferência ainda tem linha em `file_transfers`.
+    pub fn file_transfer_exists(&self, file_id: &[u8; 16]) -> Result<bool> {
+        self.with_conn(|conn| transfers::exists(conn, file_id))
+    }
+
+    /// Registra que a oferta da transferência foi respondida (§7.7 item 5).
+    pub fn mark_file_transfer_answered(&self, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| transfers::mark_answered(conn, file_id))
     }
 
     /// Transferências de um contato numa direção.

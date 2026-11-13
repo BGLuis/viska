@@ -60,6 +60,11 @@ pub mod context {
     pub const PREAMBLE: &str = "viska-preamble-v1";
     pub const FILE_KEY: &str = "viska-file-key-v1";
     pub const STAGING: &str = "viska-staging-v1";
+    /// Cifra a cópia local do arquivo-fonte que o emissor guarda para retomar
+    /// o envio depois de bloqueio ou reinício (§7.5). Nunca vai ao fio. Domínio
+    /// próprio, separado de `STAGING`: os dois derivam do mesmo `K_file`, e a
+    /// cópia do emissor e o staging do receptor não podem ser a mesma chave.
+    pub const OUTGOING_STAGING: &str = "viska-outgoing-staging-v1";
     /// Cifra o nome original do arquivo dentro do corpo do manifesto (§7.1).
     pub const FILE_NAME: &str = "viska-file-name-v1";
     /// Cifra cada símbolo RaptorQ no canal não confiável — fora do ratchet,

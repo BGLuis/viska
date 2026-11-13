@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -302,6 +302,68 @@ class MessageDto {
 /// nesta tabela (`store::messages::reject_typing` e o resto do desenho da
 /// Fase 3).
 enum MessageKindDto { text, voiceNote, file }
+
+/// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
+enum ResumedDirectionDto {
+  /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
+  send,
+
+  /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
+  receive,
+
+  /// O recebimento não tinha como continuar e foi encerrado aqui; quem chama
+  /// só entrega `sealed_notice` (um `FILE_REJECT`) ao par, para o emissor
+  /// parar de tentar.
+  abandoned,
+}
+
+/// Uma transferência retomada com o contato — `Core::resume_transfers` (§7.5).
+/// Nada aqui é segredo.
+class ResumedTransferDto {
+  final Uint8List fileId;
+  final ResumedDirectionDto direction;
+
+  /// Envio cuja oferta ainda não teve resposta e pode ter se perdido com a
+  /// sessão anterior: quem chama pede o `FILE_METADATA` a
+  /// `Core::seal_resumed_offer` logo antes de mandá-lo. Selar só então evita
+  /// gastar um contador do ratchet numa oferta que não vai sair.
+  final bool needsOffer;
+
+  /// Pacote de controle já selado a entregar ao par: o `FILE_REJECT` de um
+  /// recebimento `Abandoned`.
+  final Uint8List? sealedNotice;
+
+  /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
+  /// bombeamento terminar. `None` no recebimento.
+  final PlatformInt64? messageId;
+
+  const ResumedTransferDto({
+    required this.fileId,
+    required this.direction,
+    required this.needsOffer,
+    this.sealedNotice,
+    this.messageId,
+  });
+
+  @override
+  int get hashCode =>
+      fileId.hashCode ^
+      direction.hashCode ^
+      needsOffer.hashCode ^
+      sealedNotice.hashCode ^
+      messageId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResumedTransferDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          direction == other.direction &&
+          needsOffer == other.needsOffer &&
+          sealedNotice == other.sealedNotice &&
+          messageId == other.messageId;
+}
 
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
@@ -611,11 +673,17 @@ class TransferProgressDto {
   final BigInt bytesDone;
   final bool isComplete;
 
+  /// Envio cuja oferta ainda não teve resposta: o emissor espera o aceite
+  /// (que pode levar horas, §7.6) e não deve ser dado como parado. Sempre
+  /// falso no recebimento.
+  final bool awaitingAnswer;
+
   const TransferProgressDto({
     required this.blocksDone,
     required this.totalBlocks,
     required this.bytesDone,
     required this.isComplete,
+    required this.awaitingAnswer,
   });
 
   @override
@@ -623,7 +691,8 @@ class TransferProgressDto {
       blocksDone.hashCode ^
       totalBlocks.hashCode ^
       bytesDone.hashCode ^
-      isComplete.hashCode;
+      isComplete.hashCode ^
+      awaitingAnswer.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -633,5 +702,6 @@ class TransferProgressDto {
           blocksDone == other.blocksDone &&
           totalBlocks == other.totalBlocks &&
           bytesDone == other.bytesDone &&
-          isComplete == other.isComplete;
+          isComplete == other.isComplete &&
+          awaitingAnswer == other.awaitingAnswer;
 }

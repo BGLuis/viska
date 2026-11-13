@@ -34,6 +34,7 @@ viska-signaling-v1         chave de ofuscação/cifra do canal de sinalização
 viska-beacon-v1            derivação do BeaconID BLE rotativo
 viska-file-key-v1          chave por transferência de arquivo
 viska-staging-v1           chave de cifragem em repouso do arquivo .staging
+viska-outgoing-staging-v1  cifra em repouso da cópia do arquivo-fonte do emissor (§7.5, D28)
 viska-db-key-v1            chave do banco SQLCipher
 viska-safety-number-words-v1  índices de palavra do safety number (§3.3)
 ```
@@ -456,26 +457,82 @@ A cada 500 ms o receptor envia `(file_id, block_index, symbols_received, blocks_
 Serve para o emissor parar de gerar reparo e para controle de taxa. Não revela nada além do volume,
 que já é observável.
 
-### 7.5 Staging cifrado (D13, D15)
+### 7.5 Staging cifrado e retomada (D13, D15, D28)
 
 ```
-K_file    = derive_key("viska-file-key-v1",    transfer_secret ‖ file_id)
-K_staging = derive_key("viska-staging-v1",     K_file)
+K_file     = derive_key("viska-file-key-v1",         transfer_secret ‖ file_id)
+K_staging  = derive_key("viska-staging-v1",          K_file)
+K_outgoing = derive_key("viska-outgoing-staging-v1", K_file)
 ```
 
 `transfer_secret` é um segredo aleatório de 32 B gerado localmente uma vez por transferência (D15)
 — não uma chave do ratchet. `Session` nunca expõe chave de mensagem para fora de si, e uma `MK` do
 ratchet é de uso único por desenho (§5.3): não sobreviveria a uma transferência retomada depois de
-queda de conexão. `transfer_secret` fica cifrado em repouso no banco local enquanto a transferência
-está ativa (D7/D13) e é apagado ao completar ou abortar — é isso que destrói `K_staging` abaixo.
+queda de conexão. `transfer_secret` fica cifrado em repouso no banco local (D7/D13) enquanto a
+transferência existe, inclusive através de bloqueio do cofre e reinício do app, e é apagado ao
+completar, ser recusada, cancelada, expirar (§7.7 item 5) ou passar do teto de retenção de 7 dias desde
+a criação (`TRANSFER_RETENTION_SECS`, D28), o que vier primeiro. Apagá-lo é o que destrói `K_staging`
+e `K_outgoing`.
 
 Bytes decodificados são gravados imediatamente em `<app_dir>/staging/<file_id>.staging`, cifrados
 com XChaCha20-Poly1305 por página de 64 KB. Nada além de um source block fica em RAM.
 
+O emissor, ao iniciar o envio, copia o arquivo-fonte para `<app_dir>/outgoing/<file_id>.staging`,
+cifrado pelo mesmo formato de página sob `K_outgoing`, e calcula a raiz BLAKE3 na mesma leitura: o
+manifesto descreve exatamente a cópia. Todo envio lê só a cópia, nunca o original, que o sistema pode
+apagar (cache do seletor de arquivos) ou que a pessoa pode alterar. `K_outgoing` nunca vai ao fio e é
+domínio separado de `K_staging`.
+
 Ao completar: recomputa a raiz BLAKE3, compara com `merkle_root`, e só então decifra para o
 destino final e apaga o staging. Se abortar, `K_staging` é destruída — o resíduo em flash fica
 criptograficamente inacessível, o que é mais confiável que sobrescrever bytes em armazenamento
-com wear leveling.
+com wear leveling. O `FILE_COMPLETE` faz o emissor apagar a linha e a cópia.
+
+**Retomada.** `Core::lock` descarta os handles em memória (e com eles as chaves em RAM), mas não a
+linha, o staging nem a cópia. Quando a sessão com o contato chega a `Established`, inclusive quando é
+trocada por outra (§11.4), e quando o canal com ele reconecta, o app chama `Core::resume_transfers`,
+que reconstrói o que falta:
+
+- **Emissor:** decifra a cópia inteira e confere a raiz contra o manifesto; se a cópia sumiu ou não
+  bate, o envio é encerrado como falha. O progresso não é persistido: o emissor recomeça do bloco 0 e
+  o bitmap do primeiro `FILE_FEEDBACK` (§7.4) o faz pular o que o receptor já tem. Se a oferta ainda
+  não teve resposta (nenhum `FILE_FEEDBACK` chegou, coluna `answered`), o `FILE_METADATA` é selado de
+  novo na sessão atual (`Core::seal_resumed_offer`, só quando o envio de fato recomeça), com o mesmo
+  `file_id`, segredo e manifesto, porque o original pode ter se perdido com a sessão anterior. O
+  receptor ignora uma oferta cujo `file_id` já conhece.
+- **Receptor:** conta as páginas inteiras do staging, recua até o fim do último source block contido
+  nelas e reconstrói o hash do conteúdo decifrando essas páginas. O último bloco nunca conta como
+  recebido, porque a página final, menor, só vai a disco ao completar. Staging que sumiu ou não
+  autentica encerra o recebimento, e o receptor sela um `FILE_REJECT` (§7.7) para o emissor parar.
+
+Na LAN um source block (65535 × 1024 B, D23) não fecha em página, então o receptor que retoma pode
+voltar a um bloco que já tinha confirmado, enquanto o emissor, que não trancou, segue adiante. Como o
+emissor só anda para a frente, um `FILE_FEEDBACK` cujo primeiro bloco incompleto está atrás do bloco
+corrente do emissor faz montar um emissor novo a partir da cópia, guiado por esse mesmo feedback.
+
+A chamada pode se repetir, inclusive em paralelo: um handle que já está em memória fica como está, e
+quem reconstrói ou termina uma transferência reserva o `file_id` antes de mexer no staging, porque a
+reconstrução corta o arquivo e não pode correr junto com outra, nem com o `finish` que o lê. O recuo
+acima cobre o caso em que o handle ficou adiante do receptor; ele só acontece num feedback de uma sessão
+mais nova que a do último feedback em dia, porque na mesma sessão um feedback que pareça atrás é só um
+atrasado. O receptor só apaga o staging junto com a linha, depois do commit no destino. Um `finish` que
+falhe ao escrever o destino devolve o recebimento, ainda completo, à memória, e a próxima tentativa (o
+próximo pedaço ou tick de feedback que o vir completo) só decifra de novo; se a Core trancar antes, a
+retomada recomeça do último bloco. Selar o `FILE_COMPLETE` depois do commit é melhor esforço, como o
+`FILE_REJECT`: sem sessão, o arquivo recebido fica e o aviso se perde (issue #108). Enquanto uma sessão candidata segura o envio (§11.4), ela
+não faz nada. Uma falha passageira de E/S só adia aquela transferência para a próxima chamada; só um
+arquivo sumido, cortado, adulterado ou que não bate com a raiz a encerra. Um handle montado enquanto
+a Core trancou, ou enquanto a transferência acabou, é descartado em vez de instalado. Os arquivos sem
+linha no banco só são varridos ao abrir ou destrancar a Core, porque um envio recém-iniciado grava a
+cópia antes da linha. Uma transferência enfileirada sem sessão entra pelo mesmo caminho: basta a linha
+e a cópia existirem.
+
+**Fim de um lado só.** Nem todo encerramento chega ao outro lado: o `FILE_COMPLETE` pode se perder, e
+o emissor não tem pacote para avisar que desistiu (§7.7 só define `FILE_REJECT` do receptor). Para o
+lado que ficou não rodar até o teto de 7 dias, o app para de bombear um envio já respondido e de mandar
+`FILE_FEEDBACK` depois de 2 minutos sem progresso; a transferência continua no banco e volta na próxima
+retomada. Uma oferta ainda sem resposta não conta, porque o aceite de uma oferta grande espera a pessoa
+(§7.6). Avisar o par nesses casos é a issue #108.
 
 ### 7.6 Limite de auto-aceite e retenção volátil de ofertas
 
@@ -495,7 +552,7 @@ Corpo: exatamente `file_id` (16 B), sem mais nada. Vai cifrado dentro da sessão
 2. **Recepção:** o emissor só age se `file_id` for uma transferência sua em curso (direção de envio) **e** pertencer ao contato que mandou o pacote. Então remove a linha de `file_transfers`, descarta o handle de envio (o bombeamento para) e marca a mensagem como recusada. Qualquer outro caso (`file_id` desconhecido, de outro contato, ou de uma transferência de recebimento) é ignorado sem erro distinguível.
 3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou, ou que bloqueou o app com ela pendente. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
 4. **Compatibilidade:** um build antigo trata `0x24` como tipo desconhecido e o ignora sem derrubar a sessão (§6.2); para ele, a transferência continua até o cancelamento manual, ou até o prazo do item 5.
-5. **Prazo do emissor:** se nem `FILE_FEEDBACK` nem `FILE_REJECT` chegarem em 24 h (`OFFER_RESPONSE_TIMEOUT_SECS`) contadas do envio do `FILE_METADATA`, o emissor desiste: marca a mensagem como expirada, descarta o handle e remove a linha de `file_transfers`. O primeiro `FILE_FEEDBACK` encerra o prazo, pois prova que a oferta foi aceita. O prazo vive só em memória, como a própria transferência de envio (U-03, `deviations.md` D15): bloqueio ou reinício abortam o envio antes dele. Não há timer; a expiração é aplicada quando a timeline é lida e quando um feedback chega. Vale só para arquivos, não para notas de voz. O prazo usa o relógio de parede, não um relógio monotônico, que não conta o tempo com o aparelho em suspensão; um salto do relógio para frente pode expirar a oferta antes da hora.
+5. **Prazo do emissor:** se nem `FILE_FEEDBACK` nem `FILE_REJECT` chegarem em 24 h (`OFFER_RESPONSE_TIMEOUT_SECS`) contadas do envio do `FILE_METADATA`, o emissor desiste: marca a mensagem como expirada, descarta o handle e remove a linha de `file_transfers`. O primeiro `FILE_FEEDBACK` encerra o prazo, pois prova que a oferta foi aceita, e fica registrado na linha de `file_transfers` (`answered`). O prazo conta de `created_at` dessa linha e sobrevive a bloqueio e reinício, como a própria transferência (§7.5). Não há timer; a expiração é aplicada quando a timeline é lida, quando um feedback chega, ao abrir ou destrancar a Core e ao retomar. Vale só para arquivos, não para notas de voz. O prazo usa o relógio de parede, não um relógio monotônico, que não conta o tempo com o aparelho em suspensão; um salto do relógio para frente pode expirar a oferta antes da hora.
 
 ---
 
@@ -714,12 +771,9 @@ com a sessão `Established` sã ou em handshake não faz nada. Mensagens de text
 descartada e a falha é local, mas fica o risco residual de duplicata se o par chegou a recebê-las
 antes. Isso difere do texto que estava em `Sending` quando a Core abriu ou foi trancada: ali não se
 sabe se os bytes saíram, e recifrá-los entregaria a mesma mensagem duas vezes, então ele vira
-`unknown` e só a pessoa o reenvia (a linha e o `global_id` são os mesmos, e o par deduplica). Os
-envios de arquivo e de nota de voz em andamento com o par são cancelados e as mensagens marcadas como
-falha (`Failed`) — inclusive a oferta já enviada (`Sent`) sem resposta e o envio aceito e incompleto, que
-sem isso ficariam `Sent` para sempre —, porque o `FILE_METADATA` foi selado na sessão que deixou de existir.
-Só entram os envios que ainda têm linha em `file_transfers` e mensagem ainda não terminada: um envio
-concluído (sem linha) e os estados finais `Delivered`, `Rejected` e `Expired` não mudam. O estado de cada sessão é empurrado ao
+`unknown` e só a pessoa o reenvia (a linha e o `global_id` são os mesmos, e o par deduplica). Envios
+e recebimentos de arquivo e de nota de voz não são tocados: não dependem da sessão (D15), e a retomada
+(§7.5) reenvia na sessão nova a oferta que ainda não teve resposta. O estado de cada sessão é empurrado ao
 Dart por `Core::subscribe_session_events` (par, `SessionStateKind` e `needs_rehandshake`, nenhum
 segredo), pois ele muda dentro do Rust sem que o Dart tenha perguntado.
 As ofertas de arquivo retidas para confirmação (§7.6) seguem o mesmo princípio em

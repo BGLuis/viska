@@ -35,6 +35,14 @@ class _FakeCore implements Core {
   Uint8List? Function(Uint8List sealed)? openSignalingPayloadHandler;
 
   @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> sealResumedOffer({required List<int> peerDeviceId, required List<int> fileId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<SignalingTopicsDto> signalingTopics({required List<int> peerDeviceId}) async => topics;
 
   @override

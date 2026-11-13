@@ -141,6 +141,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<ResumedTransferDto> dco_decode_list_resumed_transfer_dto(dynamic raw);
+
+  @protected
   List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
 
   @protected
@@ -198,6 +201,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (Uint8List?, Uint8List)
   dco_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  ResumedDirectionDto dco_decode_resumed_direction_dto(dynamic raw);
+
+  @protected
+  ResumedTransferDto dco_decode_resumed_transfer_dto(dynamic raw);
 
   @protected
   SafetyNumberDto dco_decode_safety_number_dto(dynamic raw);
@@ -387,6 +396,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<ResumedTransferDto> sse_decode_list_resumed_transfer_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<SealedMessageDto> sse_decode_list_sealed_message_dto(
     SseDeserializer deserializer,
   );
@@ -458,6 +472,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   (Uint8List?, Uint8List)
   sse_decode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ResumedDirectionDto sse_decode_resumed_direction_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ResumedTransferDto sse_decode_resumed_transfer_dto(
     SseDeserializer deserializer,
   );
 
@@ -699,6 +723,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_resumed_transfer_dto(
+    List<ResumedTransferDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_sealed_message_dto(
     List<SealedMessageDto> self,
     SseSerializer serializer,
@@ -788,6 +818,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_record_opt_list_prim_u_8_strict_list_prim_u_8_strict(
     (Uint8List?, Uint8List) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_resumed_direction_dto(
+    ResumedDirectionDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_resumed_transfer_dto(
+    ResumedTransferDto self,
     SseSerializer serializer,
   );
 

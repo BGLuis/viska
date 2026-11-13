@@ -9,7 +9,7 @@ import 'error.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'types.dart';
 
-// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `reset_inflight_state`
+// These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `maintain_transfers_at_rest`, `reset_inflight_state`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Core>>
@@ -41,11 +41,8 @@ abstract class Core implements RustOpaqueInterface {
   Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
-  /// memória e o registro em `store`. Do lado receptor, também apaga o
-  /// `.staging` — mesma garantia de "abortar destrói a chave" de
-  /// `StagingWriter::abort`, só que aqui via `sweep_orphaned` na próxima
-  /// abertura, já que o handle não guarda o `StagingWriter` bruto (ele já
-  /// foi fechado a cada bloco completado). Ver §7.5/D15.
+  /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
+  /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
   Future<void> cancelTransfer({required List<int> fileId});
 
   /// Código numérico de 6 dígitos (SAS) para confirmação presencial de segurança
@@ -108,7 +105,7 @@ abstract class Core implements RustOpaqueInterface {
   /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
   /// chama remonta o contêiner para reprodução (ver
   /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
-  Future<Uint8List> finishReceiveAudio({
+  Future<Uint8List?> finishReceiveAudio({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
@@ -117,9 +114,14 @@ abstract class Core implements RustOpaqueInterface {
   /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
   /// decifra para `destination_path`, remove o `.staging` e o registro em
   /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-  /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-  /// emissor pelo canal `control`.
-  Future<Uint8List> finishReceiveFile({
+  /// D15).
+  ///
+  /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
+  /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
+  /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
+  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
+  /// emissor só para pelo limite de inatividade (issue #108).
+  Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
@@ -180,8 +182,10 @@ abstract class Core implements RustOpaqueInterface {
   });
 
   /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-  /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
-  /// limpa a chave mestra nativa injetada.
+  /// memória, descarta os handles de transferência (e com eles as chaves em
+  /// RAM), fecha a conexão do SQLCipher e limpa a chave mestra nativa
+  /// injetada. As transferências continuam no banco, no `.staging` e em
+  /// `outgoing/`, cifradas, e retomam depois do desbloqueio (§7.5).
   ///
   /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
   /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
@@ -313,15 +317,34 @@ abstract class Core implements RustOpaqueInterface {
   /// provar a chave.
   ///
   /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-  /// antiga e `flush_pending` os cifra de novo); envios de arquivo e voz em
-  /// andamento com este contato são cancelados e marcados como falha, porque
-  /// o `FILE_METADATA` foi selado na sessão que deixou de existir.
+  /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+  /// arquivo não são tocados: não dependem da sessão (D15), e
+  /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
+  /// nova (§7.5).
   Future<SessionStatusDto> resetSession({required List<int> peerDeviceId});
 
   /// Restaura backup cifrado a partir de frase mnemônica de 24 palavras e arquivo .viskasafe.
   Future<void> restoreEncryptedBackup({
     required String srcPath,
     required String mnemonic,
+  });
+
+  /// Reconstrói e devolve as transferências com o contato que podem continuar
+  /// (§7.5). Chamar quando a sessão com ele chega a `Established`, inclusive
+  /// depois de trocada por outra (§11.4), e quando o canal reconecta: pode ser
+  /// chamada quantas vezes for, pois um handle que já está em memória fica como
+  /// está. Enquanto uma sessão candidata segura o envio (§11.4), devolve vazio:
+  /// a oferta selada agora sairia pela sessão que o par acabou de perder.
+  ///
+  /// Um envio cuja cópia em `outgoing/` sumiu, foi cortada ou não bate mais
+  /// com a raiz é encerrado como falha. Um recebimento cujo `.staging` sumiu
+  /// ou não autentica é encerrado e volta como `Abandoned`, com o
+  /// `FILE_REJECT` que avisa o emissor. Uma falha passageira só pula aquela
+  /// transferência nesta chamada. Um envio sem resposta volta com
+  /// `needs_offer`, porque o `FILE_METADATA` original pode ter se perdido com
+  /// a sessão anterior.
+  Future<List<ResumedTransferDto>> resumeTransfers({
+    required List<int> peerDeviceId,
   });
 
   /// Safety number entre esta identidade e um contato já pareado.
@@ -357,6 +380,16 @@ abstract class Core implements RustOpaqueInterface {
   Future<SealedMessageDto> sealOutgoingText({
     required List<int> peerDeviceId,
     required String body,
+  });
+
+  /// O `FILE_METADATA` de um envio retomado cuja oferta ainda não teve
+  /// resposta, selado na sessão atual com o mesmo `file_id`, segredo e
+  /// manifesto. `None` se não há mais o que oferecer (a oferta foi
+  /// respondida, a transferência acabou ou não é um envio para este contato)
+  /// ou se a sessão não cifra agora.
+  Future<Uint8List?> sealResumedOffer({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
   });
 
   /// Cifra um payload de sinalização (SDP ou candidato ICE já
@@ -453,7 +486,9 @@ abstract class Core implements RustOpaqueInterface {
   });
 
   /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
-  /// mestre e reabre a conexão do SQLCipher.
+  /// mestre e reabre a conexão do SQLCipher. As transferências só voltam a
+  /// andar em `Core::resume_transfers`, quando a sessão com o contato estiver
+  /// de pé; aqui só se aplicam os prazos de retenção.
   Future<void> unlock();
 
   /// Define se o contato foi verificado (true/false) após conferência do Safety Number.

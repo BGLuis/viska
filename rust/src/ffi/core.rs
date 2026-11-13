@@ -12,7 +12,8 @@ use std::sync::{Mutex, RwLock};
 use zeroize::Zeroizing;
 
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::{TransferHandle, UnconfirmedOffer};
+use crate::ffi::transfer::UnconfirmedOffer;
+use crate::ffi::transfer_handles::TransferHandle;
 use crate::ffi::types::{ContactDto, SafetyNumberDto, SealedNoticeDto};
 use crate::session_events::SessionEvents;
 use crate::transfer_events::TransferEvents;
@@ -24,6 +25,7 @@ use viska_proto::store::{keyring, Store};
 
 const DB_FILE_NAME: &str = "viska.sqlite3";
 const STAGING_DIR_NAME: &str = "staging";
+const OUTGOING_DIR_NAME: &str = "outgoing";
 
 pub struct Core {
     // `pub(super)`, não privado: `ffi::session` (mesmo módulo pai `ffi`)
@@ -43,10 +45,15 @@ pub struct Core {
     /// FFI são despachados pelo `flutter_rust_bridge` em threads do próprio
     /// pool, potencialmente diferentes a cada chamada.
     pub(super) sessions: Mutex<HashMap<[u8; 16], Session>>,
-    /// Transferências de arquivo em andamento, uma por `file_id` — nunca
-    /// persistidas em si (`store::transfers` guarda só o necessário para
-    /// retomar dentro da mesma execução, ver `file::transfer`).
+    /// Transferências de arquivo em andamento, uma por `file_id`. Os handles
+    /// vivem só em RAM e somem no bloqueio, com as chaves; `store::transfers`,
+    /// o `.staging` e a cópia em `outgoing/` bastam para reconstruí-los em
+    /// `Core::resume_transfers` (§7.5).
     pub(super) transfers: Mutex<HashMap<[u8; 16], TransferHandle>>,
+    /// `file_id`s sem handle no mapa que alguém está reconstruindo ou
+    /// terminando a partir do disco (`ffi/transfer_handles.rs`). Ordem de
+    /// travas: `transfers` antes desta.
+    pub(super) transfer_claims: Mutex<std::collections::HashSet<[u8; 16]>>,
     /// Destinatário dos eventos de estado de sessão e o último estado entregue
     /// por contato. Ordem de travas: `sessions` antes de `session_events`,
     /// sempre — quem publica lê a sessão e emite sob as duas, para que o
@@ -62,20 +69,21 @@ pub struct Core {
     /// o evento sai sob a mesma trava, para o replay da assinatura não perder
     /// nem duplicar uma mudança concorrente.
     pub(super) transfer_events: Mutex<TransferEvents>,
-    /// Quando cada oferta de arquivo enviada saiu (segundos Unix) e ainda não
-    /// teve resposta. Só em RAM, como a própria transferência (U-03).
-    pub(super) unanswered_offers: Mutex<HashMap<[u8; 16], i64>>,
     /// `<app_dir>/staging` — onde `.staging` de arquivos em recebimento
     /// ficam (§7.5). Não é segredo, só um caminho de diretório.
     pub(super) staging_dir: PathBuf,
+    /// `<app_dir>/outgoing` — cópias cifradas dos arquivos em envio, de onde
+    /// o envio retoma depois de bloqueio ou reinício (§7.5).
+    pub(super) outgoing_dir: PathBuf,
     /// Diretório de dados do app para reabertura de banco e apagamento.
     pub(super) app_dir: PathBuf,
 }
 
 /// Acerta as linhas de saída que dependiam de estado só em memória.
 ///
-/// Sem handle ativo o envio de arquivo não retoma, e a linha não pode
-/// continuar "Enviando…". Já o texto em `Sending` perdeu a pista de se os bytes
+/// Um envio de arquivo sem linha em `file_transfers` não retoma, e a mensagem
+/// não pode continuar "Enviando…"; os que têm linha ficam como estão e retomam
+/// em `Core::resume_transfers`. Já o texto em `Sending` perdeu a pista de se os bytes
 /// saíram: ele vira `Unknown`, e só a pessoa o reenvia. Devolvê-lo à fila
 /// recifraria uma mensagem que o par talvez já tenha, que é a duplicata da #67.
 /// (`reset_session` age diferente, de propósito: a sessão que selou o texto
@@ -96,36 +104,30 @@ impl Core {
         let store = Store::open(&dir.join(DB_FILE_NAME), &master_secret)?;
         let identity = store.load_or_create_identity()?;
 
-        let staging_dir = dir.join(STAGING_DIR_NAME);
-        // Na abertura a frio ou recuperação de crash, transferências sem handle
-        // ativo em memória são tratadas como abortadas (U-03). Destrói os segredos
-        // no banco e remove os arquivos de staging correspondentes.
-        let active_ids = store.list_active_file_transfer_ids()?;
-        for id in &active_ids {
-            let _ = store.delete_file_transfer(id);
-        }
-        reset_inflight_state(&store);
-        let surviving = std::collections::HashSet::new();
-        viska_proto::file::staging::sweep_orphaned(&staging_dir, &surviving)?;
-
-        Ok(Core {
+        let core = Core {
             identity: RwLock::new(identity),
             store,
             sessions: Mutex::new(HashMap::new()),
             session_events: Mutex::new(SessionEvents::default()),
             transfers: Mutex::new(HashMap::new()),
+            transfer_claims: Mutex::new(std::collections::HashSet::new()),
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
             transfer_events: Mutex::new(TransferEvents::default()),
-            unanswered_offers: Mutex::new(HashMap::new()),
-            staging_dir,
+            staging_dir: dir.join(STAGING_DIR_NAME),
+            outgoing_dir: dir.join(OUTGOING_DIR_NAME),
             app_dir: dir.to_path_buf(),
-        })
+        };
+        core.maintain_transfers_at_rest();
+        reset_inflight_state(&core.store);
+        Ok(core)
     }
 
     /// Tranca a Core (D13 / F1): limpa e zera todas as sessões do ratchet em
-    /// memória, aborta transferências ativas (U-03), fecha a conexão do SQLCipher e
-    /// limpa a chave mestra nativa injetada.
+    /// memória, descarta os handles de transferência (e com eles as chaves em
+    /// RAM), fecha a conexão do SQLCipher e limpa a chave mestra nativa
+    /// injetada. As transferências continuam no banco, no `.staging` e em
+    /// `outgoing/`, cifradas, e retomam depois do desbloqueio (§7.5).
     ///
     /// Devolve um `FILE_REJECT` por oferta retida (§7.6.2), selado antes de
     /// as sessões sumirem, para o Dart enviar depois de trancar. Melhor esforço.
@@ -135,50 +137,36 @@ impl Core {
         // O Dart não pode seguir achando que há sessão estabelecida.
         self.publish_all_sessions();
         self.clear_unconfirmed_offers()?;
-        self.unanswered_offers.lock().map_err(|_| FfiError::Internal)?.clear();
-        {
-            let mut transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
-            for file_id in transfers.keys() {
-                let _ = self.store.delete_file_transfer(file_id);
-            }
-            transfers.clear();
-        }
-        // As transferências acima foram abortadas: o mesmo vale para as linhas.
+        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         reset_inflight_state(&self.store);
-        if let Ok(active_ids) = self.store.list_active_file_transfer_ids() {
-            for id in &active_ids {
-                let _ = self.store.delete_file_transfer(id);
-            }
-        }
-        let surviving = std::collections::HashSet::new();
-        let _ = viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving);
 
         self.store.close()?;
+        // De novo, com o banco já fechado: uma retomada que estava lendo o
+        // arquivo durante o bloqueio pode ter inserido um handle depois da
+        // primeira limpeza, e `install_handle` só recusa vendo o banco fechado.
+        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         keyring::clear_injected_master_secret();
         Ok(notices)
     }
 
     /// Destranca a Core após autenticação bem-sucedida: recarrega a chave
-    /// mestre e reabre a conexão do SQLCipher.
+    /// mestre e reabre a conexão do SQLCipher. As transferências só voltam a
+    /// andar em `Core::resume_transfers`, quando a sessão com o contato estiver
+    /// de pé; aqui só se aplicam os prazos de retenção.
     pub fn unlock(&self) -> Result<(), FfiError> {
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
         self.store
             .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
-
-        // Qualquer transferência sem handle em memória é tratada como abortada (U-03),
-        // limpando registros órfãos e arquivos .staging.
-        let active_ids = self.store.list_active_file_transfer_ids()?;
-        let transfers = self.transfers.lock().map_err(|_| FfiError::Internal)?;
-        let mut surviving = std::collections::HashSet::new();
-        for id in active_ids {
-            if !transfers.contains_key(&id) {
-                let _ = self.store.delete_file_transfer(&id);
-            } else {
-                surviving.insert(id);
-            }
-        }
-        viska_proto::file::staging::sweep_orphaned(&self.staging_dir, &surviving)?;
+        self.maintain_transfers_at_rest();
         Ok(())
+    }
+
+    /// Prazos de retenção e varredura de arquivos sem linha, em `open` e
+    /// `unlock`. Melhor esforço: uma linha ruim não pode impedir o cofre de
+    /// abrir, e o que falhar aqui é refeito na próxima abertura ou retomada.
+    fn maintain_transfers_at_rest(&self) {
+        let _ = self.enforce_transfer_deadlines();
+        let _ = self.sweep_transfer_files();
     }
 
     /// Informa se a Core está trancada.
@@ -205,6 +193,7 @@ impl Core {
         let _ = std::fs::remove_file(self.app_dir.join("viska.sqlite3-shm"));
         let _ = std::fs::remove_dir_all(&self.staging_dir);
         let _ = std::fs::create_dir_all(&self.staging_dir);
+        let _ = std::fs::remove_dir_all(&self.outgoing_dir);
         let received_dir = self.app_dir.join("received");
         let _ = std::fs::remove_dir_all(&received_dir);
         let _ = std::fs::create_dir_all(&received_dir);

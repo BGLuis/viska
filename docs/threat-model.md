@@ -188,7 +188,7 @@ efetivamente **implementado**, com remissão ao relatório de endurecimento
 |---|:---:|---|
 | **`zeroize` em buffers e segredos** | ✅ | Implementado em todo o núcleo Rust (`crypto/`, `wire/`, `store/`). |
 | **`android:allowBackup="false"`** | ✅ | Ativo no manifesto Android (`android/app/src/main/AndroidManifest.xml`). Impede extração via `adb backup`. |
-| **Staging cifrado descartável** | ✅ | Transferências de arquivos e notas de voz usam chave efêmera e montagem em `.staging`. |
+| **Staging cifrado descartável** | ✅ | Transferências de arquivos e notas de voz usam chave por transferência e montagem em `.staging`; o emissor relê de uma cópia cifrada em `outgoing/` (D28). Para retomar depois de bloqueio ou reinício, o segredo fica no banco até a transferência acabar ou por no máximo 7 dias: nesse intervalo, quem tiver o aparelho destrancado lê o staging e a cópia. |
 | **Teclado sem autocorreção/sugestões** | ✅ | Ativo nos campos de entrada de texto (`autocorrect: false`) em `chat_screen.dart`. |
 | **Zero SDK de telemetria / analytics** | ✅ | Zero dependências de rastreamento no `Cargo.toml` e `pubspec.yaml`. |
 | **Apagamento de emergência (crypto-shredding)** | ✅ | `Core::emergency_erase` destrói o banco SQLite, remove a chave mestra em disco e remove o alias no Android KeyStore. |
