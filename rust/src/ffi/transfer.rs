@@ -513,7 +513,7 @@ impl Core {
         file_id: Vec<u8>,
         destination_path: String,
     ) -> Result<Option<Vec<u8>>, FfiError> {
-        self.finish_receive(peer_device_id, file_id, destination_path)
+        self.finish_receive(peer_device_id, file_id, destination_path, TransferKind::File)
     }
 
     /// Como [`Core::finish_receive_file`] — `destination_path` recebe o
@@ -526,7 +526,7 @@ impl Core {
         file_id: Vec<u8>,
         destination_path: String,
     ) -> Result<Option<Vec<u8>>, FfiError> {
-        self.finish_receive(peer_device_id, file_id, destination_path)
+        self.finish_receive(peer_device_id, file_id, destination_path, TransferKind::Audio)
     }
 
     /// Gera o pacote `FILE_FEEDBACK` (0x22) selado pela sessão para o `file_id`
@@ -571,11 +571,18 @@ impl Core {
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
+        kind: TransferKind,
     ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
         let file_id = to_file_id(file_id)?;
+        // Um arquivo fechado como nota de voz seria lido inteiro para a memória e
+        // apagado; o tipo vem do `FILE_METADATA`, não de quem chama.
+        let stored = self.store.find_file_transfer(&file_id)?.ok_or(FfiError::Internal)?;
+        if stored.kind != kind || stored.direction != Direction::Receiving {
+            return Err(FfiError::Internal);
+        }
 
         let destination =
             std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
@@ -602,8 +609,11 @@ impl Core {
                 return Err(err.into());
             }
         };
-        drop(claim);
+        // A reserva vai até a linha sumir: uma retomada que listou as linhas
+        // antes disso não pode reservar o `file_id`, achar o staging apagado e
+        // mandar um `FILE_REJECT` por uma transferência que acabou de dar certo.
         self.end_transfer(&file_id)?;
+        drop(claim);
 
         // Daqui em diante o arquivo já está no destino e a transferência acabou:
         // uma falha ao selar não pode virar `Err`, que faria quem chama apagar o

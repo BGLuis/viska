@@ -436,7 +436,12 @@ class MessageReceptionService {
         return;
       }
 
-      _stopFeedback(hexId);
+      // O feedback segue armado: se o fechamento falhar, é o tick que o tenta de
+      // novo (docs/protocol.md §7.5); quando ele dá certo, o tick seguinte não
+      // acha mais a transferência e para.
+      if (!_feedbackTimers.containsKey(hexId)) {
+        await watchIncomingTransfer(contactId, ingested.fileId);
+      }
       await _finishIncoming(contactId, ingested.fileId);
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
@@ -454,18 +459,20 @@ class MessageReceptionService {
   Future<void> _finishIncoming(ContactId contactId, Uint8List fileId) async {
     final hexId = _hex(fileId);
     if (!_finishing.add(hexId)) return;
+    var committed = false;
     try {
+      FileOfferDto? fileOffer;
       try {
         final fileOffers = await _core.pendingFileOffers(peerDeviceId: contactId.deviceId);
-        final fileOffer = fileOffers.where((o) => listEquals(o.fileId, fileId)).firstOrNull;
-        if (fileOffer != null) {
-          await _finishReceivingFile(contactId, fileId, fileOffer);
-          return;
-        }
+        fileOffer = fileOffers.where((o) => listEquals(o.fileId, fileId)).firstOrNull;
       } catch (_) {}
-      await _finishReceivingVoiceNote(contactId, fileId);
+      committed = fileOffer != null
+          ? await _finishReceivingFile(contactId, fileId, fileOffer)
+          : await _finishReceivingVoiceNote(contactId, fileId);
     } finally {
       _finishing.remove(hexId);
+      // Fechado, o feedback acaba já; senão o tick tenta de novo.
+      if (committed) _stopFeedback(hexId);
     }
   }
 
@@ -488,11 +495,12 @@ class MessageReceptionService {
     if (!_feedbackTicksInFlight.add(hexId)) return;
     try {
       final progress = await _core.transferProgress(fileId: fileId);
-      if (progress == null || progress.isComplete) {
-        _stopFeedback(hexId);
-        if (progress != null) unawaited(_finishIncoming(contactId, fileId));
+      if (progress == null) {
+        // Durante o fechamento o handle sai do mapa: ainda não acabou.
+        if (!_finishing.contains(hexId)) _stopFeedback(hexId);
         return;
       }
+      if (progress.isComplete) unawaited(_finishIncoming(contactId, fileId));
       final current = _progressMark(progress);
       final idle = _feedbackIdle[hexId];
       if (idle == null || idle.progress != current) {
@@ -583,7 +591,8 @@ class MessageReceptionService {
     return dir;
   }
 
-  Future<void> _finishReceivingFile(
+  /// `true` quando o arquivo chegou ao destino.
+  Future<bool> _finishReceivingFile(
     ContactId contactId,
     Uint8List fileId,
     FileOfferDto offer,
@@ -601,14 +610,16 @@ class MessageReceptionService {
     } catch (_) {
       // Só um `Err` antes do commit chega aqui: o destino está incompleto.
       unawaited(File(destPath).delete().catchError((_) => File(destPath)));
-      return;
+      return false;
     }
     _receivedFilePaths[_hex(fileId)] = destPath;
     _eventsController.add(FileReceivedEvent(contactId, fileId: fileId, path: destPath));
     await _sendFileComplete(contactId, sealedComplete);
+    return true;
   }
 
-  Future<void> _finishReceivingVoiceNote(ContactId contactId, Uint8List fileId) async {
+  /// `true` quando a nota chegou ao destino.
+  Future<bool> _finishReceivingVoiceNote(ContactId contactId, Uint8List fileId) async {
     final receivedDirPath = await _getReceivedDirectory();
     final internalPath = '$receivedDirPath/nota-recebida-${_hex(fileId)}.viska-audio';
     try {
@@ -623,7 +634,9 @@ class MessageReceptionService {
         VoiceNoteReceivedEvent(contactId, fileId: fileId, internalBytes: internalBytes),
       );
       await _sendFileComplete(contactId, sealedComplete);
+      return true;
     } catch (_) {
+      return false;
     } finally {
       unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
     }

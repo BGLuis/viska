@@ -1150,6 +1150,25 @@ mod tests {
     }
 
     #[test]
+    fn a_receive_is_only_finished_as_the_kind_it_was_offered_as() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = write_temp_file(&dir_src, "a.bin", &[3u8; 5_000]);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata).unwrap();
+        drive(&pair, &started.file_id, 1);
+
+        let as_audio = dir_dst.path().join("nota.viska-audio");
+        assert!(pair
+            .core_b
+            .finish_receive_audio(pair.device_id_a.clone(), started.file_id.clone(), as_audio.to_str().unwrap().to_owned())
+            .is_err());
+
+        assert!(pair.core_b.transfer_progress(started.file_id.clone()).unwrap().unwrap().is_complete);
+        assert_eq!(finish(&pair, &started.file_id, &dir_dst), vec![3u8; 5_000]);
+    }
+
+    #[test]
     fn a_committed_file_survives_a_file_complete_that_cannot_be_sealed() {
         let pair = established_pair();
         let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -1171,8 +1190,12 @@ mod tests {
         assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
     }
 
+    /// Verificação simples, sequencial: a corrida que `install_handle` evita
+    /// (reserva e handle ao mesmo tempo) não se reproduz sem threads. O que
+    /// isto prova é que a reserva some com o handle no mapa e que
+    /// `take_for_finish` consegue reservar de novo sem disparar o `debug_assert`.
     #[test]
-    fn a_rebuild_releases_its_claim_when_the_handle_goes_in() {
+    fn a_rebuild_leaves_no_claim_behind_once_the_handle_is_in() {
         let pair = established_pair();
         let dir_src = tempfile::tempdir().unwrap();
         let (started, _) = start_two_block_send(&pair, &dir_src);

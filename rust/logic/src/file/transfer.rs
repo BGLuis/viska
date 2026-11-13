@@ -898,9 +898,12 @@ impl ReceiveTransfer {
             ));
         }
 
-        if let Some(writer) = self.staging.take() {
+        // O escritor só sai depois de a última página ir a disco: se ela falhar,
+        // a próxima tentativa a grava de novo.
+        if let Some(writer) = self.staging.as_mut() {
             writer.finish()?;
         }
+        self.staging = None;
 
         merkle::verify_root(&self.content_hasher.finalize(), &self.manifest.merkle_root)?;
 

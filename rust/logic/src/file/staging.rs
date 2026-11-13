@@ -250,10 +250,21 @@ impl StagingWriter {
     /// Cifra e grava a última página (possivelmente menor que [`PAGE_LEN`],
     /// possivelmente vazia se o arquivo for vazio) e garante que os bytes
     /// cheguem ao disco antes de devolver.
-    pub fn finish(mut self) -> Result<()> {
+    ///
+    /// Pode ser repetida depois de uma falha (disco cheio na última página): o
+    /// buffer só é esvaziado depois de a página ir a disco, e cada tentativa
+    /// corta antes o que uma escrita interrompida tenha deixado depois da
+    /// última página inteira.
+    pub fn finish(&mut self) -> Result<()> {
         if !self.buffer.is_empty() {
-            let last = Zeroizing::new(std::mem::take(&mut self.buffer));
+            self.file
+                .set_len(self.next_page_index * SEALED_PAGE_LEN)
+                .and_then(|()| self.file.seek(SeekFrom::End(0)).map(|_| ()))
+                .map_err(|_| Error::Malformed("falha preparando a última página do staging"))?;
+            let last = Zeroizing::new(self.buffer.clone());
             self.flush_page(&last)?;
+            self.buffer.zeroize();
+            self.buffer.clear();
         }
         self.file
             .sync_all()
@@ -491,7 +502,7 @@ mod tests {
         let file_id = [2u8; FILE_ID_LEN];
         let key = chave_de_teste(2);
 
-        let writer = StagingWriter::create(dir.path(), file_id, key.clone()).unwrap();
+        let mut writer = StagingWriter::create(dir.path(), file_id, key.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut reader = StagingReader::open(dir.path(), file_id, key, 0).unwrap();
@@ -603,7 +614,7 @@ mod tests {
 
         for id in [ativo, orfao] {
             let key = chave_de_teste(id[0]);
-            let writer = StagingWriter::create(dir.path(), id, key).unwrap();
+            let mut writer = StagingWriter::create(dir.path(), id, key).unwrap();
             writer.finish().unwrap();
         }
 
@@ -684,6 +695,45 @@ mod tests {
         let mut writer = StagingWriter::create(dir, [tag; FILE_ID_LEN], chave_de_teste(tag)).unwrap();
         writer.write(data).unwrap();
         // Sem `finish`: simula o bloqueio no meio, com a página final só na RAM.
+    }
+
+    #[test]
+    fn finish_can_run_again_without_duplicating_the_last_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN + 777).map(|i| (i % 241) as u8).collect();
+        let mut writer = StagingWriter::create(dir.path(), [11; FILE_ID_LEN], chave_de_teste(11)).unwrap();
+        writer.write(&original).unwrap();
+        writer.finish().unwrap();
+        writer.finish().unwrap();
+
+        let on_disk = fs::metadata(staging_path(dir.path(), &[11; FILE_ID_LEN])).unwrap().len();
+        assert_eq!(on_disk, sealed_len(original.len() as u64));
+        let mut out = Vec::new();
+        StagingReader::open(dir.path(), [11; FILE_ID_LEN], chave_de_teste(11), original.len() as u64)
+            .unwrap()
+            .decrypt_to(&mut out)
+            .unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn finish_cuts_a_torn_last_page_before_writing_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN + 777).map(|i| (i % 239) as u8).collect();
+        let mut writer = StagingWriter::create(dir.path(), [12; FILE_ID_LEN], chave_de_teste(12)).unwrap();
+        writer.write(&original).unwrap();
+        // Uma tentativa anterior que morreu no meio da última página.
+        let path = staging_path(dir.path(), &[12; FILE_ID_LEN]);
+        fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(&[0xEE; 100]).unwrap();
+
+        writer.finish().unwrap();
+
+        let mut out = Vec::new();
+        StagingReader::open(dir.path(), [12; FILE_ID_LEN], chave_de_teste(12), original.len() as u64)
+            .unwrap()
+            .decrypt_to(&mut out)
+            .unwrap();
+        assert_eq!(out, original);
     }
 
     #[test]

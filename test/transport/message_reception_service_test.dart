@@ -225,6 +225,9 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
   Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) async =>
       pendingOffers;
 
+  /// Quantas chamadas a `finishReceiveFile` falham antes do commit.
+  var finishFailuresLeft = 0;
+
   /// `null` imita o Rust sem sessão para selar o `FILE_COMPLETE`.
   Uint8List? fileCompleteToReturn = Uint8List.fromList([0xAA, 0xBB]);
 
@@ -235,7 +238,13 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     required String destinationPath,
   }) async {
     finishReceiveFileCalls.add(Uint8List.fromList(fileId));
+    if (finishFailuresLeft > 0) {
+      finishFailuresLeft--;
+      throw StateError('disco cheio');
+    }
     File(destinationPath).writeAsBytesSync([7, 7]);
+    // Como o Rust: depois do commit a transferência some.
+    receiveProgress = null;
     return fileCompleteToReturn;
   }
 
@@ -779,6 +788,32 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 1200));
 
         expect(core.finishReceiveFileCalls, hasLength(1));
+      });
+
+      test('a finish that fails before the commit is retried by the next feedback tick', () async {
+        core.finishFailuresLeft = 1;
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 1,
+          bytesDone: BigInt.from(2),
+          isComplete: true,
+          awaitingAnswer: false,
+        );
+        core.ingestWireChunkHandler = (_) => IngestedChunkDto(fileId: fileId, progress: core.receiveProgress!);
+        await service.start();
+        await pumpEventQueue();
+        final events = <MessageReceptionEvent>[];
+        final sub = service.eventsFor(contact).listen(events.add);
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        await Future<void>.delayed(const Duration(milliseconds: 1300));
+
+        expect(core.finishReceiveFileCalls, hasLength(2));
+        expect(events.whereType<FileReceivedEvent>(), hasLength(1));
+        await sub.cancel();
       });
 
       test('a committed file is kept when FILE_COMPLETE cannot be sealed', () async {
