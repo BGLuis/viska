@@ -40,6 +40,15 @@ pub const PAGE_LEN: usize = 65536;
 /// Tamanho em disco de uma página completa: plaintext, nonce e tag.
 const SEALED_PAGE_LEN: u64 = (PAGE_LEN + aead::XNONCE_LEN + aead::TAG_LEN) as u64;
 
+/// Tamanho em disco de um staging completo com `total_len` bytes de plaintext.
+/// Um arquivo com outro tamanho foi cortado ou acrescido por fora.
+pub fn sealed_len(total_len: u64) -> u64 {
+    let page_len = PAGE_LEN as u64;
+    let overhead = (aead::XNONCE_LEN + aead::TAG_LEN) as u64;
+    let tail = total_len % page_len;
+    (total_len / page_len) * SEALED_PAGE_LEN + if tail > 0 { tail + overhead } else { 0 }
+}
+
 /// Quantas páginas completas de [`PAGE_LEN`] já estão gravadas no staging de
 /// `file_id`. A última página, menor, só é gravada por [`StagingWriter::finish`],
 /// e o que sobra depois da última página inteira (gravação interrompida no meio)
@@ -243,7 +252,7 @@ impl StagingWriter {
     /// cheguem ao disco antes de devolver.
     pub fn finish(mut self) -> Result<()> {
         if !self.buffer.is_empty() {
-            let last = std::mem::take(&mut self.buffer);
+            let last = Zeroizing::new(std::mem::take(&mut self.buffer));
             self.flush_page(&last)?;
         }
         self.file
@@ -675,6 +684,18 @@ mod tests {
         let mut writer = StagingWriter::create(dir, [tag; FILE_ID_LEN], chave_de_teste(tag)).unwrap();
         writer.write(data).unwrap();
         // Sem `finish`: simula o bloqueio no meio, com a página final só na RAM.
+    }
+
+    #[test]
+    fn sealed_len_matches_a_finished_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        for (tag, len) in [(7u8, 0usize), (8, 10), (9, PAGE_LEN), (10, PAGE_LEN * 2 + 3)] {
+            let mut writer = StagingWriter::create(dir.path(), [tag; FILE_ID_LEN], chave_de_teste(tag)).unwrap();
+            writer.write(&vec![1u8; len]).unwrap();
+            writer.finish().unwrap();
+            let on_disk = fs::metadata(staging_path(dir.path(), &[tag; FILE_ID_LEN])).unwrap().len();
+            assert_eq!(sealed_len(len as u64), on_disk, "len {len}");
+        }
     }
 
     #[test]

@@ -201,6 +201,13 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
     if (failMarkSent) throw StateError('banco indisponível');
   }
 
+  final markFailedCalls = <int>[];
+
+  @override
+  Future<void> markMessageFailed({required int messageId}) async {
+    markFailedCalls.add(messageId);
+  }
+
   @override
   Future<void> requeueMessage({required int messageId}) async {
     requeueCalls.add(messageId);
@@ -553,7 +560,7 @@ void main() {
         expect(core.resumeCalls.length, greaterThan(before));
       });
 
-      test('a send that stops with the transport is not marked sent', () async {
+      test('a resumed send that stops with the transport is marked failed, not sent', () async {
         core.resumable = [send()];
         core.outgoingChunks.add(Uint8List.fromList([1]));
         core.receiveProgress = TransferProgressDto(
@@ -570,6 +577,35 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 250));
 
         expect(core.markSentCalls, isNot(contains(5)));
+        expect(core.markFailedCalls, contains(5));
+      });
+
+      test('a new channel without a session change resumes too', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        final before = core.resumeCalls.length;
+
+        // O transporte caiu e foi recriado; a sessão continua a mesma.
+        await router.closeContact(contact);
+        transport = _FakeP2PTransport();
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(core.resumeCalls.length, greaterThan(before));
+      });
+
+      test('runOutgoingTransfer sends the offer, pumps and marks the message sent', () async {
+        core.outgoingChunks.add(Uint8List.fromList([3]));
+        await service.start();
+        await pumpEventQueue();
+
+        await service.runOutgoingTransfer(contact, fileId, offer: Uint8List.fromList([0x0E]), messageId: 12);
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0E])), hasLength(1));
+        expect(transport.sendFileCalls, [Uint8List.fromList([3])]);
+        expect(core.markSentCalls, [12]);
+        expect(core.markFailedCalls, isEmpty);
       });
 
       test('pumpOutgoing shares one loop per file_id', () async {

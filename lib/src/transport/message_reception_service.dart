@@ -310,6 +310,10 @@ class MessageReceptionService {
     // o sinal de reabertura se formos respondedor de uma sessão recém-aberta
     // (docs/protocol.md §11.4).
     unawaited(_publishConnectSignal(contactId));
+    // Um canal novo sem troca de sessão (queda de transporte) não gera evento
+    // de sessão: sem isto, o envio que parou com o canal velho só voltaria no
+    // próximo bloqueio ou reabertura. Sem sessão pronta, o Rust devolve vazio.
+    unawaited(resumeTransfers(contactId));
   }
 
   /// Recria o transporte de um contato depois que o atual falhou, para que o
@@ -649,6 +653,10 @@ class MessageReceptionService {
   /// mandariam cada símbolo duas vezes.
   final Map<String, Future<void>> _pumps = {};
 
+  /// Envios retomados em curso, desde antes de a oferta sair até o fim do
+  /// bombeamento, por `file_id`.
+  final Set<String> _resumingSends = {};
+
   /// Manda os pedaços do envio `fileId` pelo canal `file` até o emissor
   /// completar, esperando o `FILE_FEEDBACK` do par entre um bloco e outro. Se o
   /// envio já está sendo bombeado, devolve o mesmo laço. Lança
@@ -716,7 +724,13 @@ class MessageReceptionService {
     for (final transfer in resumed) {
       switch (transfer.direction) {
         case ResumedDirectionDto.send:
-          unawaited(_resumeSend(contactId, transfer));
+          // O evento de sessão e o canal novo costumam chegar juntos e pedir a
+          // mesma retomada: uma só entrega a oferta e bombeia.
+          final hexId = _hex(transfer.fileId);
+          if (_pumps.containsKey(hexId) || !_resumingSends.add(hexId)) continue;
+          unawaited(_resumeSend(contactId, transfer).whenComplete(() {
+            _resumingSends.remove(hexId);
+          }));
         case ResumedDirectionDto.receive:
           unawaited(watchIncomingTransfer(contactId, transfer.fileId));
       }
@@ -724,20 +738,51 @@ class MessageReceptionService {
   }
 
   Future<void> _resumeSend(ContactId contactId, ResumedTransferDto transfer) async {
-    final lease = await _foregroundService.acquire();
     try {
-      final offer = transfer.sealedMetadata;
-      if (offer != null) await _router.sendToContact(contactId, offer);
-      await pumpOutgoing(contactId, transfer.fileId);
-      final messageId = transfer.messageId;
-      if (messageId != null) await _core.markMessageSent(messageId: messageId);
-      _eventsController.add(MessageReceivedEvent(contactId));
+      await runOutgoingTransfer(
+        contactId,
+        transfer.fileId,
+        offer: transfer.sealedMetadata,
+        messageId: transfer.messageId,
+      );
     } catch (e) {
-      // A transferência continua no banco: a próxima sessão estabelecida
-      // tenta de novo, até concluir ou vencer o prazo de retenção.
+      // A transferência continua no banco: a próxima retomada tenta de novo, até
+      // concluir ou vencer o prazo de retenção.
       if (kDebugMode) debugPrint('[MessageReceptionService] Envio retomado parou para $contactId: $e');
+    }
+  }
+
+  /// Ciclo de um envio, igual para o que a conversa acabou de iniciar e para o
+  /// retomado: entrega a oferta (se houver), bombeia até o emissor completar e
+  /// marca a mensagem `sent`. Se parar no meio, a mensagem vira `failed` e o
+  /// erro sobe; a próxima retomada a devolve a `pending` (docs/protocol.md §7.5).
+  /// Segura o serviço em primeiro plano enquanto dura, salvo com
+  /// [holdForeground] falso (nota de voz curta, enviada com o app aberto).
+  Future<void> runOutgoingTransfer(
+    ContactId contactId,
+    Uint8List fileId, {
+    Uint8List? offer,
+    int? messageId,
+    bool holdForeground = true,
+  }) async {
+    final lease = holdForeground ? await _foregroundService.acquire() : null;
+    try {
+      if (offer != null) await _router.sendToContact(contactId, offer);
+      await pumpOutgoing(contactId, fileId);
+      if (messageId != null) await _core.markMessageSent(messageId: messageId);
+    } catch (_) {
+      if (messageId != null) {
+        try {
+          await _core.markMessageFailed(messageId: messageId);
+        } catch (e) {
+          // Trancada ou banco indisponível: a abertura seguinte acerta o estado.
+          if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao marcar envio $messageId como falho: $e');
+        }
+      }
+      rethrow;
     } finally {
-      await lease.release();
+      if (!_disposed) _eventsController.add(MessageReceivedEvent(contactId));
+      await lease?.release();
     }
   }
 

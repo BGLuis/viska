@@ -5903,16 +5903,17 @@ class CoreImpl extends RustOpaque implements Core {
 
   /// Reconstrói e devolve as transferências com o contato que podem continuar
   /// (§7.5). Chamar quando a sessão com ele chega a `Established`, inclusive
-  /// depois de trocada por outra (§11.4): pode ser chamada quantas vezes for,
-  /// pois um handle que já está em memória fica como está. Enquanto uma
-  /// sessão candidata segura o envio (§11.4), devolve vazio: a oferta selada
-  /// agora sairia pela sessão que o par acabou de perder.
+  /// depois de trocada por outra (§11.4), e quando o canal reconecta: pode ser
+  /// chamada quantas vezes for, pois um handle que já está em memória fica como
+  /// está. Enquanto uma sessão candidata segura o envio (§11.4), devolve vazio:
+  /// a oferta selada agora sairia pela sessão que o par acabou de perder.
   ///
-  /// Um envio cuja cópia em `outgoing/` sumiu ou não bate mais com a raiz, e
-  /// um recebimento cujo `.staging` não reabre, são encerrados como falha em
-  /// vez de devolvidos. Um envio sem resposta volta com o `FILE_METADATA`
-  /// selado de novo na sessão atual, porque o original pode ter se perdido
-  /// com a anterior. Sem sessão estabelecida, devolve vazio e não mexe em nada.
+  /// Um envio cuja cópia em `outgoing/` sumiu, foi cortada ou não bate mais
+  /// com a raiz, e um recebimento cujo `.staging` sumiu ou não autentica, são
+  /// encerrados como falha em vez de devolvidos. Uma falha passageira só pula
+  /// aquela transferência nesta chamada. Um envio sem resposta volta com o
+  /// `FILE_METADATA` selado de novo na sessão atual, porque o original pode ter
+  /// se perdido com a anterior.
   Future<List<ResumedTransferDto>> resumeTransfers({
     required List<int> peerDeviceId,
   }) => RustLib.instance.api.crateFfiCoreCoreResumeTransfers(

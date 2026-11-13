@@ -269,6 +269,21 @@ impl FileFeedback {
     }
 }
 
+impl FileFeedback {
+    /// Primeiro bloco que o receptor ainda não tem; `blocks_completed.len()`
+    /// se tem todos. Um emissor adiante disto precisa voltar: o receptor que
+    /// retomou do staging pode ter perdido o fim de um bloco que já tinha
+    /// confirmado (§7.5).
+    pub fn first_incomplete_block(&self) -> u32 {
+        let first = self
+            .blocks_completed
+            .iter()
+            .position(|done| !done)
+            .unwrap_or(self.blocks_completed.len());
+        u32::try_from(first).unwrap_or(u32::MAX)
+    }
+}
+
 fn pack_bitmap(bits: &[bool]) -> Vec<u8> {
     let mut out = vec![0u8; bits.len().div_ceil(8)];
     for (i, &bit) in bits.iter().enumerate() {
@@ -488,6 +503,12 @@ impl<R: Read> SendTransfer<R> {
 
     pub fn is_complete(&self) -> bool {
         self.current_block_index >= self.manifest.source_blocks
+    }
+
+    /// Bloco que o emissor está mandando. Só anda para a frente: um receptor
+    /// que voltou a um bloco anterior exige um emissor novo.
+    pub fn current_block(&self) -> u32 {
+        self.current_block_index
     }
 
     /// Progresso do lado emissor — `bytes_done` é aproximado (blocos
@@ -920,10 +941,21 @@ pub fn open_outgoing_copy(
     manifest: &Manifest,
     transfer_secret: &[u8],
 ) -> Result<StagingReader> {
-    let mut check = read_outgoing_copy(outgoing_dir, manifest, transfer_secret)?;
-    // O leitor para em `file_size`, então a raiz cobre exatamente o que será
-    // enviado; bytes sobrando no fim do arquivo nunca saem.
-    merkle::verify_root(&merkle::merkle_root(&mut check)?, &manifest.merkle_root)?;
+    let path = staging::staging_path(outgoing_dir, &manifest.file_id);
+    let on_disk = std::fs::metadata(&path)
+        .map_err(|_| Error::Malformed("cópia de envio não encontrada"))?
+        .len();
+    // Cortada ou acrescida por fora: já não é o que foi oferecido, mesmo que
+    // as páginas que sobraram autentiquem.
+    if on_disk != staging::sealed_len(manifest.file_size) {
+        return Err(Error::MerkleMismatch);
+    }
+    // `decrypt_to`, não `Read`: preserva `AeadFailure` de uma página
+    // adulterada, que quem chama trata como cópia perdida, diferente de uma
+    // falha de E/S passageira.
+    let mut hasher = blake3::Hasher::new();
+    read_outgoing_copy(outgoing_dir, manifest, transfer_secret)?.decrypt_to(&mut hasher)?;
+    merkle::verify_root(&hasher.finalize(), &manifest.merkle_root)?;
     read_outgoing_copy(outgoing_dir, manifest, transfer_secret)
 }
 
@@ -1475,8 +1507,6 @@ mod tests {
         assert!(sender.next_symbol().unwrap().is_none());
     }
 
-    /// Retomada: o receptor já tem os dois primeiros blocos; o emissor, recém
-    /// criado, pula esses blocos lendo o arquivo adiante e só manda o terceiro.
     /// Recebe `blocks` blocos inteiros e devolve o receptor ainda aberto.
     fn receive_blocks(
         manifest: &Manifest,
@@ -1538,6 +1568,45 @@ mod tests {
         let (destino, lowest_block) =
             finish_with_fresh_sender(&manifest, Cursor::new(original.clone()), secret, resumed, staging_dir.path());
         assert_eq!(lowest_block, 2, "blocos já gravados não são pedidos de novo");
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn first_incomplete_block_points_at_the_first_gap() {
+        let feedback = |bits: Vec<bool>| FileFeedback {
+            file_id: [0; FILE_ID_LEN],
+            block_index: 0,
+            symbols_received: 0,
+            blocks_completed: bits,
+        };
+        assert_eq!(feedback(vec![true, false, true]).first_incomplete_block(), 1);
+        assert_eq!(feedback(vec![false, true]).first_incomplete_block(), 0);
+        assert_eq!(feedback(vec![true, true]).first_incomplete_block(), 2);
+        assert_eq!(feedback(vec![]).first_incomplete_block(), 0);
+    }
+
+    /// LAN: blocos de 65535 × 1024 B não fecham em página, então o receptor que
+    /// retoma pode voltar a um bloco que já confirmou. Um emissor novo, guiado
+    /// pelo feedback do receptor recuado, termina a transferência.
+    #[test]
+    fn a_fresh_sender_catches_a_receiver_that_fell_behind() {
+        let (manifest, original) = manifesto_de_teste(250_000, 1000, 100);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut sender = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.clone()));
+        let mut receiver = ReceiveTransfer::start(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        while receiver.progress().blocks_done < 2 {
+            let symbol = sender.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+        assert_eq!(sender.current_block(), 2);
+        drop(receiver);
+
+        let resumed = ReceiveTransfer::resume(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        assert!(resumed.feedback().first_incomplete_block() < sender.current_block());
+        let (destino, _) =
+            finish_with_fresh_sender(&manifest, Cursor::new(original.clone()), secret, resumed, staging_dir.path());
         assert_eq!(destino, original);
     }
 
@@ -1627,12 +1696,18 @@ mod tests {
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[70_000] ^= 1;
         std::fs::write(&path, &bytes).unwrap();
-        assert!(open_outgoing_copy(outgoing.path(), &manifest, secret).is_err());
+        assert!(matches!(
+            open_outgoing_copy(outgoing.path(), &manifest, secret).unwrap_err(),
+            Error::AeadFailure
+        ));
 
         stage_outgoing_copy(Cursor::new(original.clone()), outgoing.path(), manifest.file_id, secret).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         std::fs::write(&path, &bytes[..bytes.len() - 10]).unwrap();
-        assert!(open_outgoing_copy(outgoing.path(), &manifest, secret).is_err());
+        assert!(matches!(
+            open_outgoing_copy(outgoing.path(), &manifest, secret).unwrap_err(),
+            Error::MerkleMismatch
+        ));
 
         // Mesmo tamanho, outro conteúdo: só a raiz pega.
         let mut other = original.clone();
@@ -1651,6 +1726,8 @@ mod tests {
         assert!(open_outgoing_copy(outgoing.path(), &manifest, b"s").is_err());
     }
 
+    /// Retomada: o receptor já tem os dois primeiros blocos; o emissor, recém
+    /// criado, pula esses blocos lendo o arquivo adiante e só manda o terceiro.
     #[test]
     fn offset_mode_resumes_at_first_missing_block() {
         let (manifest, original) = manifesto_de_teste(3 * 4096, 512, 8);

@@ -518,6 +518,10 @@ O teto de 7 dias é decisão do mantenedor (issue #82): o segredo da transferên
 repouso além de uma execução do app, e quem tiver o aparelho destrancado nesse intervalo lê o staging e
 a cópia. O teto limita essa janela para uma transferência que ninguém vai terminar.
 
+A cópia também permite ao emissor voltar atrás: na LAN, um receptor que retoma do staging pode recuar
+para um bloco que já tinha confirmado (o bloco de 65535 × 1024 B não fecha em página), e o emissor
+remonta a partir da cópia em vez de ficar parado adiante dele (`docs/protocol.md` §7.5).
+
 **Custo:** o disco ocupado pelo arquivo dobra durante o envio, e cada retomada relê a cópia inteira
 para conferir a raiz. Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
 um transporte que aceite símbolos desse tamanho.

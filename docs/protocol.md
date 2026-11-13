@@ -490,7 +490,8 @@ com wear leveling. O `FILE_COMPLETE` faz o emissor apagar a linha e a cópia.
 
 **Retomada.** `Core::lock` descarta os handles em memória (e com eles as chaves em RAM), mas não a
 linha, o staging nem a cópia. Quando a sessão com o contato chega a `Established`, inclusive quando é
-trocada por outra (§11.4), o app chama `Core::resume_transfers`, que reconstrói o que falta:
+trocada por outra (§11.4), e quando o canal com ele reconecta, o app chama `Core::resume_transfers`,
+que reconstrói o que falta:
 
 - **Emissor:** decifra a cópia inteira e confere a raiz contra o manifesto; se a cópia sumiu ou não
   bate, o envio é encerrado como falha. O progresso não é persistido: o emissor recomeça do bloco 0 e
@@ -500,12 +501,22 @@ trocada por outra (§11.4), o app chama `Core::resume_transfers`, que reconstró
   perdido com a sessão anterior. O receptor ignora uma oferta cujo `file_id` já conhece.
 - **Receptor:** conta as páginas inteiras do staging, recua até o fim do último source block contido
   nelas e reconstrói o hash do conteúdo decifrando essas páginas. O último bloco nunca conta como
-  recebido, porque a página final, menor, só vai a disco ao completar. Staging que não reabre encerra
-  o recebimento.
+  recebido, porque a página final, menor, só vai a disco ao completar. Staging que sumiu ou não
+  autentica encerra o recebimento.
 
-A chamada é idempotente: um handle que já está em memória fica como está. Enquanto uma sessão
-candidata segura o envio (§11.4), ela não faz nada. Uma transferência enfileirada sem sessão entra
-pelo mesmo caminho: basta a linha e a cópia existirem.
+Na LAN um source block (65535 × 1024 B, D23) não fecha em página, então o receptor que retoma pode
+voltar a um bloco que já tinha confirmado, enquanto o emissor, que não trancou, segue adiante. Como o
+emissor só anda para a frente, um `FILE_FEEDBACK` cujo primeiro bloco incompleto está atrás do bloco
+corrente do emissor faz montar um emissor novo a partir da cópia, guiado por esse mesmo feedback.
+
+A chamada pode se repetir: um handle que já está em memória fica como está, e o recuo acima cobre o
+caso em que ele ficou adiante do receptor. Enquanto uma sessão candidata segura o envio (§11.4), ela
+não faz nada. Uma falha passageira de E/S só adia aquela transferência para a próxima chamada; só um
+arquivo sumido, cortado, adulterado ou que não bate com a raiz a encerra. Um handle montado enquanto
+a Core trancou, ou enquanto a transferência acabou, é descartado em vez de instalado. Os arquivos sem
+linha no banco só são varridos ao abrir ou destrancar a Core, porque um envio recém-iniciado grava a
+cópia antes da linha. Uma transferência enfileirada sem sessão entra pelo mesmo caminho: basta a linha
+e a cópia existirem.
 
 ### 7.6 Limite de auto-aceite e retenção volátil de ofertas
 

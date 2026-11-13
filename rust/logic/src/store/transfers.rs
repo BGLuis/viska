@@ -136,18 +136,73 @@ pub fn list_for_contact(
     Ok(transfers)
 }
 
-/// Todas as transferências persistidas — para aplicar os prazos de retenção
-/// (§7.5, §7.7) sem depender de qual contato está com a sessão aberta.
-pub fn list_all(conn: &rusqlite::Connection) -> Result<Vec<StoredTransfer>> {
+/// Uma transferência que passou de um prazo — só o necessário para encerrá-la,
+/// sem `transfer_secret`: a varredura roda a cada feedback e leitura da
+/// timeline, e não precisa tirar segredo do banco para isso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueTransfer {
+    pub file_id: [u8; 16],
+    pub contact_device_id: [u8; 16],
+    pub direction: Direction,
+    /// `true` quando venceu só o prazo da oferta sem resposta, não o teto de
+    /// retenção.
+    pub offer_expired: bool,
+}
+
+/// Transferências criadas até `retention_cutoff` (qualquer uma) ou envios de
+/// arquivo sem resposta criados até `offer_cutoff` (§7.5, §7.7 item 5).
+pub fn list_due(
+    conn: &rusqlite::Connection,
+    retention_cutoff: i64,
+    offer_cutoff: i64,
+) -> Result<Vec<DueTransfer>> {
     let mut statement = conn
-        .prepare(&format!("SELECT {COLUMNS} FROM file_transfers ORDER BY created_at_unix_secs ASC"))
+        .prepare(
+            "SELECT file_id, contact_device_id, direction, created_at_unix_secs > ?1
+             FROM file_transfers
+             WHERE created_at_unix_secs <= ?1
+                OR (direction = ?3 AND kind = ?4 AND answered = 0 AND created_at_unix_secs <= ?2)",
+        )
         .map_err(|_| Error::Store)?;
-    let rows = statement.query_map([], row_to_transfer).map_err(|_| Error::Store)?;
-    let mut transfers = Vec::new();
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                retention_cutoff,
+                offer_cutoff,
+                Direction::Sending as i64,
+                TransferKind::File as i64
+            ],
+            |row| {
+                let file_id: Vec<u8> = row.get(0)?;
+                let contact: Vec<u8> = row.get(1)?;
+                let direction: i64 = row.get(2)?;
+                let offer_expired: bool = row.get(3)?;
+                Ok(DueTransfer {
+                    file_id: file_id.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    contact_device_id: contact.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    direction: Direction::from_i64(direction).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    offer_expired,
+                })
+            },
+        )
+        .map_err(|_| Error::Store)?;
+    let mut due = Vec::new();
     for row in rows {
-        transfers.push(row.map_err(|_| Error::Store)?);
+        due.push(row.map_err(|_| Error::Store)?);
     }
-    Ok(transfers)
+    Ok(due)
+}
+
+/// A transferência ainda tem linha — sem tirar o segredo do banco.
+pub fn exists(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM file_transfers WHERE file_id = ?1",
+        [file_id.as_slice()],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|row| row.is_some())
+    .map_err(|_| Error::Store)
 }
 
 /// Registra que a oferta foi respondida: encerra o prazo de §7.7 item 5 e a
@@ -288,27 +343,41 @@ mod tests {
         )
         .unwrap();
 
+        assert!(exists(&conn, &file_id).unwrap());
         delete(&conn, &file_id).unwrap();
         assert!(find(&conn, &file_id).unwrap().is_none());
+        assert!(!exists(&conn, &file_id).unwrap());
         delete(&conn, &file_id).unwrap(); // segunda chamada não deveria errar.
     }
 
     #[test]
-    fn mark_answered_persists_and_list_all_returns_every_row() {
+    fn list_due_selects_by_ceiling_and_by_unanswered_offer() {
         let contact = [4u8; 16];
         let conn = conn_with_contact(contact);
-        for (id, at) in [([1u8; 16], 20), ([2u8; 16], 10)] {
-            insert(&conn, &id, Direction::Sending, &contact, b"m", b"s", at, TransferKind::File).unwrap();
+        let rows = [
+            ([1u8; 16], Direction::Sending, TransferKind::File, 100), // oferta vencida
+            ([2u8; 16], Direction::Sending, TransferKind::File, 100), // respondida: não vence
+            ([3u8; 16], Direction::Sending, TransferKind::Audio, 100), // voz: sem prazo de oferta
+            ([4u8; 16], Direction::Receiving, TransferKind::File, 100), // recebimento: sem prazo de oferta
+            ([5u8; 16], Direction::Receiving, TransferKind::File, 10), // passou do teto
+            ([6u8; 16], Direction::Sending, TransferKind::File, 500), // ainda no prazo
+        ];
+        for (id, direction, kind, at) in rows {
+            insert(&conn, &id, direction, &contact, b"m", b"s", at, kind).unwrap();
         }
+        mark_answered(&conn, &[2u8; 16]).unwrap();
+        mark_answered(&conn, &[2u8; 16]).unwrap();
 
-        mark_answered(&conn, &[1u8; 16]).unwrap();
-        mark_answered(&conn, &[1u8; 16]).unwrap();
+        let due = list_due(&conn, 10, 100).unwrap();
 
-        let all = list_all(&conn).unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].file_id, [2u8; 16], "ordenado por criação");
-        assert!(!all[0].answered);
-        assert!(all[1].answered);
+        let ids: Vec<_> = due.iter().map(|d| d.file_id[0]).collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        let offer = due.iter().find(|d| d.file_id == [1u8; 16]).unwrap();
+        assert!(offer.offer_expired);
+        assert_eq!(offer.direction, Direction::Sending);
+        let ceiling = due.iter().find(|d| d.file_id == [5u8; 16]).unwrap();
+        assert!(!ceiling.offer_expired);
+        assert_eq!(ceiling.contact_device_id, contact);
     }
 
     #[test]

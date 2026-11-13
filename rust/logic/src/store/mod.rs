@@ -488,9 +488,18 @@ impl Store {
         self.with_conn(|conn| transfers::find(conn, file_id))
     }
 
-    /// Todas as transferências persistidas, das mais antigas para as mais novas.
-    pub fn list_all_file_transfers(&self) -> Result<Vec<transfers::StoredTransfer>> {
-        self.with_conn(transfers::list_all)
+    /// Transferências que passaram do teto de retenção ou da oferta sem resposta.
+    pub fn list_due_file_transfers(
+        &self,
+        retention_cutoff: i64,
+        offer_cutoff: i64,
+    ) -> Result<Vec<transfers::DueTransfer>> {
+        self.with_conn(|conn| transfers::list_due(conn, retention_cutoff, offer_cutoff))
+    }
+
+    /// A transferência ainda tem linha em `file_transfers`.
+    pub fn file_transfer_exists(&self, file_id: &[u8; 16]) -> Result<bool> {
+        self.with_conn(|conn| transfers::exists(conn, file_id))
     }
 
     /// Registra que a oferta da transferência foi respondida (§7.7 item 5).

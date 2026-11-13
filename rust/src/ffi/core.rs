@@ -112,9 +112,7 @@ impl Core {
             outgoing_dir: dir.join(OUTGOING_DIR_NAME),
             app_dir: dir.to_path_buf(),
         };
-        // As transferências persistidas sobrevivem para retomar (§7.5); só as
-        // que passaram do prazo de retenção somem aqui, com o staging e a cópia.
-        core.enforce_transfer_deadlines()?;
+        core.maintain_transfers_at_rest();
         reset_inflight_state(&core.store);
         Ok(core)
     }
@@ -137,6 +135,10 @@ impl Core {
         reset_inflight_state(&self.store);
 
         self.store.close()?;
+        // De novo, com o banco já fechado: uma retomada que estava lendo o
+        // arquivo durante o bloqueio pode ter inserido um handle depois da
+        // primeira limpeza, e `install_handle` só recusa vendo o banco fechado.
+        self.transfers.lock().map_err(|_| FfiError::Internal)?.clear();
         keyring::clear_injected_master_secret();
         Ok(notices)
     }
@@ -149,7 +151,16 @@ impl Core {
         let master_secret = keyring::load_or_create_master_secret(&self.app_dir)?;
         self.store
             .reopen(&self.app_dir.join(DB_FILE_NAME), &master_secret)?;
-        self.enforce_transfer_deadlines()
+        self.maintain_transfers_at_rest();
+        Ok(())
+    }
+
+    /// Prazos de retenção e varredura de arquivos sem linha, em `open` e
+    /// `unlock`. Melhor esforço: uma linha ruim não pode impedir o cofre de
+    /// abrir, e o que falhar aqui é refeito na próxima abertura ou retomada.
+    fn maintain_transfers_at_rest(&self) {
+        let _ = self.enforce_transfer_deadlines();
+        let _ = self.sweep_transfer_files();
     }
 
     /// Informa se a Core está trancada.

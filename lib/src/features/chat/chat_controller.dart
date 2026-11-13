@@ -510,6 +510,7 @@ class ChatController extends ChangeNotifier {
     // isso o sistema derruba os sockets assim que o app vai para segundo plano.
     final lease = await _foregroundService.acquire();
     int? startedMessageId;
+    var handedOff = false;
     try {
       // A conexão vem antes de `startSendFile`: ele grava a mensagem como
       // pendente, e sem par alcançável ela ficaria "Enviando…" sem nunca sair.
@@ -530,14 +531,18 @@ class ChatController extends ChangeNotifier {
       _receivedFilePaths[_hex(started.fileId)] = filePath;
       _receptionService.cacheReceivedFilePath(started.fileId, filePath);
       await _refreshMessages();
-      await _router.sendToContact(_contactId, started.sealedMetadata);
-      await _pumpOutgoingChunks(started.fileId);
-      await _core.markMessageSent(messageId: started.messageId);
+      handedOff = true;
+      await _receptionService.runOutgoingTransfer(
+        _contactId,
+        started.fileId,
+        offer: started.sealedMetadata,
+        messageId: started.messageId,
+      );
       await _refreshMessages();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar arquivo: $e\n$stack');
       _fileError = await _sendFailureMessage('Não foi possível enviar o arquivo.');
-      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
+      await _afterSendFailure(startedMessageId, handedOff: handedOff);
     } finally {
       _sendingFile = false;
       notifyListeners();
@@ -545,12 +550,14 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// Persiste a falha de um envio interrompido, para que a linha não volte a
-  /// "Enviando…" depois de reiniciar o app. Nunca lança: o erro que importa à
-  /// pessoa já está em [fileError].
-  Future<void> _markOutgoingFailed(int messageId) async {
+  /// Acerta a timeline depois de um envio que falhou. Se a falha veio de
+  /// `runOutgoingTransfer`, ele já marcou a mensagem; antes disso, é aqui que ela
+  /// vira `failed`. Nunca lança: o erro que importa à pessoa já está em
+  /// [fileError] ou [voiceError].
+  Future<void> _afterSendFailure(int? messageId, {required bool handedOff}) async {
+    if (messageId == null) return;
     try {
-      await _core.markMessageFailed(messageId: messageId);
+      if (!handedOff) await _core.markMessageFailed(messageId: messageId);
       await _refreshMessages();
     } catch (e) {
       if (kDebugMode) debugPrint('[ChatController] falha ao marcar envio como falho: $e');
@@ -695,6 +702,7 @@ class ChatController extends ChangeNotifier {
     // Sem `awaitConnected` nem serviço em primeiro plano, de propósito: a nota
     // é curta, gravada com o app aberto; sem conexão ela falha e é marcada.
     int? startedMessageId;
+    var handedOff = false;
     try {
       // Desmonta o Ogg que o gravador produziu — sanitização por subtração,
       // não filtro (Fase 5, F1, D16): o formato interno resultante não tem
@@ -718,25 +726,24 @@ class ChatController extends ChangeNotifier {
       unawaited(File(sanitizedPath).delete().catchError((_) => File(sanitizedPath)));
 
       await _refreshMessages();
-      await _router.sendToContact(_contactId, started.sealedMetadata);
-      await _pumpOutgoingChunks(started.fileId);
-      await _core.markMessageSent(messageId: started.messageId);
+      handedOff = true;
+      await _receptionService.runOutgoingTransfer(
+        _contactId,
+        started.fileId,
+        offer: started.sealedMetadata,
+        messageId: started.messageId,
+        holdForeground: false,
+      );
       await _refreshMessages();
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Falha ao enviar nota de voz: $e\n$stack');
       _voiceError = await _sendFailureMessage('Não foi possível enviar a nota de voz.');
-      if (startedMessageId != null) await _markOutgoingFailed(startedMessageId);
+      await _afterSendFailure(startedMessageId, handedOff: handedOff);
     } finally {
       _sendingVoice = false;
       notifyListeners();
     }
   }
-
-  /// O bombeamento mora no serviço de recepção, que também retoma envios
-  /// parados (docs/protocol.md §7.5): um laço só por `file_id`, mesmo que a
-  /// retomada e esta tela peçam o mesmo envio.
-  Future<void> _pumpOutgoingChunks(Uint8List fileId) =>
-      _receptionService.pumpOutgoing(_contactId, fileId);
 
   /// Toca uma nota de voz já pronta ([isVoiceNoteReady]) — remontagem em
   /// memória já aconteceu (D18); nada aqui grava em disco.
