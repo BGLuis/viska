@@ -225,14 +225,18 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
   Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) async =>
       pendingOffers;
 
+  /// `null` imita o Rust sem sessão para selar o `FILE_COMPLETE`.
+  Uint8List? fileCompleteToReturn = Uint8List.fromList([0xAA, 0xBB]);
+
   @override
-  Future<Uint8List> finishReceiveFile({
+  Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
   }) async {
     finishReceiveFileCalls.add(Uint8List.fromList(fileId));
-    return Uint8List.fromList([0xAA, 0xBB]); // FILE_COMPLETE selado
+    File(destinationPath).writeAsBytesSync([7, 7]);
+    return fileCompleteToReturn;
   }
 
   @override
@@ -275,8 +279,18 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents implements C
 
   /// Como o Rust, cada transferência volta uma vez por pedido configurado:
   /// um recebimento abandonado, por exemplo, deixa de existir depois do aviso.
+  /// Se definido, cada `resumeTransfers` espera por ele antes de responder.
+  Completer<void>? resumeGate;
+  var resumesInFlight = 0;
+  var maxResumesInFlight = 0;
+
   @override
   Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async {
+    resumesInFlight++;
+    if (resumesInFlight > maxResumesInFlight) maxResumesInFlight = resumesInFlight;
+    final gate = resumeGate;
+    if (gate != null) await gate.future;
+    resumesInFlight--;
     resumeCalls.add(Uint8List.fromList(peerDeviceId));
     final out = resumable;
     resumable = [];
@@ -733,12 +747,69 @@ void main() {
         await service.start();
         await pumpEventQueue();
         core.resumeCalls.clear();
+        core.maxResumesInFlight = 0;
+        core.resumeGate = Completer<void>();
 
         final first = service.resumeTransfers(contact);
         final second = service.resumeTransfers(contact);
-        await Future.wait([first, second]);
+        await pumpEventQueue();
+        expect(core.resumesInFlight, 1, reason: 'a segunda espera a primeira terminar');
 
+        core.resumeGate!.complete();
+        await Future.wait([first, second]);
         expect(core.resumeCalls, hasLength(2));
+        expect(core.maxResumesInFlight, 1);
+      });
+
+      test('a complete receive seen by the feedback tick is finished once', () async {
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 1,
+          bytesDone: BigInt.from(2),
+          isComplete: true,
+          awaitingAnswer: false,
+        );
+        await service.start();
+        await pumpEventQueue();
+
+        await service.watchIncomingTransfer(contact, fileId);
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+        expect(core.finishReceiveFileCalls, hasLength(1));
+      });
+
+      test('a committed file is kept when FILE_COMPLETE cannot be sealed', () async {
+        core.fileCompleteToReturn = null;
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.ingestWireChunkHandler = (_) => IngestedChunkDto(
+              fileId: fileId,
+              progress: TransferProgressDto(
+                blocksDone: 1,
+                totalBlocks: 1,
+                bytesDone: BigInt.from(2),
+                isComplete: true,
+                awaitingAnswer: false,
+              ),
+            );
+        await service.start();
+        await pumpEventQueue();
+        final events = <MessageReceptionEvent>[];
+        final sub = service.eventsFor(contact).listen(events.add);
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        await pumpEventQueue();
+
+        final saved = service.getReceivedFilePath(fileId);
+        expect(saved, isNotNull);
+        expect(File(saved!).existsSync(), isTrue);
+        expect(events.whereType<FileReceivedEvent>(), hasLength(1));
+        expect(transport.sendCalls.where((b) => listEquals(b, [0xAA, 0xBB])), isEmpty);
+        await sub.cancel();
       });
 
       test('an accepted send with no progress stops after the idle limit', () {

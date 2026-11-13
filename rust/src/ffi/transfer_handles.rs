@@ -144,7 +144,10 @@ impl Core {
         let Some(handle) = transfers.remove(&file_id) else {
             return Ok(None);
         };
-        self.lock_claims()?.insert(file_id);
+        // Um handle no mapa nunca convive com uma reserva: `install_handle` solta
+        // a reserva de quem reconstruiu sob esta mesma trava.
+        let fresh = self.lock_claims()?.insert(file_id);
+        debug_assert!(fresh, "reserva de {} com handle no mapa", hex::encode(file_id));
         Ok(Some((handle, ClaimGuard { core: self, file_id })))
     }
 
@@ -154,12 +157,23 @@ impl Core {
     /// fechar o banco, então esta inserção ou acontece antes dessa limpeza ou
     /// já vê o banco fechado; e [`Self::end_transfer`] apaga a linha antes de
     /// tirar o handle.
-    pub(super) fn install_handle(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<bool, FfiError> {
+    ///
+    /// `claim` é a reserva de quem reconstruiu ou terminou o handle; ela é solta
+    /// aqui, sob a mesma trava em que o handle entra, para nunca haver reserva
+    /// e handle ao mesmo tempo (que deixaria um terceiro reservar o `file_id`
+    /// depois de o dono certo soltá-lo).
+    pub(super) fn install_handle(
+        &self,
+        file_id: [u8; FILE_ID_LEN],
+        handle: TransferHandle,
+        claim: Option<ClaimGuard<'_>>,
+    ) -> Result<bool, FfiError> {
         let mut transfers = self.lock_transfers()?;
         if self.is_locked() || !self.store.file_transfer_exists(&file_id)? {
             return Ok(false);
         }
         transfers.entry(file_id).or_insert(handle);
+        drop(claim);
         Ok(true)
     }
 

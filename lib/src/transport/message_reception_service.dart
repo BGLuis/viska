@@ -437,19 +437,35 @@ class MessageReceptionService {
       }
 
       _stopFeedback(hexId);
+      await _finishIncoming(contactId, ingested.fileId);
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
+    }
+  }
 
+  /// Recebimentos sendo fechados, por `file_id`: o último pedaço e o tick de
+  /// feedback podem ver o mesmo recebimento completo, e o segundo fechamento,
+  /// ao falhar, apagaria o destino que o primeiro está escrevendo.
+  final Set<String> _finishing = {};
+
+  /// Fecha um recebimento completo, onde quer que ele seja visto completo: no
+  /// último pedaço, ou depois, no tick de feedback de um recebimento retomado
+  /// cujo `finish` anterior falhou (docs/protocol.md §7.5).
+  Future<void> _finishIncoming(ContactId contactId, Uint8List fileId) async {
+    final hexId = _hex(fileId);
+    if (!_finishing.add(hexId)) return;
+    try {
       try {
         final fileOffers = await _core.pendingFileOffers(peerDeviceId: contactId.deviceId);
-        final fileOffer = fileOffers.where((o) => listEquals(o.fileId, ingested.fileId)).firstOrNull;
+        final fileOffer = fileOffers.where((o) => listEquals(o.fileId, fileId)).firstOrNull;
         if (fileOffer != null) {
-          await _finishReceivingFile(contactId, ingested.fileId, fileOffer);
+          await _finishReceivingFile(contactId, fileId, fileOffer);
           return;
         }
       } catch (_) {}
-
-      await _finishReceivingVoiceNote(contactId, ingested.fileId);
-    } catch (e, stack) {
-      if (kDebugMode) debugPrint('[MessageReceptionService] Erro ao processar chunk de arquivo de $contactId: $e\n$stack');
+      await _finishReceivingVoiceNote(contactId, fileId);
+    } finally {
+      _finishing.remove(hexId);
     }
   }
 
@@ -474,6 +490,7 @@ class MessageReceptionService {
       final progress = await _core.transferProgress(fileId: fileId);
       if (progress == null || progress.isComplete) {
         _stopFeedback(hexId);
+        if (progress != null) unawaited(_finishIncoming(contactId, fileId));
         return;
       }
       final current = _progressMark(progress);
@@ -574,18 +591,21 @@ class MessageReceptionService {
     final receivedDirPath = await _getReceivedDirectory();
     final safeName = path.basename(offer.name);
     final destPath = '$receivedDirPath/viska-recv-${_hex(fileId)}-$safeName';
+    final Uint8List? sealedComplete;
     try {
-      final sealedComplete = await _core.finishReceiveFile(
+      sealedComplete = await _core.finishReceiveFile(
         peerDeviceId: contactId.deviceId,
         fileId: fileId,
         destinationPath: destPath,
       );
-      await _router.sendToContact(contactId, sealedComplete);
-      _receivedFilePaths[_hex(fileId)] = destPath;
-      _eventsController.add(FileReceivedEvent(contactId, fileId: fileId, path: destPath));
     } catch (_) {
+      // Só um `Err` antes do commit chega aqui: o destino está incompleto.
       unawaited(File(destPath).delete().catchError((_) => File(destPath)));
+      return;
     }
+    _receivedFilePaths[_hex(fileId)] = destPath;
+    _eventsController.add(FileReceivedEvent(contactId, fileId: fileId, path: destPath));
+    await _sendFileComplete(contactId, sealedComplete);
   }
 
   Future<void> _finishReceivingVoiceNote(ContactId contactId, Uint8List fileId) async {
@@ -597,16 +617,27 @@ class MessageReceptionService {
         fileId: fileId,
         destinationPath: internalPath,
       );
-      await _router.sendToContact(contactId, sealedComplete);
-
       final internalBytes = await File(internalPath).readAsBytes();
       _voiceNoteAudio[_hex(fileId)] = internalBytes;
       _eventsController.add(
         VoiceNoteReceivedEvent(contactId, fileId: fileId, internalBytes: internalBytes),
       );
+      await _sendFileComplete(contactId, sealedComplete);
     } catch (_) {
     } finally {
       unawaited(File(internalPath).delete().catchError((_) => File(internalPath)));
+    }
+  }
+
+  /// O aviso de conclusão é melhor esforço: o arquivo já foi aceito, e uma
+  /// falha aqui não pode desfazê-lo. Se ele se perde, o emissor só para pelo
+  /// limite de inatividade (issue #108).
+  Future<void> _sendFileComplete(ContactId contactId, Uint8List? sealedComplete) async {
+    if (sealedComplete == null) return;
+    try {
+      await _router.sendToContact(contactId, sealedComplete);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] FILE_COMPLETE a $contactId não enviado: $e');
     }
   }
 
@@ -856,7 +887,7 @@ class MessageReceptionService {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao retomar transferências de $contactId: $e');
       return;
     }
-    if (resumed.isEmpty) return;
+    if (resumed.isEmpty || _disposed) return;
     // A mensagem do envio pode ter voltado de `failed` a `pending`.
     _eventsController.add(MessageReceivedEvent(contactId));
     for (final transfer in resumed) {

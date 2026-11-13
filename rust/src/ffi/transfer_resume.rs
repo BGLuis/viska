@@ -270,65 +270,62 @@ impl Core {
         self.reseal_metadata(&device_id, &stored, &manifest)
     }
 
-    /// Garante um `SendTransfer` em memória para `stored`.
+    /// Garante um `SendTransfer` em memória para `stored`, lido da cópia em
+    /// `outgoing/` depois de conferida a raiz.
     fn ensure_send_handle(&self, stored: &StoredTransfer, manifest: &Manifest) -> Result<Rebuild, FfiError> {
-        let _claim = match self.claim_for_rebuild(stored.file_id)? {
+        let generation = self.session_generation(&stored.contact_device_id)?;
+        self.rebuild(stored, &self.outgoing_dir, || {
+            // Conferir a raiz relê a cópia inteira, fora de qualquer trava.
+            let reader = outgoing::open_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret)?;
+            Ok(TransferHandle::Send(OutgoingHandle::new(
+                manifest.clone(),
+                stored.kind,
+                &stored.transfer_secret,
+                reader,
+                generation,
+                stored.answered,
+            )))
+        })
+    }
+
+    /// Garante um `ReceiveTransfer` em memória para `stored`, retomado do
+    /// `.staging`.
+    fn ensure_receive_handle(&self, stored: &StoredTransfer, manifest: Manifest) -> Result<Rebuild, FfiError> {
+        self.rebuild(stored, &self.staging_dir, || {
+            let receive = ReceiveTransfer::resume(manifest, stored.kind, &stored.transfer_secret, &self.staging_dir)?;
+            Ok(TransferHandle::Receive(receive))
+        })
+    }
+
+    /// O roteiro comum das duas reconstruções. A reserva cobre a leitura do
+    /// arquivo e, no recebimento, o corte do staging em `ReceiveTransfer::resume`:
+    /// uma segunda reconstrução, ou o `finish` concorrente, cortaria páginas que
+    /// o outro está usando. Arquivo sumido ou que não autentica encerra a
+    /// transferência; qualquer outra falha fica para a próxima retomada.
+    fn rebuild(
+        &self,
+        stored: &StoredTransfer,
+        dir: &std::path::Path,
+        open: impl FnOnce() -> viska_proto::Result<TransferHandle>,
+    ) -> Result<Rebuild, FfiError> {
+        let claim = match self.claim_for_rebuild(stored.file_id)? {
             Claim::Live => return Ok(Rebuild::Ready),
             Claim::Busy => return Ok(Rebuild::Later),
             Claim::Claimed(guard) => guard,
         };
-        if !staging::staging_path(&self.outgoing_dir, &stored.file_id).exists() {
+        if !staging::staging_path(dir, &stored.file_id).exists() {
             self.drop_stored(stored, Ending::Unresumable)?;
             return Ok(Rebuild::Ended);
         }
-        // Fora da trava de transferências: conferir a raiz relê a cópia inteira.
-        let reader = match outgoing::open_outgoing_copy(&self.outgoing_dir, manifest, &stored.transfer_secret) {
-            Ok(reader) => reader,
+        let handle = match open() {
+            Ok(handle) => handle,
             Err(err) if is_lost_for_good(&err) => {
                 self.drop_stored(stored, Ending::Unresumable)?;
                 return Ok(Rebuild::Ended);
             }
             Err(_) => return Ok(Rebuild::Later),
         };
-        let handle = OutgoingHandle::new(
-            manifest.clone(),
-            stored.kind,
-            &stored.transfer_secret,
-            reader,
-            self.session_generation(&stored.contact_device_id)?,
-            stored.answered,
-        );
-        self.install(stored.file_id, TransferHandle::Send(handle))
-    }
-
-    /// Como [`Self::ensure_send_handle`], para o recebimento.
-    fn ensure_receive_handle(&self, stored: &StoredTransfer, manifest: Manifest) -> Result<Rebuild, FfiError> {
-        // A reserva cobre a leitura e o corte do staging em `ReceiveTransfer::resume`:
-        // uma segunda reconstrução, ou o `finish` concorrente, cortaria páginas
-        // que o outro está usando.
-        let _claim = match self.claim_for_rebuild(stored.file_id)? {
-            Claim::Live => return Ok(Rebuild::Ready),
-            Claim::Busy => return Ok(Rebuild::Later),
-            Claim::Claimed(guard) => guard,
-        };
-        if !staging::staging_path(&self.staging_dir, &stored.file_id).exists() {
-            self.drop_stored(stored, Ending::Unresumable)?;
-            return Ok(Rebuild::Ended);
-        }
-        let receive =
-            match ReceiveTransfer::resume(manifest, stored.kind, &stored.transfer_secret, &self.staging_dir) {
-                Ok(receive) => receive,
-                Err(err) if is_lost_for_good(&err) => {
-                    self.drop_stored(stored, Ending::Unresumable)?;
-                    return Ok(Rebuild::Ended);
-                }
-                Err(_) => return Ok(Rebuild::Later),
-            };
-        self.install(stored.file_id, TransferHandle::Receive(receive))
-    }
-
-    fn install(&self, file_id: [u8; FILE_ID_LEN], handle: TransferHandle) -> Result<Rebuild, FfiError> {
-        Ok(if self.install_handle(file_id, handle)? {
+        Ok(if self.install_handle(stored.file_id, handle, Some(claim))? {
             Rebuild::Ready
         } else {
             Rebuild::Later
@@ -656,7 +653,7 @@ mod tests {
             .core_b
             .finish_receive_file(pair.device_id_a.clone(), file_id.to_vec(), dst.to_str().unwrap().to_owned())
             .unwrap();
-        pair.core_a.receive_incoming(pair.device_id_b.clone(), complete).unwrap();
+        pair.core_a.receive_incoming(pair.device_id_b.clone(), complete.unwrap()).unwrap();
         std::fs::read(dst).unwrap()
     }
 
@@ -1032,7 +1029,7 @@ mod tests {
 
         pair.core_a.lock().unwrap();
 
-        assert!(!pair.core_a.install_handle(fid(&started.file_id), handle).unwrap());
+        assert!(!pair.core_a.install_handle(fid(&started.file_id), handle, None).unwrap());
         assert!(pair.core_a.lock_transfers().unwrap().is_empty());
     }
 
@@ -1046,7 +1043,7 @@ mod tests {
 
         pair.core_a.cancel_transfer(started.file_id.clone()).unwrap();
 
-        assert!(!pair.core_a.install_handle(fid(&started.file_id), handle).unwrap());
+        assert!(!pair.core_a.install_handle(fid(&started.file_id), handle, None).unwrap());
         assert!(pair.core_a.transfer_progress(started.file_id.clone()).unwrap().is_none());
     }
 
@@ -1126,8 +1123,11 @@ mod tests {
         assert_eq!(pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap().len(), 1);
     }
 
+    /// `/dev/full` abre para escrita e falha em toda escrita: é o disco cheio no
+    /// meio da decifragem para o destino, depois de o handle sair do mapa.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_failed_finish_keeps_the_staging_for_the_next_resume() {
+    fn a_finish_that_fails_writing_keeps_a_complete_handle_for_another_try() {
         let pair = established_pair();
         let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
@@ -1136,16 +1136,57 @@ mod tests {
         pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata).unwrap();
         drive(&pair, &started.file_id, 1);
 
-        // Destino num diretório que não existe: o arquivo não chega a ser escrito.
-        let bad = dir_dst.path().join("nao-existe").join("x.bin");
         assert!(pair
             .core_b
-            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), bad.to_str().unwrap().to_owned())
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), "/dev/full".to_owned())
             .is_err());
+
+        let progress = pair.core_b.transfer_progress(started.file_id.clone()).unwrap().unwrap();
+        assert!(progress.is_complete, "o handle volta ao mapa, completo");
+        assert!(pair.core_b.transfer_claims.lock().unwrap().is_empty());
         assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+        assert_eq!(finish(&pair, &started.file_id, &dir_dst), original, "só decifra de novo");
+        assert_sender_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_committed_file_survives_a_file_complete_that_cannot_be_sealed() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let original: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let path = write_temp_file(&dir_src, "a.bin", &original);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata).unwrap();
+        drive(&pair, &started.file_id, 1);
+        pair.core_b.lock_sessions().unwrap().clear();
+
+        let dst = dir_dst.path().join("recebido.bin");
+        let sealed = pair
+            .core_b
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), dst.to_str().unwrap().to_owned())
+            .unwrap();
+
+        assert!(sealed.is_none(), "sem sessão, o aviso se perde");
+        assert_eq!(std::fs::read(dst).unwrap(), original, "mas o arquivo fica");
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_rebuild_releases_its_claim_when_the_handle_goes_in() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        pair.core_b.lock().unwrap();
+        pair.core_b.unlock().unwrap();
+        reconnect(&pair, false);
 
         pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap();
-        assert_eq!(finish(&pair, &started.file_id, &dir_dst), original);
+
+        assert!(pair.core_b.transfer_claims.lock().unwrap().is_empty());
+        let (handle, claim) = pair.core_b.take_for_finish(fid(&started.file_id)).unwrap().unwrap();
+        drop(claim);
+        drop(handle);
     }
 
     #[test]

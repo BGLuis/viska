@@ -372,7 +372,7 @@ impl Core {
         copy_guard.path = None;
 
         let handle = OutgoingHandle::new(manifest, kind, &*transfer_secret, reader, generation, false);
-        if !self.install_handle(file_id, TransferHandle::Send(handle))? {
+        if !self.install_handle(file_id, TransferHandle::Send(handle), None)? {
             // A Core trancou durante a cópia: a linha e a cópia ficam, e o envio
             // retoma depois do desbloqueio.
             return Err(FfiError::Locked);
@@ -500,14 +500,19 @@ impl Core {
     /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
     /// decifra para `destination_path`, remove o `.staging` e o registro em
     /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-    /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-    /// emissor pelo canal `control`.
+    /// D15).
+    ///
+    /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
+    /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
+    /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
+    /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
+    /// emissor só para pelo limite de inatividade (issue #108).
     pub fn finish_receive_file(
         &self,
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
+    ) -> Result<Option<Vec<u8>>, FfiError> {
         self.finish_receive(peer_device_id, file_id, destination_path)
     }
 
@@ -520,7 +525,7 @@ impl Core {
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
+    ) -> Result<Option<Vec<u8>>, FfiError> {
         self.finish_receive(peer_device_id, file_id, destination_path)
     }
 
@@ -566,7 +571,7 @@ impl Core {
         peer_device_id: Vec<u8>,
         file_id: Vec<u8>,
         destination_path: String,
-    ) -> Result<Vec<u8>, FfiError> {
+    ) -> Result<Option<Vec<u8>>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
@@ -574,11 +579,11 @@ impl Core {
 
         let destination =
             std::fs::File::create(&destination_path).map_err(|_| FfiError::Internal)?;
-        let (handle, _claim) = self.take_for_finish(file_id)?.ok_or(FfiError::Internal)?;
-        let TransferHandle::Receive(recv) = handle else {
+        let (handle, claim) = self.take_for_finish(file_id)?.ok_or(FfiError::Internal)?;
+        let TransferHandle::Receive(mut recv) = handle else {
             // Devolve o handle de envio — `finish_receive_*` não é o
             // método certo para ele — em vez de descartá-lo em silêncio.
-            self.lock_transfers()?.insert(file_id, handle);
+            self.install_handle(file_id, handle, Some(claim))?;
             return Err(FfiError::Internal);
         };
 
@@ -589,21 +594,29 @@ impl Core {
                 self.end_transfer(&file_id)?;
                 return Err(viska_proto::Error::MerkleMismatch.into());
             }
-            // Qualquer outra falha (E/S, Core trancada no meio) deixa a linha e o
-            // staging: a próxima retomada recomeça do último bloco (§7.5).
-            Err(err) => return Err(err.into()),
+            // Qualquer outra falha (E/S no destino, Core trancada no meio) devolve o
+            // handle, ainda completo: a próxima tentativa só decifra de novo, sem
+            // receber nada (§7.5).
+            Err(err) => {
+                self.install_handle(file_id, TransferHandle::Receive(recv), Some(claim))?;
+                return Err(err.into());
+            }
         };
+        drop(claim);
         self.end_transfer(&file_id)?;
 
+        // Daqui em diante o arquivo já está no destino e a transferência acabou:
+        // uma falha ao selar não pode virar `Err`, que faria quem chama apagar o
+        // arquivo recebido.
         let mut sessions = self.lock_sessions()?;
-        let session = sessions
+        Ok(sessions
             .get_mut(&device_id)
-            .ok_or(FfiError::NoActiveSession)?;
-        Ok(session.encrypt_outgoing(
-            PacketType::FileComplete,
-            complete.encode(),
-            Transport::DataChannel,
-        )?)
+            .filter(|session| can_seal_now(session))
+            .and_then(|session| {
+                session
+                    .encrypt_outgoing(PacketType::FileComplete, complete.encode(), Transport::DataChannel)
+                    .ok()
+            }))
     }
 
     /// Desmonta um Ogg-Opus gravado por `record` (com `OpusTags` de
@@ -866,7 +879,7 @@ impl Core {
             )?;
         }
 
-        if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive))? {
+        if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive), None)? {
             return Err(FfiError::Locked);
         }
         Ok(())
@@ -1298,7 +1311,7 @@ pub(super) mod tests {
             .is_some());
 
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
 
         assert!(pair
@@ -1454,7 +1467,7 @@ pub(super) mod tests {
         // FILE_COMPLETE de volta ao emissor: o registro de transferência
         // dele (não a linha da timeline, que fica como histórico) some.
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
         assert!(pair
             .core_a
@@ -1845,7 +1858,7 @@ pub(super) mod tests {
         assert_eq!(received, original);
 
         pair.core_a
-            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete)
+            .decrypt_incoming(pair.device_id_b.clone(), sealed_complete.unwrap())
             .unwrap();
 
         assert!(pair

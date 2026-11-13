@@ -151,14 +151,14 @@ abstract class RustLibApi extends BaseApi {
     required List<int> fileId,
   });
 
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
+  Future<Uint8List?> crateFfiCoreCoreFinishReceiveAudio({
     required Core that,
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
   });
 
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
+  Future<Uint8List?> crateFfiCoreCoreFinishReceiveFile({
     required Core that,
     required List<int> peerDeviceId,
     required List<int> fileId,
@@ -1001,7 +1001,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveAudio({
+  Future<Uint8List?> crateFfiCoreCoreFinishReceiveAudio({
     required Core that,
     required List<int> peerDeviceId,
     required List<int> fileId,
@@ -1026,7 +1026,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
         ),
         constMeta: kCrateFfiCoreCoreFinishReceiveAudioConstMeta,
@@ -1043,7 +1043,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<Uint8List> crateFfiCoreCoreFinishReceiveFile({
+  Future<Uint8List?> crateFfiCoreCoreFinishReceiveFile({
     required Core that,
     required List<int> peerDeviceId,
     required List<int> fileId,
@@ -1068,7 +1068,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeSuccessData: sse_decode_opt_list_prim_u_8_strict,
           decodeErrorData: sse_decode_ffi_error,
         ),
         constMeta: kCrateFfiCoreCoreFinishReceiveFileConstMeta,
@@ -5633,7 +5633,7 @@ class CoreImpl extends RustOpaque implements Core {
   /// formato interno de `RawOpusStream::encode`, não um Ogg tocável. Quem
   /// chama remonta o contêiner para reprodução (ver
   /// `Core::rebuild_ogg_opus_container`), sem gravar o resultado em disco.
-  Future<Uint8List> finishReceiveAudio({
+  Future<Uint8List?> finishReceiveAudio({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
@@ -5647,9 +5647,14 @@ class CoreImpl extends RustOpaque implements Core {
   /// Fecha um recebimento completo: verifica a raiz Merkle inteira,
   /// decifra para `destination_path`, remove o `.staging` e o registro em
   /// `store` (isso é o que torna `K_staging`/`K_symbol` irrecuperáveis,
-  /// D15). Devolve o `FILE_COMPLETE` já selado para mandar de volta ao
-  /// emissor pelo canal `control`.
-  Future<Uint8List> finishReceiveFile({
+  /// D15).
+  ///
+  /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
+  /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
+  /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
+  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
+  /// emissor só para pelo limite de inatividade (issue #108).
+  Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,

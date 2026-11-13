@@ -515,8 +515,11 @@ quem reconstrói ou termina uma transferência reserva o `file_id` antes de mexe
 reconstrução corta o arquivo e não pode correr junto com outra, nem com o `finish` que o lê. O recuo
 acima cobre o caso em que o handle ficou adiante do receptor; ele só acontece num feedback de uma sessão
 mais nova que a do último feedback em dia, porque na mesma sessão um feedback que pareça atrás é só um
-atrasado. O receptor só apaga o staging junto com a linha, depois do commit no destino: um `finish`
-que falhe no meio recomeça do último bloco na próxima retomada. Enquanto uma sessão candidata segura o envio (§11.4), ela
+atrasado. O receptor só apaga o staging junto com a linha, depois do commit no destino. Um `finish` que
+falhe ao escrever o destino devolve o recebimento, ainda completo, à memória, e a próxima tentativa (o
+próximo pedaço ou tick de feedback que o vir completo) só decifra de novo; se a Core trancar antes, a
+retomada recomeça do último bloco. Selar o `FILE_COMPLETE` depois do commit é melhor esforço, como o
+`FILE_REJECT`: sem sessão, o arquivo recebido fica e o aviso se perde (issue #108). Enquanto uma sessão candidata segura o envio (§11.4), ela
 não faz nada. Uma falha passageira de E/S só adia aquela transferência para a próxima chamada; só um
 arquivo sumido, cortado, adulterado ou que não bate com a raiz a encerra. Um handle montado enquanto
 a Core trancou, ou enquanto a transferência acabou, é descartado em vez de instalado. Os arquivos sem
