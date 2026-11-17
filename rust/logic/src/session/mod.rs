@@ -28,11 +28,18 @@
 //! (não muda nada até `commit_receive`), então repetir a chamada é seguro por
 //! desenho do próprio módulo `ratchet`, não uma suposição nova daqui.
 
+pub mod reopen;
+mod renewal;
+
+pub use renewal::{Received, CANDIDATE_TIMEOUT_SECS, SIGNAL_INTERVAL_SECS};
+
 use crate::crypto::aead;
 use crate::crypto::handshake::{respond, Initiator};
+use crate::crypto::kdf::Key;
 use crate::crypto::identity::{LocalIdentity, PublicIdentity};
 use crate::crypto::ratchet::{RatchetHeader, RatchetState};
 use crate::crypto::suite::Suite;
+use crate::signaling::topic;
 use crate::wire::envelope;
 use crate::wire::packet_type::PacketType;
 use crate::wire::plaintext::InnerPlaintext;
@@ -125,6 +132,34 @@ pub struct Session {
     /// bytes?" respondível quantas vezes for preciso enquanto a resposta
     /// continuar sendo a mesma.
     pending_outgoing_handshake: Option<Vec<u8>>,
+    /// `K_reopen` (§11.4): calculada uma vez na abertura, porque todo envelope
+    /// ilegível com o tamanho de um `REOPEN` é testado contra ela.
+    reopen_key: Key,
+    /// Direção deste lado para o par (§8.1): a do `REOPEN` que selamos; a do
+    /// par é a oposta.
+    direction: topic::Direction,
+    reopen_seen: reopen::ReplayGuard,
+    /// Último sinal de reabertura emitido por causa de tráfego recebido.
+    last_signal_at: Option<u64>,
+    /// Sessão nova em negociação ao lado da atual (§11.4). Só é promovida
+    /// quando o primeiro AEAD sob ela abre.
+    candidate: Option<renewal::Candidate>,
+    /// A última INIT a que respondemos (resumo) e a RESP que demos. A mesma
+    /// INIT chega de novo sempre que o par republica (canal reconectado,
+    /// `REOPEN` cruzado): responder outra vez com efêmeras novas faria os dois
+    /// lados derivarem raízes diferentes (§11.4).
+    answered_init: Option<renewal::AnsweredInit>,
+    /// Quando a última candidata de respondedor foi aberta: limita quantas
+    /// INITs diferentes por minuto custam um encapsulamento ML-KEM.
+    last_candidate_at: Option<u64>,
+    /// Se esta sessão já mandou o seu `CONTROL_SUITES` (§10.2). Também é o que
+    /// confirma a chave para o par numa sessão nova: o respondedor só ganha
+    /// cadeia de envio ao decifrar a primeira mensagem do iniciador (§5.1).
+    suites_sent: bool,
+    /// Muda a cada sessão aberta no lugar de outra e a cada promoção de
+    /// candidata, para quem está fora saber que o par tem uma sessão nova
+    /// mesmo quando o estado continua `Established`.
+    generation: u32,
 }
 
 impl Session {
@@ -151,6 +186,8 @@ impl Session {
         upgrade_suite: Option<u8>,
     ) -> Result<(Self, Option<Vec<u8>>)> {
         let base_suite = Suite::from_id(recorded_suite)?;
+        let reopen_key = reopen::reopen_key(local, &peer)?;
+        let direction = topic::direction(&local.public(), &peer);
 
         let init_suite = match upgrade_suite {
             Some(target) if target > recorded_suite => Suite::from_id(target)?,
@@ -171,6 +208,15 @@ impl Session {
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
                     pending_outgoing_handshake: Some(init_bytes.clone()),
+                    reopen_key,
+                    direction,
+                    reopen_seen: reopen::ReplayGuard::default(),
+                    last_signal_at: None,
+                    candidate: None,
+                    answered_init: None,
+                    last_candidate_at: None,
+                    suites_sent: false,
+                    generation: 0,
                 },
                 Some(init_bytes),
             ))
@@ -186,6 +232,15 @@ impl Session {
                     consecutive_aead_failures: 0,
                     needs_rehandshake: false,
                     pending_outgoing_handshake: None,
+                    reopen_key,
+                    direction,
+                    reopen_seen: reopen::ReplayGuard::default(),
+                    last_signal_at: None,
+                    candidate: None,
+                    answered_init: None,
+                    last_candidate_at: None,
+                    suites_sent: false,
+                    generation: 0,
                 },
                 None,
             ))
@@ -244,11 +299,10 @@ impl Session {
     /// Processa uma mensagem de handshake recebida (INIT ou RESP, conforme o
     /// estado atual) e devolve os bytes de resposta a enviar, se houver.
     ///
-    /// A distinção entre "isto é handshake" e "isto é um envelope de sessão"
-    /// nunca é um marcador no fio — isso contradiria D4 (nada além do
-    /// contador e do `dh_pub` em claro). É puramente o estado local: enquanto
-    /// não `Established`, todo byte recebido é handshake.
-    pub fn process_handshake_message(
+    /// Só chamado por [`Self::receive`], que já decidiu pelo estado e pelo
+    /// tamanho que os bytes são handshake — nunca por um marcador no fio
+    /// (D4). Ver `renewal`.
+    fn process_handshake_message(
         &mut self,
         local: &LocalIdentity,
         bytes: &[u8],
@@ -336,6 +390,11 @@ impl Session {
         if self.needs_rehandshake {
             return Err(Error::NeedsRehandshake);
         }
+        // O par muito provavelmente já perdeu esta sessão: o que sair por ela
+        // agora se perde. Quem chama mantém a mensagem na fila (§11.4).
+        if self.is_renewing() {
+            return Err(Error::InvalidState("sessão sendo renovada com o par"));
+        }
 
         let ratchet = match &mut self.state {
             SessionState::Established(ratchet) => ratchet,
@@ -347,43 +406,19 @@ impl Session {
             _ => return Err(Error::InvalidState("sessão ainda não estabelecida")),
         };
 
-        let (header, message_key) = ratchet.next_sending_key()?;
-        let counter = header.counter;
-        let dh_pub = header.dh_pub;
-
-        // Zeroizing: se `seal` falhar, o plaintext não pode ficar solto no heap.
-        let mut buffer = Zeroizing::new(InnerPlaintext {
-            packet_type,
-            pn: header.pn,
-            kem_ek: header.kem_ek,
-            kem_ct: header.kem_ct,
-            body: Zeroizing::new(body),
-        }
-        .encode(transport)?);
-
-        let aad = envelope::aad(counter, &dh_pub);
-        aead::seal(&message_key, counter, &aad, &mut buffer)?;
-        let envelope_bytes = envelope::encode(counter, &dh_pub, &buffer);
-
+        let (envelope_bytes, counter) = seal_with(ratchet, packet_type, body, transport)?;
         if counter >= COUNTER_REHANDSHAKE_THRESHOLD {
             self.needs_rehandshake = true;
         }
-
         Ok(envelope_bytes)
     }
 
-    /// Decifra um envelope recebido contra uma sessão estabelecida.
-    ///
-    /// `Ok(None)` cobre toda falha de decifragem — envelope malformado,
-    /// `dh_pub` de ordem baixa, contador repetido, tag do AEAD inválida,
-    /// plaintext decodificado que não bate com o bucket. Nenhuma dessas
-    /// causas é diferenciada por fora: distinguir abriria exatamente o tipo
-    /// de oráculo que `crypto::aead` já evita para a falha do próprio AEAD
-    /// (ver `crypto/aead.rs`), e aqui a mesma regra vale para qualquer falha
-    /// anterior a ele. Só o uso indevido da API — chamar isto antes da
-    /// sessão estar `Established`, ou depois dela ter falhado — devolve
-    /// `Err`.
-    pub fn decrypt_incoming(
+    /// Decifra um envelope só contra a sessão atual, sem a candidata nem
+    /// nenhuma resposta ao par — o núcleo de [`Self::receive`] isolado para os
+    /// testes do ratchet. Toda falha é `Ok(None)`, sem diferenciar a causa;
+    /// `Err` só para uso fora de `Established`.
+    #[cfg(test)]
+    fn decrypt_incoming(
         &mut self,
         bytes: &[u8],
         transport: Transport,
@@ -400,20 +435,34 @@ impl Session {
 
         match try_decrypt(ratchet, bytes, transport) {
             Ok(inner) => {
-                self.consecutive_aead_failures = 0;
-                self.peer_confirmed = true;
-                if inner.packet_type == PacketType::ControlSuites {
-                    self.handle_control_suites(&inner.body);
-                }
+                self.on_decrypted(&inner);
                 Ok(Some(inner))
             }
             Err(_) => {
-                self.consecutive_aead_failures = self.consecutive_aead_failures.saturating_add(1);
-                if self.consecutive_aead_failures >= MAX_CONSECUTIVE_AEAD_FAILURES {
-                    self.state = SessionState::Failed;
-                }
+                self.count_failure();
                 Ok(None)
             }
+        }
+    }
+
+    /// Contabilidade de uma mensagem que a sessão atual decifrou.
+    fn on_decrypted(&mut self, inner: &InnerPlaintext) {
+        self.consecutive_aead_failures = 0;
+        self.peer_confirmed = true;
+        if inner.packet_type == PacketType::ControlSuites {
+            self.handle_control_suites(&inner.body);
+        }
+    }
+
+    /// Uma falha de decifragem na sessão atual; o limiar de §11.1 leva a
+    /// `Failed`. Só conta com a sessão `Established`.
+    fn count_failure(&mut self) {
+        if !matches!(self.state, SessionState::Established(_)) {
+            return;
+        }
+        self.consecutive_aead_failures = self.consecutive_aead_failures.saturating_add(1);
+        if self.consecutive_aead_failures >= MAX_CONSECUTIVE_AEAD_FAILURES {
+            self.state = SessionState::Failed;
         }
     }
 
@@ -434,7 +483,9 @@ impl Session {
             return Err(Error::SuiteRetired(self.current_suite));
         }
         let payload = Self::control_suites_payload();
-        self.encrypt_outgoing(PacketType::ControlSuites, payload, transport)
+        let sealed = self.encrypt_outgoing(PacketType::ControlSuites, payload, transport)?;
+        self.suites_sent = true;
+        Ok(sealed)
     }
 
     fn handle_control_suites(&mut self, body: &[u8]) {
@@ -466,6 +517,36 @@ impl Session {
             }
         }
     }
+}
+
+/// Cifra um pacote numa cadeia de envio e devolve o envelope e o contador
+/// usado. Separada de `encrypt_outgoing` porque a candidata (§11.4) também
+/// cifra, sem passar pela política da sessão atual.
+fn seal_with(
+    ratchet: &mut RatchetState,
+    packet_type: PacketType,
+    body: Vec<u8>,
+    transport: Transport,
+) -> Result<(Vec<u8>, u32)> {
+    let (header, message_key) = ratchet.next_sending_key()?;
+    let counter = header.counter;
+    let dh_pub = header.dh_pub;
+
+    // Zeroizing: se `seal` falhar, o plaintext não pode ficar solto no heap.
+    let mut buffer = Zeroizing::new(
+        InnerPlaintext {
+            packet_type,
+            pn: header.pn,
+            kem_ek: header.kem_ek,
+            kem_ct: header.kem_ct,
+            body: Zeroizing::new(body),
+        }
+        .encode(transport)?,
+    );
+
+    let aad = envelope::aad(counter, &dh_pub);
+    aead::seal(&message_key, counter, &aad, &mut buffer)?;
+    Ok((envelope::encode(counter, &dh_pub, &buffer), counter))
 }
 
 /// Mecânica de uma tentativa de decifragem, separada de `decrypt_incoming`
@@ -1412,4 +1493,3 @@ mod tests {
         set_suite_retired(1, false);
     }
 }
-

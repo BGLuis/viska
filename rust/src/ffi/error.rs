@@ -51,6 +51,9 @@ pub enum FfiError {
     SuiteRetired,
     /// Oferta de arquivo retida não encontrada ou já limpa por auto-lock/cancelamento (U-08).
     OfferNotFound,
+    /// O contato já tem o máximo de envios de arquivo ou voz esperando resposta
+    /// (fila offline, D30): a UI pede para aguardar a conexão.
+    QueueFull,
     /// Qualquer outra falha interna, sem informação útil para a UI.
     Internal,
 }

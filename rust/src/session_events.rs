@@ -14,8 +14,8 @@
 //! Fica fora de `ffi/` de propósito: o codegen varre `crate::ffi` e tentaria
 //! expor ao Dart estes tipos, que são detalhe interno do `Core`.
 //!
-//! O payload é só o que a UI já pode consultar por `session_status`:
-//! identificador público do contato e o enum de estado. Nenhum segredo.
+//! O payload é só o identificador público do contato, o enum de estado, a
+//! geração da sessão e se há renovação em curso (§11.4). Nenhum segredo.
 
 use std::collections::HashMap;
 
@@ -24,9 +24,20 @@ use crate::ffi::types::{SessionStateEventDto, SessionStateKind};
 
 pub(crate) type SessionEventSink = Box<dyn Fn(SessionStateEventDto) + Send>;
 
+/// O que o Dart vê de uma sessão. Só dado público.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionView {
+    pub(crate) state: SessionStateKind,
+    pub(crate) needs_rehandshake: bool,
+    /// Muda quando a sessão é trocada por outra (§11.4).
+    pub(crate) generation: u32,
+    /// Há uma candidata segurando a fila de envio (§11.4).
+    pub(crate) renewing: bool,
+}
+
 /// Estado observável de uma sessão; `None` quando ela não existe (descartada
 /// por `lock`, re-pareamento ou reset).
-pub(crate) type SessionSnapshot = Option<(SessionStateKind, bool)>;
+pub(crate) type SessionSnapshot = Option<SessionView>;
 
 #[derive(Default)]
 pub(crate) struct SessionEvents {
@@ -37,7 +48,7 @@ pub(crate) struct SessionEvents {
     /// Chave `Vec<u8>`, não `[u8; 16]`: o codegen percorre os campos de
     /// `Core` e, ao ver o array aqui, passaria a emitir `U8Array16` num
     /// arquivo à parte, mudando a ponte inteira por um detalhe interno.
-    published: HashMap<Vec<u8>, (SessionStateKind, bool)>,
+    published: HashMap<Vec<u8>, SessionView>,
 }
 
 impl std::fmt::Debug for SessionEvents {
@@ -81,8 +92,10 @@ impl SessionEvents {
         }
         sink(SessionStateEventDto {
             peer_device_id: id.to_vec(),
-            state: current.map(|(state, _)| state),
-            needs_rehandshake: current.is_some_and(|(_, needs)| needs),
+            state: current.map(|view| view.state),
+            needs_rehandshake: current.is_some_and(|view| view.needs_rehandshake),
+            generation: current.map_or(0, |view| view.generation),
+            renewing: current.is_some_and(|view| view.renewing),
         });
     }
 
@@ -123,6 +136,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     const A: [u8; 16] = [1; 16];
+
+    fn view(state: SessionStateKind, needs_rehandshake: bool, generation: u32) -> SessionView {
+        SessionView { state, needs_rehandshake, generation, renewing: false }
+    }
     const B: [u8; 16] = [2; 16];
 
     fn recording() -> (SessionEvents, Arc<Mutex<Vec<SessionStateEventDto>>>) {
@@ -139,9 +156,9 @@ mod tests {
     #[test]
     fn emits_on_change_and_skips_repeats() {
         let (mut events, seen) = recording();
-        events.publish(&A, Some((SessionStateKind::Handshaking, false)));
-        events.publish(&A, Some((SessionStateKind::Handshaking, false)));
-        events.publish(&A, Some((SessionStateKind::Failed, false)));
+        events.publish(&A, Some(view(SessionStateKind::Handshaking, false, 0)));
+        events.publish(&A, Some(view(SessionStateKind::Handshaking, false, 0)));
+        events.publish(&A, Some(view(SessionStateKind::Failed, false, 0)));
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
@@ -152,8 +169,8 @@ mod tests {
     #[test]
     fn needs_rehandshake_flip_is_its_own_event() {
         let (mut events, seen) = recording();
-        events.publish(&A, Some((SessionStateKind::Established, false)));
-        events.publish(&A, Some((SessionStateKind::Established, true)));
+        events.publish(&A, Some(view(SessionStateKind::Established, false, 0)));
+        events.publish(&A, Some(view(SessionStateKind::Established, true, 0)));
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
@@ -163,7 +180,7 @@ mod tests {
     #[test]
     fn discarded_session_emits_none_once() {
         let (mut events, seen) = recording();
-        events.publish(&A, Some((SessionStateKind::Established, false)));
+        events.publish(&A, Some(view(SessionStateKind::Established, false, 0)));
         events.publish(&A, None);
         events.publish(&A, None);
 
@@ -182,22 +199,22 @@ mod tests {
     #[test]
     fn contacts_are_tracked_independently() {
         let (mut events, seen) = recording();
-        events.publish(&A, Some((SessionStateKind::Failed, false)));
-        events.publish(&B, Some((SessionStateKind::Failed, false)));
+        events.publish(&A, Some(view(SessionStateKind::Failed, false, 0)));
+        events.publish(&B, Some(view(SessionStateKind::Failed, false, 0)));
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[test]
     fn publishing_without_a_sink_is_silent_and_replayed_on_subscribe() {
         let mut events = SessionEvents::default();
-        events.publish(&A, Some((SessionStateKind::Failed, false)));
+        events.publish(&A, Some(view(SessionStateKind::Failed, false, 0)));
         assert!(events.published_ids().is_empty());
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = Arc::clone(&seen);
         events.set_sink(
             Box::new(move |e| sink_seen.lock().unwrap().push(e)),
-            [(A, Some((SessionStateKind::Failed, false)))],
+            [(A, Some(view(SessionStateKind::Failed, false, 0)))],
         );
 
         let seen = seen.lock().unwrap();
@@ -208,14 +225,40 @@ mod tests {
     #[test]
     fn resubscribing_replays_current_state_to_the_new_sink() {
         let (mut events, _old) = recording();
-        events.publish(&A, Some((SessionStateKind::Established, false)));
+        events.publish(&A, Some(view(SessionStateKind::Established, false, 0)));
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = Arc::clone(&seen);
         events.set_sink(
             Box::new(move |e| sink_seen.lock().unwrap().push(e)),
-            [(A, Some((SessionStateKind::Established, false)))],
+            [(A, Some(view(SessionStateKind::Established, false, 0)))],
         );
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn generation_change_alone_is_its_own_event() {
+        let (mut events, seen) = recording();
+        events.publish(&A, Some(view(SessionStateKind::Established, false, 0)));
+        events.publish(&A, Some(view(SessionStateKind::Established, false, 1)));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].generation, 1);
+        assert_eq!(seen[1].state, Some(SessionStateKind::Established));
+    }
+
+    #[test]
+    fn renewal_start_and_end_are_events() {
+        let (mut events, seen) = recording();
+        let calm = view(SessionStateKind::Established, false, 0);
+        events.publish(&A, Some(calm));
+        events.publish(&A, Some(SessionView { renewing: true, ..calm }));
+        events.publish(&A, Some(calm));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert!(seen[1].renewing);
+        assert!(!seen[2].renewing);
     }
 }

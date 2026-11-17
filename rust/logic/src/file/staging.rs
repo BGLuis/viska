@@ -14,15 +14,15 @@
 //! de conseguir *rederivar* a mesma chave — ou seja, enquanto o
 //! `session_secret` usado em [`derive_staging_key`] também for esquecido do
 //! lado de quem orquestra a transferência. Este módulo deriva e usa a chave;
-//! ele não decide por quanto tempo o `session_secret` de origem continua
-//! vivo, nem como uma transferência retomada volta a obter a mesma chave
-//! depois de uma queda de conexão — isso é responsabilidade de
-//! `file::transfer` (F4), que ainda não existe, e fica registrado aqui como
-//! pendência em aberto, não resolvido em silêncio.
+//! por quanto tempo o segredo de origem continua vivo é decidido em
+//! `file::transfer` e na camada FFI (§7.5, D28). [`StagingWriter::resume`]
+//! é o que deixa uma transferência retomada reabrir o mesmo arquivo.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::aead;
 use crate::crypto::kdf::Key;
@@ -36,6 +36,29 @@ use crate::{Error, Result};
 /// redondo conveniente" — não há acoplamento entre os três; mudar um não
 /// exige mudar os outros.
 pub const PAGE_LEN: usize = 65536;
+
+/// Tamanho em disco de uma página completa: plaintext, nonce e tag.
+const SEALED_PAGE_LEN: u64 = (PAGE_LEN + aead::XNONCE_LEN + aead::TAG_LEN) as u64;
+
+/// Tamanho em disco de um staging completo com `total_len` bytes de plaintext.
+/// Um arquivo com outro tamanho foi cortado ou acrescido por fora.
+pub fn sealed_len(total_len: u64) -> u64 {
+    let page_len = PAGE_LEN as u64;
+    let overhead = (aead::XNONCE_LEN + aead::TAG_LEN) as u64;
+    let tail = total_len % page_len;
+    (total_len / page_len) * SEALED_PAGE_LEN + if tail > 0 { tail + overhead } else { 0 }
+}
+
+/// Quantas páginas completas de [`PAGE_LEN`] já estão gravadas no staging de
+/// `file_id`. A última página, menor, só é gravada por [`StagingWriter::finish`],
+/// e o que sobra depois da última página inteira (gravação interrompida no meio)
+/// não conta. Nada aqui decifra: quem retoma confere cada página ao reabrir.
+pub fn full_pages_on_disk(staging_dir: &Path, file_id: &[u8; FILE_ID_LEN]) -> Result<u64> {
+    let len = fs::metadata(staging_path(staging_dir, file_id))
+        .map_err(|_| Error::Malformed("staging não encontrado para retomada"))?
+        .len();
+    Ok(len / SEALED_PAGE_LEN)
+}
 
 /// Deriva `K_staging` a partir do segredo de transferência e do `file_id` —
 /// fórmula exata de §7.5 (D15). Reexportado de [`keys::derive_staging_key`]
@@ -90,6 +113,14 @@ impl core::fmt::Debug for StagingWriter {
     }
 }
 
+// O buffer guarda plaintext do arquivo ainda não cifrado: na retomada, até
+// uma página inteira dele vem decifrada do disco.
+impl Drop for StagingWriter {
+    fn drop(&mut self) {
+        self.buffer.zeroize();
+    }
+}
+
 impl StagingWriter {
     /// Cria (ou trunca, se já existir de uma tentativa anterior) o arquivo
     /// de staging para `file_id` dentro de `staging_dir`, criando o
@@ -119,6 +150,72 @@ impl StagingWriter {
         })
     }
 
+    /// Reabre um staging já existente para continuar gravando depois de
+    /// `keep_len` bytes de plaintext, descartando tudo o que vem depois.
+    ///
+    /// As páginas até `keep_len` são decifradas e entregues, em ordem, a
+    /// `on_plaintext`: quem retoma precisa reconstruir o hash do conteúdo, e o
+    /// staging é a única cópia dele. Uma página que não autentica derruba a
+    /// retomada inteira com `AeadFailure`. `keep_len` não precisa cair em
+    /// fronteira de página: o pedaço depois da última página inteira volta ao
+    /// buffer em RAM e o arquivo é cortado no início dessa página, que será
+    /// recifrada com nonce novo quando completar.
+    pub fn resume(
+        staging_dir: &Path,
+        file_id: [u8; FILE_ID_LEN],
+        key: Key,
+        keep_len: u64,
+        mut on_plaintext: impl FnMut(&[u8]),
+    ) -> Result<Self> {
+        let page_len = PAGE_LEN as u64;
+        let kept_pages = keep_len / page_len;
+        let tail_len = (keep_len % page_len) as usize;
+        let pages_to_read = kept_pages + u64::from(tail_len > 0);
+        if pages_to_read > full_pages_on_disk(staging_dir, &file_id)? {
+            return Err(Error::Malformed("staging menor que o trecho a retomar"));
+        }
+
+        let path = staging_path(staging_dir, &file_id);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|_| Error::Malformed("falha reabrindo arquivo de staging"))?;
+
+        let mut buffer = Vec::with_capacity(PAGE_LEN);
+        for page_index in 0..pages_to_read {
+            let mut page = Zeroizing::new(vec![0u8; SEALED_PAGE_LEN as usize]);
+            file.read_exact(&mut page)
+                .map_err(|_| Error::Malformed("staging truncado durante a retomada"))?;
+            aead::open_xchacha(&key, &page_aad(&file_id, page_index), &mut page)?;
+            if page_index < kept_pages {
+                on_plaintext(&page);
+            } else {
+                // `get` com `tail_len` < `PAGE_LEN`, garantido pelo resto da divisão acima.
+                let tail = page
+                    .get(..tail_len)
+                    .ok_or(Error::Malformed("página de staging menor que o esperado"))?;
+                on_plaintext(tail);
+                buffer.extend_from_slice(tail);
+            }
+        }
+
+        file.set_len(kept_pages * SEALED_PAGE_LEN)
+            .map_err(|_| Error::Malformed("falha cortando o staging na retomada"))?;
+        file.seek(SeekFrom::End(0))
+            .map_err(|_| Error::Malformed("falha posicionando o staging na retomada"))?;
+
+        Ok(Self {
+            file,
+            path,
+            key,
+            file_id,
+            buffer,
+            next_page_index: kept_pages,
+            bytes_written: kept_pages * page_len,
+        })
+    }
+
     /// Bytes de plaintext já gravados (cifrados) em disco, sem contar o que
     /// ainda está no buffer pendente — útil para relatar progresso.
     pub fn bytes_written(&self) -> u64 {
@@ -132,7 +229,7 @@ impl StagingWriter {
     pub fn write(&mut self, plaintext: &[u8]) -> Result<()> {
         self.buffer.extend_from_slice(plaintext);
         while self.buffer.len() >= PAGE_LEN {
-            let page: Vec<u8> = self.buffer.drain(..PAGE_LEN).collect();
+            let page: Zeroizing<Vec<u8>> = Zeroizing::new(self.buffer.drain(..PAGE_LEN).collect());
             self.flush_page(&page)?;
         }
         Ok(())
@@ -153,10 +250,20 @@ impl StagingWriter {
     /// Cifra e grava a última página (possivelmente menor que [`PAGE_LEN`],
     /// possivelmente vazia se o arquivo for vazio) e garante que os bytes
     /// cheguem ao disco antes de devolver.
-    pub fn finish(mut self) -> Result<()> {
+    ///
+    /// Pode ser repetida depois de uma falha (disco cheio na última página): o
+    /// buffer só é esvaziado depois de a página ir a disco, e cada tentativa
+    /// corta antes o que uma escrita interrompida tenha deixado depois da
+    /// última página inteira.
+    pub fn finish(&mut self) -> Result<()> {
         if !self.buffer.is_empty() {
-            let last = std::mem::take(&mut self.buffer);
+            self.file
+                .set_len(self.next_page_index * SEALED_PAGE_LEN)
+                .and_then(|()| self.file.seek(SeekFrom::End(0)).map(|_| ()))
+                .map_err(|_| Error::Malformed("falha preparando a última página do staging"))?;
+            let last = Zeroizing::new(self.buffer.clone());
             self.flush_page(&last)?;
+            self.buffer.zeroize();
         }
         self.file
             .sync_all()
@@ -181,6 +288,11 @@ pub struct StagingReader {
     key: Key,
     file_id: [u8; FILE_ID_LEN],
     total_len: u64,
+    /// Estado de [`Read`]: próxima página a decifrar e o plaintext da página
+    /// corrente, ainda não entregue por inteiro.
+    next_page: u64,
+    page: Zeroizing<Vec<u8>>,
+    page_pos: usize,
 }
 
 impl core::fmt::Debug for StagingReader {
@@ -229,6 +341,9 @@ impl StagingReader {
             key,
             file_id,
             total_len,
+            next_page: 0,
+            page: Zeroizing::new(Vec::new()),
+            page_pos: 0,
         })
     }
 
@@ -251,6 +366,17 @@ impl StagingReader {
         }
     }
 
+    /// Decifra a página `page_index` inteira, conferindo a tag.
+    fn read_page(&mut self, page_index: u64) -> Result<Zeroizing<Vec<u8>>> {
+        let plaintext_len = self.page_plaintext_len(page_index);
+        let mut buf = Zeroizing::new(vec![0u8; plaintext_len + aead::XNONCE_LEN + aead::TAG_LEN]);
+        self.file
+            .read_exact(&mut buf)
+            .map_err(|_| Error::Malformed("staging truncado ou menor que o esperado"))?;
+        aead::open_xchacha(&self.key, &page_aad(&self.file_id, page_index), &mut buf)?;
+        Ok(buf)
+    }
+
     /// Decifra o arquivo inteiro, na ordem, escrevendo em `out` — nunca
     /// retém mais que uma página em RAM de cada vez. Para no primeiro erro
     /// de autenticação (página adulterada ou chave errada): `out` pode ter
@@ -264,21 +390,39 @@ impl StagingReader {
         #[cfg(test)]
         DECRYPT_PASSES.with(|n| n.set(n.get() + 1));
         for page_index in 0..self.page_count() {
-            let plaintext_len = self.page_plaintext_len(page_index);
-            let encrypted_len = plaintext_len + aead::XNONCE_LEN + aead::TAG_LEN;
-
-            let mut buf = vec![0u8; encrypted_len];
-            self.file
-                .read_exact(&mut buf)
-                .map_err(|_| Error::Malformed("staging truncado ou menor que o esperado"))?;
-
-            let aad = page_aad(&self.file_id, page_index);
-            aead::open_xchacha(&self.key, &aad, &mut buf)?;
-
+            let buf = self.read_page(page_index)?;
             out.write_all(&buf)
                 .map_err(|_| Error::Malformed("falha escrevendo plaintext decifrado"))?;
         }
         Ok(())
+    }
+}
+
+/// Leitura sequencial do plaintext, uma página em RAM por vez: é assim que o
+/// emissor lê a cópia cifrada do arquivo-fonte (`outgoing/`) sem decifrá-la
+/// inteira. Não se mistura com [`StagingReader::decrypt_to`] no mesmo valor:
+/// os dois avançam o mesmo cursor do arquivo.
+impl Read for StagingReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.page_pos >= self.page.len() {
+            if self.next_page >= self.page_count() {
+                return Ok(0);
+            }
+            let page_index = self.next_page;
+            // A causa do erro não sobe: uma página adulterada e um arquivo
+            // truncado são a mesma falha para quem lê.
+            self.page = self
+                .read_page(page_index)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+            self.page_pos = 0;
+            self.next_page += 1;
+        }
+        let available = self.page.get(self.page_pos..).unwrap_or_default();
+        let n = available.len().min(out.len());
+        // `n` não passa de nenhum dos dois comprimentos, pelo `min` acima.
+        out[..n].copy_from_slice(&available[..n]);
+        self.page_pos += n;
+        Ok(n)
     }
 }
 
@@ -357,7 +501,7 @@ mod tests {
         let file_id = [2u8; FILE_ID_LEN];
         let key = chave_de_teste(2);
 
-        let writer = StagingWriter::create(dir.path(), file_id, key.clone()).unwrap();
+        let mut writer = StagingWriter::create(dir.path(), file_id, key.clone()).unwrap();
         writer.finish().unwrap();
 
         let mut reader = StagingReader::open(dir.path(), file_id, key, 0).unwrap();
@@ -469,7 +613,7 @@ mod tests {
 
         for id in [ativo, orfao] {
             let key = chave_de_teste(id[0]);
-            let writer = StagingWriter::create(dir.path(), id, key).unwrap();
+            let mut writer = StagingWriter::create(dir.path(), id, key).unwrap();
             writer.finish().unwrap();
         }
 
@@ -544,5 +688,136 @@ mod tests {
             9,
         );
         assert!(matches!(res, Err(Error::UnsupportedVersion(9))));
+    }
+
+    fn write_unfinished(dir: &Path, data: &[u8], tag: u8) {
+        let mut writer = StagingWriter::create(dir, [tag; FILE_ID_LEN], chave_de_teste(tag)).unwrap();
+        writer.write(data).unwrap();
+        // Sem `finish`: simula o bloqueio no meio, com a página final só na RAM.
+    }
+
+    #[test]
+    fn finish_can_run_again_without_duplicating_the_last_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN + 777).map(|i| (i % 241) as u8).collect();
+        let mut writer = StagingWriter::create(dir.path(), [11; FILE_ID_LEN], chave_de_teste(11)).unwrap();
+        writer.write(&original).unwrap();
+        writer.finish().unwrap();
+        writer.finish().unwrap();
+
+        let on_disk = fs::metadata(staging_path(dir.path(), &[11; FILE_ID_LEN])).unwrap().len();
+        assert_eq!(on_disk, sealed_len(original.len() as u64));
+        let mut out = Vec::new();
+        StagingReader::open(dir.path(), [11; FILE_ID_LEN], chave_de_teste(11), original.len() as u64)
+            .unwrap()
+            .decrypt_to(&mut out)
+            .unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn finish_cuts_a_torn_last_page_before_writing_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN + 777).map(|i| (i % 239) as u8).collect();
+        let mut writer = StagingWriter::create(dir.path(), [12; FILE_ID_LEN], chave_de_teste(12)).unwrap();
+        writer.write(&original).unwrap();
+        // Uma tentativa anterior que morreu no meio da última página: os bytes
+        // saíram pelo próprio arquivo do escritor, que ficou adiante deles.
+        writer.file.write_all(&[0xEE; 100]).unwrap();
+
+        writer.finish().unwrap();
+
+        let mut out = Vec::new();
+        StagingReader::open(dir.path(), [12; FILE_ID_LEN], chave_de_teste(12), original.len() as u64)
+            .unwrap()
+            .decrypt_to(&mut out)
+            .unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn sealed_len_matches_a_finished_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        for (tag, len) in [(7u8, 0usize), (8, 10), (9, PAGE_LEN), (10, PAGE_LEN * 2 + 3)] {
+            let mut writer = StagingWriter::create(dir.path(), [tag; FILE_ID_LEN], chave_de_teste(tag)).unwrap();
+            writer.write(&vec![1u8; len]).unwrap();
+            writer.finish().unwrap();
+            let on_disk = fs::metadata(staging_path(dir.path(), &[tag; FILE_ID_LEN])).unwrap().len();
+            assert_eq!(sealed_len(len as u64), on_disk, "len {len}");
+        }
+    }
+
+    #[test]
+    fn full_pages_on_disk_ignores_the_unflushed_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        write_unfinished(dir.path(), &vec![1u8; PAGE_LEN * 3 + 500], 1);
+        assert_eq!(full_pages_on_disk(dir.path(), &[1; FILE_ID_LEN]).unwrap(), 3);
+    }
+
+    #[test]
+    fn resume_keeps_the_prefix_and_continues_appending() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN * 3 + 500).map(|i| (i % 251) as u8).collect();
+        write_unfinished(dir.path(), &original, 2);
+
+        let keep = PAGE_LEN + 100;
+        let mut seen = Vec::new();
+        let mut writer =
+            StagingWriter::resume(dir.path(), [2; FILE_ID_LEN], chave_de_teste(2), keep as u64, |p| seen.extend_from_slice(p))
+                .unwrap();
+        assert_eq!(seen, original[..keep]);
+        assert_eq!(writer.bytes_written(), PAGE_LEN as u64);
+        writer.write(&original[keep..]).unwrap();
+        writer.finish().unwrap();
+
+        let mut out = Vec::new();
+        StagingReader::open(dir.path(), [2; FILE_ID_LEN], chave_de_teste(2), original.len() as u64)
+            .unwrap()
+            .decrypt_to(&mut out)
+            .unwrap();
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn resume_rejects_a_length_beyond_what_is_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        write_unfinished(dir.path(), &vec![3u8; PAGE_LEN * 2 + 10], 3);
+        let err = StagingWriter::resume(dir.path(), [3; FILE_ID_LEN], chave_de_teste(3), (PAGE_LEN * 2 + 1) as u64, |_| {})
+            .unwrap_err();
+        assert!(matches!(err, Error::Malformed(_)));
+    }
+
+    #[test]
+    fn resume_with_wrong_key_fails_without_cutting_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_unfinished(dir.path(), &vec![4u8; PAGE_LEN * 2], 4);
+        let path = staging_path(dir.path(), &[4; FILE_ID_LEN]);
+        let before = fs::metadata(&path).unwrap().len();
+        let err = StagingWriter::resume(dir.path(), [4; FILE_ID_LEN], chave_de_teste(5), PAGE_LEN as u64, |_| {})
+            .unwrap_err();
+        assert!(matches!(err, Error::AeadFailure));
+        assert_eq!(fs::metadata(&path).unwrap().len(), before);
+    }
+
+    #[test]
+    fn read_in_small_pieces_matches_decrypt_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..PAGE_LEN * 2 + 777).map(|i| (i % 249) as u8).collect();
+        let mut writer = StagingWriter::create(dir.path(), [6; FILE_ID_LEN], chave_de_teste(6)).unwrap();
+        writer.write(&original).unwrap();
+        writer.finish().unwrap();
+
+        let mut reader =
+            StagingReader::open(dir.path(), [6; FILE_ID_LEN], chave_de_teste(6), original.len() as u64).unwrap();
+        let mut out = Vec::new();
+        let mut piece = [0u8; 1000];
+        loop {
+            let n = reader.read(&mut piece).unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&piece[..n]);
+        }
+        assert_eq!(out, original);
     }
 }

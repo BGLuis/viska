@@ -14,6 +14,8 @@ mixin FakeSessionEvents {
   SessionStateKind _state = SessionStateKind.handshaking;
   var _gone = false;
   var _needsRehandshake = false;
+  var _generation = 0;
+  var _renewing = false;
   final _sessionEvents = StreamController<SessionStateEventDto>.broadcast(sync: true);
 
   SessionStateKind get sessionState => _state;
@@ -35,16 +37,68 @@ mixin FakeSessionEvents {
     _emitSessionState();
   }
 
+  int get generation => _generation;
+
+  /// A sessão foi trocada por outra (o par reabriu, §11.4) sem mudar de estado.
+  set generation(int value) {
+    _generation = value;
+    _emitSessionState();
+  }
+
+  bool get renewing => _renewing;
+
+  /// Uma candidata passou a segurar (ou deixou de segurar) a fila (§11.4).
+  set renewing(bool value) {
+    _renewing = value;
+    _emitSessionState();
+  }
+
   void _emitSessionState() => _sessionEvents.add(_snapshot());
 
   SessionStateEventDto _snapshot() => SessionStateEventDto(
         peerDeviceId: Uint8List.fromList(peerDeviceId),
         state: _gone ? null : _state,
         needsRehandshake: _needsRehandshake,
+        generation: _generation,
+        renewing: _renewing,
       );
 
   Stream<SessionStateEventDto> subscribeSessionEvents() async* {
     yield _snapshot();
     yield* _sessionEvents.stream;
   }
+}
+
+/// Reproduz, num `Core` falso, `Core.subscribeTransferEvents`: eventos de
+/// oferta empurrados por [emitTransferEvent].
+mixin FakeTransferEvents {
+  final _transferEvents = StreamController<TransferEventDto>.broadcast(sync: true);
+
+  void emitTransferEvent(TransferEventDto event) => _transferEvents.add(event);
+
+  Stream<TransferEventDto> subscribeTransferEvents() => _transferEvents.stream;
+}
+
+/// Reproduz, num `Core` falso, `Core.subscribeMessageEvents` e
+/// `Core.checkMessageExpiry`: avisos de mudança em mensagem empurrados por
+/// [emitMessageEvent], só com identificadores (o conteúdo vem de `getMessage`).
+mixin FakeMessageEvents {
+  final _messageEvents = StreamController<MessageEventDto>.broadcast(sync: true);
+
+  void emitMessageEvent(
+    int messageId,
+    MessageEventKind kind, {
+    List<int>? peer,
+  }) =>
+      _messageEvents.add(MessageEventDto(
+        peerDeviceId: Uint8List.fromList(peer ?? List.generate(16, (i) => i)),
+        messageId: messageId,
+        kind: kind,
+      ));
+
+  Stream<MessageEventDto> subscribeMessageEvents() => _messageEvents.stream;
+
+  var checkMessageExpiryCalls = 0;
+
+  Future<void> checkMessageExpiry() async => checkMessageExpiryCalls++;
 }

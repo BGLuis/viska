@@ -510,7 +510,8 @@ pub fn mark_message_read(
     conn: &rusqlite::Connection,
     message_id: i64,
     unix_now: i64,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut key_destroyed = false;
     let row_info: Option<(i64, i64)> = conn
         .query_row(
             "SELECT m.view_once, COALESCE(c.ephemeral_ttl, 0) FROM messages m
@@ -535,6 +536,7 @@ pub fn mark_message_read(
             if deleted > 0 {
                 conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
                     .map_err(|_| Error::Store)?;
+                key_destroyed = true;
             }
         } else if ttl > 0 {
             let expires_at = unix_now.saturating_add(ttl);
@@ -547,7 +549,7 @@ pub fn mark_message_read(
             .map_err(|_| Error::Store)?;
         }
     }
-    Ok(())
+    Ok(key_destroyed)
 }
 
 /// Destrói chaves de mensagens efêmeras vencidas (crypto-shredding por mensagem).
@@ -558,18 +560,54 @@ pub fn mark_message_read(
 pub fn sweep_expired_ephemeral_messages(
     conn: &rusqlite::Connection,
     unix_now: i64,
-) -> Result<usize> {
-    let deleted = conn
-        .execute(
-            "DELETE FROM ephemeral_message_keys WHERE expires_at <= ?1",
-            [unix_now],
-        )
-        .map_err(|_| Error::Store)?;
-    if deleted > 0 {
+) -> Result<Vec<i64>> {
+    let expired = update_returning_ids(
+        conn,
+        "DELETE FROM ephemeral_message_keys WHERE expires_at <= ?1 RETURNING message_id",
+        [unix_now],
+    )?;
+    if !expired.is_empty() {
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|_| Error::Store)?;
     }
-    Ok(deleted)
+    Ok(expired)
+}
+
+/// Executa um `UPDATE ... RETURNING id` e devolve as linhas que mudaram: é de
+/// onde saem os avisos das atualizações em lote, sem reler a tabela antes.
+fn update_returning_ids(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(sql).map_err(|_| Error::Store)?;
+    let ids = stmt
+        .query_map(params, |row| row.get::<_, i64>(0))
+        .map_err(|_| Error::Store)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::Store)?;
+    Ok(ids)
+}
+
+/// Contato dono de cada mensagem que ainda existe; as que sumiram ficam de fora.
+pub fn contacts_of(conn: &rusqlite::Connection, ids: &[i64]) -> Result<Vec<(i64, [u8; 16])>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let contact: Option<Vec<u8>> = conn
+            .query_row("SELECT contact_device_id FROM messages WHERE id = ?1", [id], |row| row.get(0))
+            .optional()
+            .map_err(|_| Error::Store)?;
+        if let Some(contact) = contact.and_then(|c| <[u8; 16]>::try_from(c.as_slice()).ok()) {
+            out.push((id, contact));
+        }
+    }
+    Ok(out)
+}
+
+/// Quando a próxima chave efêmera vence, para quem dorme até lá.
+pub fn next_ephemeral_expiry(conn: &rusqlite::Connection) -> Result<Option<i64>> {
+    conn.query_row("SELECT MIN(expires_at) FROM ephemeral_message_keys", [], |row| row.get(0))
+        .map_err(|_| Error::Store)
 }
 
 /// Marca uma mensagem de saída como entregue ao transporte.
@@ -579,8 +617,8 @@ pub fn sweep_expired_ephemeral_messages(
 /// sobrescrita. `Unknown` entra porque `lock()` pode marcá-lo enquanto um envio
 /// em voo ainda vai terminar: o `send` que retornou sem erro é a confirmação
 /// que faltava, e deixar a linha incerta ofereceria um reenvio duplicado.
-pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
-    conn.execute(
+pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
+    let changed = conn.execute(
         "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4, ?5)",
         rusqlite::params![
             DeliveryState::Sent as i64,
@@ -591,7 +629,7 @@ pub fn mark_sent(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
         ],
     )
     .map_err(|_| Error::Store)?;
-    Ok(())
+    Ok(changed > 0)
 }
 
 /// Move uma mensagem entre dois estados, só se ela ainda estiver em `from`:
@@ -601,23 +639,24 @@ fn transition(
     message_id: i64,
     from: DeliveryState,
     to: DeliveryState,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state = ?3",
-        rusqlite::params![to as i64, message_id, from as i64],
-    )
-    .map_err(|_| Error::Store)?;
-    Ok(())
+) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state = ?3",
+            rusqlite::params![to as i64, message_id, from as i64],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(changed > 0)
 }
 
 /// Tira a mensagem da fila de pendentes quando seus bytes cifrados saem para
 /// o transporte.
-pub fn mark_sending(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+pub fn mark_sending(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
     transition(conn, message_id, DeliveryState::Pending, DeliveryState::Sending)
 }
 
 /// Devolve à fila uma mensagem que não chegou a sair.
-pub fn requeue(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+pub fn requeue(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
     transition(conn, message_id, DeliveryState::Sending, DeliveryState::Pending)
 }
 
@@ -625,10 +664,12 @@ pub fn requeue(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
 /// `lock()`: ali o Rust perdeu a pista de se os bytes saíram, e devolvê-los à
 /// fila recifraria uma mensagem que o par talvez já tenha. Só texto, porque
 /// `list_pending` (que `Unknown` evita) só drena `MSG_TEXT`.
-pub fn mark_all_sending_unknown(conn: &rusqlite::Connection) -> Result<usize> {
-    conn.execute(
+pub fn mark_all_sending_unknown(conn: &rusqlite::Connection) -> Result<Vec<i64>> {
+    update_returning_ids(
+        conn,
         "UPDATE messages SET delivery_state = ?1
-         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type = ?4",
+         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type = ?4
+         RETURNING id",
         rusqlite::params![
             DeliveryState::Unknown as i64,
             Direction::Outgoing as i64,
@@ -636,13 +677,35 @@ pub fn mark_all_sending_unknown(conn: &rusqlite::Connection) -> Result<usize> {
             PacketType::MsgText.to_u8() as i64
         ],
     )
-    .map_err(|_| Error::Store)
+}
+
+/// Como [`mark_all_sending_unknown`], para um único contato. Usada quando o
+/// par reabre a sessão (§11.4): o texto em `Sending` saiu (ou não) pela sessão
+/// que o par provavelmente já perdeu, e recifrá-lo poderia entregá-lo duas vezes.
+pub fn mark_sending_unknown_for_contact(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<Vec<i64>> {
+    update_returning_ids(
+        conn,
+        "UPDATE messages SET delivery_state = ?1
+         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
+           AND packet_type = ?5
+         RETURNING id",
+        rusqlite::params![
+            DeliveryState::Unknown as i64,
+            contact_device_id.as_slice(),
+            Direction::Outgoing as i64,
+            DeliveryState::Sending as i64,
+            PacketType::MsgText.to_u8() as i64
+        ],
+    )
 }
 
 /// Devolve à fila um texto `Unknown`, por pedido explícito da pessoa. A linha
 /// (e o `global_id` dentro do corpo) é a mesma, então o par deduplica se a
 /// primeira cópia tinha chegado.
-pub fn resend_unknown(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
+pub fn resend_unknown(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
     transition(conn, message_id, DeliveryState::Unknown, DeliveryState::Pending)
 }
 
@@ -651,10 +714,12 @@ pub fn resend_unknown(conn: &rusqlite::Connection, message_id: i64) -> Result<()
 pub fn requeue_sending_for_contact(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
-) -> Result<usize> {
-    conn.execute(
+) -> Result<Vec<i64>> {
+    update_returning_ids(
+        conn,
         "UPDATE messages SET delivery_state = ?1
-         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4",
+         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
+         RETURNING id",
         rusqlite::params![
             DeliveryState::Pending as i64,
             contact_device_id.as_slice(),
@@ -662,7 +727,6 @@ pub fn requeue_sending_for_contact(
             DeliveryState::Sending as i64
         ],
     )
-    .map_err(|_| Error::Store)
 }
 
 /// Marca uma mensagem de saída como falha. Só sai de `Pending` ou `Sending`:
@@ -670,8 +734,8 @@ pub fn requeue_sending_for_contact(
 /// falha faria a UI oferecer um reenvio de algo que ele já recebeu. `Sending`
 /// entra porque é um `Pending` com bytes já cifrados; sem ele a falha de uma
 /// linha em voo seria ignorada em silêncio.
-pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
-    conn.execute(
+pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
+    let changed = conn.execute(
         "UPDATE messages SET delivery_state = ?1 WHERE id = ?2 AND delivery_state IN (?3, ?4)",
         rusqlite::params![
             DeliveryState::Failed as i64,
@@ -681,17 +745,22 @@ pub fn mark_failed(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
         ],
     )
     .map_err(|_| Error::Store)?;
-    Ok(())
+    Ok(changed > 0)
 }
 
 /// Marca como falha os envios de arquivo e de nota de voz que ficaram
-/// `Pending`. A transferência vive só em memória (U-03): sem o handle ativo
-/// ela não retoma, então a linha não pode continuar como "Enviando…". Também
-/// a tira de `list_pending`, que reenviaria o nome do arquivo como texto.
-pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
-    conn.execute(
+/// `Pending` e não têm mais linha em `file_transfers`: sem ela não há segredo
+/// nem cópia para retomar, então a linha não pode continuar como "Enviando…".
+/// Os que ainda têm linha retomam quando a sessão voltar (§7.5) e ficam como
+/// estão. Também os tira de `list_pending`, que reenviaria o nome do arquivo
+/// como texto.
+pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<Vec<i64>> {
+    update_returning_ids(
+        conn,
         "UPDATE messages SET delivery_state = ?1
-         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)",
+         WHERE direction = ?2 AND delivery_state = ?3 AND packet_type IN (?4, ?5)
+           AND (file_id IS NULL OR file_id NOT IN (SELECT file_id FROM file_transfers))
+         RETURNING id",
         rusqlite::params![
             DeliveryState::Failed as i64,
             Direction::Outgoing as i64,
@@ -700,28 +769,45 @@ pub fn fail_pending_transfers(conn: &rusqlite::Connection) -> Result<usize> {
             PacketType::AudioChunk.to_u8() as i64,
         ],
     )
+}
+
+/// `id` da mensagem de saída ligada a `file_id` deste contato, se houver.
+pub fn outgoing_id_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM messages WHERE file_id = ?1 AND contact_device_id = ?2 AND direction = ?3",
+        rusqlite::params![file_id.as_slice(), contact_device_id.as_slice(), Direction::Outgoing as i64],
+        |row| row.get(0),
+    )
+    .optional()
     .map_err(|_| Error::Store)
 }
 
-/// Como [`fail_pending_transfers`], restrita a um contato.
-pub fn fail_pending_transfers_for_contact(
+/// Devolve a `Pending` o envio de arquivo que falhou mas vai retomar: a falha
+/// marcada pelo Dart quando o bombeamento caiu (transporte, bloqueio) deixou de
+/// valer, porque a transferência continua. Só sai de `Failed`.
+pub fn reopen_failed_by_file_id(
     conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
     contact_device_id: &[u8; 16],
-) -> Result<usize> {
-    conn.execute(
-        "UPDATE messages SET delivery_state = ?1
-         WHERE contact_device_id = ?2 AND direction = ?3 AND delivery_state = ?4
-           AND packet_type IN (?5, ?6)",
-        rusqlite::params![
-            DeliveryState::Failed as i64,
-            contact_device_id.as_slice(),
-            Direction::Outgoing as i64,
-            DeliveryState::Pending as i64,
-            PacketType::FileMetadata.to_u8() as i64,
-            PacketType::AudioChunk.to_u8() as i64,
-        ],
-    )
-    .map_err(|_| Error::Store)
+) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE messages SET delivery_state = ?1
+             WHERE file_id = ?2 AND contact_device_id = ?3 AND direction = ?4 AND delivery_state = ?5",
+            rusqlite::params![
+                DeliveryState::Pending as i64,
+                file_id.as_slice(),
+                contact_device_id.as_slice(),
+                Direction::Outgoing as i64,
+                DeliveryState::Failed as i64,
+            ],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(changed > 0)
 }
 
 /// Liga a mensagem de saída de um arquivo ao `file_id` da transferência, para
@@ -756,9 +842,9 @@ pub fn mark_expired_by_file_id(
     mark_unfinished_by_file_id(conn, DeliveryState::Expired, file_id, contact_device_id)
 }
 
-/// Como [`mark_rejected_by_file_id`], para o envio cancelado localmente (reset
-/// de sessão): falha local, não recusa nem prazo vencido. Como as demais,
-/// só move `Pending`, `Sending` e `Sent`.
+/// Como [`mark_rejected_by_file_id`], para o envio que não pode mais retomar
+/// (cópia local alterada, teto de retenção vencido): falha local, não recusa
+/// nem prazo vencido. Como as demais, só move `Pending`, `Sending` e `Sent`.
 pub fn mark_failed_by_file_id(
     conn: &rusqlite::Connection,
     file_id: &[u8; 16],
@@ -793,13 +879,14 @@ fn mark_unfinished_by_file_id(
 }
 
 /// Marca uma mensagem de saída como confirmada/entregue ao destinatário (via MSG_RECEIPT).
-pub fn mark_delivered(conn: &rusqlite::Connection, message_id: i64) -> Result<()> {
-    conn.execute(
-        "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
-        rusqlite::params![DeliveryState::Delivered as i64, message_id],
-    )
-    .map_err(|_| Error::Store)?;
-    Ok(())
+pub fn mark_delivered(conn: &rusqlite::Connection, message_id: i64) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE messages SET delivery_state = ?1 WHERE id = ?2",
+            rusqlite::params![DeliveryState::Delivered as i64, message_id],
+        )
+        .map_err(|_| Error::Store)?;
+    Ok(changed > 0)
 }
 
 /// Atualiza o ratchet_counter associado a uma mensagem enviada.
@@ -918,6 +1005,26 @@ pub fn list_for_contact_paginated(
     since_id: Option<i64>,
     limit: Option<usize>,
 ) -> Result<Vec<StoredMessage>> {
+    load_messages(conn, Some(contact_device_id), None, since_id, limit)
+}
+
+/// Uma mensagem pelo `id`, na mesma forma da lista. `None` quando ela não
+/// existe mais ou quando é um comando de reação, que a lista também esconde.
+pub fn get_by_id(conn: &rusqlite::Connection, message_id: i64) -> Result<Option<StoredMessage>> {
+    Ok(load_messages(conn, None, Some(message_id), None, Some(1))?.into_iter().next())
+}
+
+/// Leitura única compartilhada por [`list_for_contact_paginated`] e
+/// [`get_by_id`]: as duas precisam devolver exatamente a mesma linha (mesma
+/// decifragem efêmera, mesmas reações, mesmo filtro de comandos de reação),
+/// senão a atualização por linha divergiria da carga inicial.
+fn load_messages(
+    conn: &rusqlite::Connection,
+    contact_device_id: Option<&[u8; 16]>,
+    only_id: Option<i64>,
+    since_id: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<StoredMessage>> {
     let limit_param = limit.map(|l| l as i64).unwrap_or(-1);
     let mut statement = conn
         .prepare(
@@ -933,7 +1040,8 @@ pub fn list_for_contact_paginated(
                  FROM message_reactions
                  GROUP BY message_id
              ) rx ON rx.message_id = m.id
-             WHERE m.contact_device_id = ?1
+             WHERE (?1 IS NULL OR m.contact_device_id = ?1)
+               AND (?4 IS NULL OR m.id = ?4)
                AND (?2 IS NULL OR m.id > ?2)
              ORDER BY m.created_at_unix_secs ASC, m.id ASC
              LIMIT ?3",
@@ -942,9 +1050,10 @@ pub fn list_for_contact_paginated(
 
     let mut rows = statement
         .query(rusqlite::params![
-            contact_device_id.as_slice(),
+            contact_device_id.map(|id| id.as_slice()),
             since_id,
             limit_param,
+            only_id,
         ])
         .map_err(|_| Error::Store)?;
 
@@ -1323,7 +1432,7 @@ mod tests {
         assert!(!mark_failed_by_file_id(&conn, &file_id, &contact).unwrap());
 
         // `Pending` e `Sending` também são envios ainda não terminados.
-        for (n, advance) in [(1u8, mark_sending as fn(&_, i64) -> _), (2, |_, _| Ok(()))] {
+        for (n, advance) in [(1u8, mark_sending as fn(&_, i64) -> _), (2, |_, _| Ok(true))] {
             let fid = [30 + n; 16];
             let m = insert_pending(&conn, &contact, PacketType::AudioChunk, "v.opus", 2).unwrap();
             set_file_id(&conn, m, &fid).unwrap();
@@ -1397,6 +1506,35 @@ mod tests {
     }
 
     #[test]
+    fn mark_sending_unknown_for_contact_touches_only_that_contact() {
+        let contact = [11u8; 16];
+        let other = [12u8; 16];
+        let conn = conn_with_contact(contact);
+        conn.execute(
+            "INSERT INTO contacts (device_id, signing_pubkey, dh_pubkey, paired_at, nickname)
+             VALUES (?1, ?2, ?3, 1700000000, NULL)",
+            rusqlite::params![other.as_slice(), [3u8; 32], [4u8; 32]],
+        )
+        .unwrap();
+        let mine = insert_pending(&conn, &contact, PacketType::MsgText, "a", 1).unwrap();
+        let theirs = insert_pending(&conn, &other, PacketType::MsgText, "b", 2).unwrap();
+        mark_sending(&conn, mine).unwrap();
+        mark_sending(&conn, theirs).unwrap();
+
+        assert_eq!(mark_sending_unknown_for_contact(&conn, &contact).unwrap().len(), 1);
+        let state = |id: &[u8; 16], row| {
+            list_for_contact(&conn, id)
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == row)
+                .unwrap()
+                .delivery_state
+        };
+        assert_eq!(state(&contact, mine), DeliveryState::Unknown);
+        assert_eq!(state(&other, theirs), DeliveryState::Sending);
+    }
+
+    #[test]
     fn mark_all_sending_unknown_leaves_sent_incoming_and_file_rows_alone() {
         let contact = [11u8; 16];
         let conn = conn_with_contact(contact);
@@ -1408,7 +1546,7 @@ mod tests {
         mark_sent(&conn, sent).unwrap();
         mark_sending(&conn, file).unwrap();
 
-        let marked = mark_all_sending_unknown(&conn).unwrap();
+        let marked = mark_all_sending_unknown(&conn).unwrap().len();
 
         assert_eq!(marked, 1);
         let states: Vec<_> = list_for_contact(&conn, &contact)
@@ -1536,15 +1674,14 @@ mod tests {
         mark_sending(&conn, text_a).unwrap();
         mark_sending(&conn, text_b).unwrap();
 
-        assert_eq!(requeue_sending_for_contact(&conn, &a).unwrap(), 1);
-        assert_eq!(fail_pending_transfers_for_contact(&conn, &a).unwrap(), 1);
+        assert_eq!(requeue_sending_for_contact(&conn, &a).unwrap().len(), 1);
 
         let state = |id: i64| -> i64 {
             conn.query_row("SELECT delivery_state FROM messages WHERE id = ?1", [id], |r| r.get(0))
                 .unwrap()
         };
         assert_eq!(state(text_a), DeliveryState::Pending as i64);
-        assert_eq!(state(file_a), DeliveryState::Failed as i64);
+        assert_eq!(state(file_a), DeliveryState::Pending as i64);
         assert_eq!(state(text_b), DeliveryState::Sending as i64);
         assert_eq!(state(file_b), DeliveryState::Pending as i64);
     }
@@ -1617,7 +1754,7 @@ mod tests {
         mark_sent(&conn, concluido).unwrap();
         insert_incoming(&conn, &contact, PacketType::FileMetadata, "c.bin", 4).unwrap();
 
-        assert_eq!(fail_pending_transfers(&conn).unwrap(), 2);
+        assert_eq!(fail_pending_transfers(&conn).unwrap().len(), 2);
 
         let by_id = |id: i64| {
             list_for_contact(&conn, &contact)
@@ -1634,6 +1771,49 @@ mod tests {
         let pendentes = list_pending(&conn, &contact).unwrap();
         assert_eq!(pendentes.len(), 1);
         assert_eq!(pendentes[0].id, texto);
+    }
+
+    #[test]
+    fn fail_pending_transfers_spares_sends_that_can_still_resume() {
+        let contact = [42u8; 16];
+        let conn = conn_with_contact(contact);
+        let resumable = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        let orphan = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 2).unwrap();
+        set_file_id(&conn, resumable, &[1u8; 16]).unwrap();
+        set_file_id(&conn, orphan, &[2u8; 16]).unwrap();
+        conn.execute(
+            "INSERT INTO file_transfers (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs)
+             VALUES (?1, 0, ?2, x'00', x'00', 0)",
+            rusqlite::params![[1u8; 16].as_slice(), contact.as_slice()],
+        )
+        .unwrap();
+
+        assert_eq!(fail_pending_transfers(&conn).unwrap().len(), 1);
+
+        let state = |id: i64| list_for_contact(&conn, &contact).unwrap().into_iter().find(|m| m.id == id).unwrap().delivery_state;
+        assert_eq!(state(resumable), DeliveryState::Pending);
+        assert_eq!(state(orphan), DeliveryState::Failed);
+    }
+
+    #[test]
+    fn reopen_failed_by_file_id_only_leaves_failed_for_the_matching_send() {
+        let contact = [43u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [3u8; 16];
+        let id = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1).unwrap();
+        set_file_id(&conn, id, &file_id).unwrap();
+        assert_eq!(outgoing_id_by_file_id(&conn, &file_id, &contact).unwrap(), Some(id));
+        assert_eq!(outgoing_id_by_file_id(&conn, &file_id, &[44u8; 16]).unwrap(), None);
+
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+        mark_failed(&conn, id).unwrap();
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &[44u8; 16]).unwrap());
+        assert!(reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
+        assert_eq!(list_for_contact(&conn, &contact).unwrap()[0].delivery_state, DeliveryState::Pending);
+
+        mark_sent(&conn, id).unwrap();
+        mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap();
+        assert!(!reopen_failed_by_file_id(&conn, &file_id, &contact).unwrap());
     }
 
     #[test]
@@ -1709,7 +1889,7 @@ mod tests {
 
         // No tempo 1071: expira e é varrida
         let swept = sweep_expired_ephemeral_messages(&conn, 1071).unwrap();
-        assert_eq!(swept, 1);
+        assert_eq!(swept, vec![id]);
 
         // Releitura: chave K_msg foi destruída (crypto-shredding), corpo exibe placeholder
         let listed_after = list_for_contact(&conn, &contact).unwrap();

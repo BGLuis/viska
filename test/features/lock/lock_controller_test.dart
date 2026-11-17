@@ -15,7 +15,7 @@ class _FakeCore implements Core {
   var lockCalls = 0;
   var unlockCalls = 0;
   var emergencyEraseCalls = 0;
-  var sweepCalls = 0;
+  var expiryChecks = 0;
   var throwOnLock = false;
   var noticesOnLock = <SealedNoticeDto>[];
   var throwOnUnlock = false;
@@ -39,9 +39,8 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<int> sweepExpiredMessages() async {
-    sweepCalls++;
-    return 0;
+  Future<void> checkMessageExpiry() async {
+    expiryChecks++;
   }
 
   @override
@@ -288,7 +287,7 @@ void main() {
   });
 
   group('Unlock behaviour', () {
-    test('unlock with successful biometric auth and core.unlock succeeds and sweeps', () async {
+    test('unlock with successful biometric auth and core.unlock succeeds', () async {
       final controller = LockController(
         core: core,
         appDirPath: '/tmp/viska_test',
@@ -305,7 +304,8 @@ void main() {
       expect(controller.isLocked.value, isFalse);
       expect(localAuth.authenticateCalls, 1);
       expect(core.unlockCalls, 1);
-      expect(core.sweepCalls, 1);
+      // A varredura das efêmeras é do Rust, que a retoma sozinho ao destrancar.
+      expect(core.expiryChecks, 0);
     });
 
     test('unlock returns false and stays locked when biometric auth is rejected', () async {
@@ -475,7 +475,7 @@ void main() {
       expect(core.lockCalls, 1);
     });
 
-    test('resumed sweeps expired messages when app is unlocked', () {
+    test('resumed asks the core to recount message expiry when app is unlocked', () {
       final controller = LockController(
         core: core,
         appDirPath: '/tmp/viska_test',
@@ -485,10 +485,25 @@ void main() {
 
       controller.didChangeAppLifecycleState(AppLifecycleState.resumed);
 
-      expect(core.sweepCalls, 1);
+      expect(core.expiryChecks, 1);
     });
 
-    test('resumed does not sweep when app is locked', () async {
+    test('no periodic timer asks the core to sweep any more', () {
+      fakeAsync((async) {
+        final controller = LockController(
+          core: core,
+          appDirPath: '/tmp/viska_test',
+          localAuth: localAuth,
+        );
+
+        async.elapse(const Duration(minutes: 10));
+
+        expect(core.expiryChecks, 0);
+        controller.dispose();
+      });
+    });
+
+    test('resumed does not touch expiry when app is locked', () async {
       final controller = LockController(
         core: core,
         appDirPath: '/tmp/viska_test',
@@ -497,11 +512,11 @@ void main() {
       addTearDown(controller.dispose);
 
       await controller.lock();
-      final sweepsBefore = core.sweepCalls;
+      final checksBefore = core.expiryChecks;
 
       controller.didChangeAppLifecycleState(AppLifecycleState.resumed);
 
-      expect(core.sweepCalls, sweepsBefore);
+      expect(core.expiryChecks, checksBefore);
     });
   });
 }

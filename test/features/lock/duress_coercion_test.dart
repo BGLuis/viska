@@ -1,8 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart';
@@ -11,6 +12,8 @@ import 'package:viska/src/features/lock/lock_screen.dart';
 import 'package:viska/src/features/settings/screens/duress_pin_screen.dart';
 import 'package:viska/src/rust/ffi/core.dart';
 import 'package:viska/src/rust/ffi/types.dart';
+
+import 'fake_pin_hasher.dart';
 
 class _FakeLocalAuthentication implements LocalAuthentication {
   _FakeLocalAuthentication({this.shouldSucceed = false});
@@ -74,7 +77,7 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<int> sweepExpiredMessages() async => 0;
+  Future<void> checkMessageExpiry() async {}
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -95,6 +98,7 @@ void main() {
     test('normal PIN unlocks normally and clears locked state', () async {
       final core = _FakeCore();
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -102,8 +106,8 @@ void main() {
 
       await controller.setNormalPin('1234');
       expect(controller.hasNormalPin, isTrue);
-      expect(controller.isNormalPin('1234'), isTrue);
-      expect(controller.isNormalPin('0000'), isFalse);
+      expect(await controller.isNormalPin('1234'), isTrue);
+      expect(await controller.isNormalPin('0000'), isFalse);
 
       await controller.lock();
       expect(controller.isLocked.value, isTrue);
@@ -122,6 +126,7 @@ void main() {
       var exitCode = -1;
 
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -133,7 +138,7 @@ void main() {
       await controller.setNormalPin('1234');
       await controller.setDuressPin('9999', actionMode: 0);
       expect(controller.hasDuressPin, isTrue);
-      expect(controller.isDuressPin('9999'), isTrue);
+      expect(await controller.isDuressPin('9999'), isTrue);
 
       await controller.lock();
 
@@ -148,6 +153,7 @@ void main() {
     test('duress PIN with mode 1 (Cofre Falso) activates decoy vault without erasing real data', () async {
       final core = _FakeCore();
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -180,6 +186,7 @@ void main() {
       var exitCode = -1;
 
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -219,6 +226,7 @@ void main() {
   group('PIN configuration rules', () {
     LockController newController(_FakeCore core, {DateTime Function()? clock}) =>
         LockController(
+          pinHasher: FakePinHasher(),
           core: core,
           appDirPath: tempDir.path,
           localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -254,7 +262,7 @@ void main() {
         controller.configurePins(normalPin: '9999'),
         throwsA(isA<PinConfigException>()),
       );
-      expect(controller.isNormalPin('1234'), isTrue);
+      expect(await controller.isNormalPin('1234'), isTrue);
 
       controller.dispose();
     });
@@ -336,6 +344,7 @@ void main() {
   group('LockScreen PIN traps', () {
     testWidgets('does not offer a PIN keypad when no PIN was configured', (tester) async {
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: _FakeCore(),
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -354,7 +363,7 @@ void main() {
     });
 
     testWidgets('legacy config with a shorter duress PIN still lets the longer normal PIN be typed', (tester) async {
-      String hash(String pin) => sha256.convert(utf8.encode('viska-pin-v1:$pin')).toString();
+      String hash(String pin) => FakePinHasher.legacyHash(pin);
       File('${tempDir.path}/security_config.json').writeAsStringSync(jsonEncode({
         'normal_pin_hash': hash('123456'),
         'normal_pin_length': 6,
@@ -365,6 +374,7 @@ void main() {
 
       final core = _FakeCore();
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(shouldSucceed: false),
@@ -392,6 +402,7 @@ void main() {
   group('DuressPinScreen', () {
     Future<LockController> pumpScreen(WidgetTester tester, _FakeCore core) async {
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _FakeLocalAuthentication(),
@@ -455,7 +466,7 @@ void main() {
       await tapButton(tester, 'SALVAR CONFIGURAÇÃO DE PIN');
 
       expect(find.text('A confirmação não coincide com o novo PIN Normal.'), findsOneWidget);
-      expect(controller.isNormalPin('1234'), isTrue);
+      expect(await controller.isNormalPin('1234'), isTrue);
 
       controller.dispose();
     });
@@ -465,6 +476,7 @@ void main() {
     test('unlocks when no PIN is configured instead of staying locked forever', () async {
       final core = _FakeCore();
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _NoAuthPluginLocalAuthentication(),
@@ -480,6 +492,7 @@ void main() {
     test('still requires the PIN when one is configured', () async {
       final core = _FakeCore();
       final controller = LockController(
+        pinHasher: FakePinHasher(),
         core: core,
         appDirPath: tempDir.path,
         localAuth: _NoAuthPluginLocalAuthentication(),
@@ -491,6 +504,329 @@ void main() {
       expect(controller.isLocked.value, isTrue);
       expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
 
+      controller.dispose();
+    });
+  });
+
+  group('PIN hashing (issue #90)', () {
+    Map<String, dynamic> readConfig() => jsonDecode(
+          File('${tempDir.path}/security_config.json').readAsStringSync(),
+        ) as Map<String, dynamic>;
+
+    void writeLegacyConfig({String normal = '1234', String? duress, int mode = 1}) {
+      File('${tempDir.path}/security_config.json').writeAsStringSync(jsonEncode({
+        'normal_pin_hash': FakePinHasher.legacyHash(normal),
+        'normal_pin_length': normal.length,
+        if (duress != null) 'duress_pin_hash': FakePinHasher.legacyHash(duress),
+        if (duress != null) 'duress_pin_length': duress.length,
+        'duress_action_mode': mode,
+      }));
+    }
+
+    LockController build(_FakeCore core, FakePinHasher hasher) => LockController(
+          pinHasher: hasher,
+          core: core,
+          appDirPath: tempDir.path,
+          localAuth: _FakeLocalAuthentication(shouldSucceed: false),
+          exitFn: (_) {},
+        );
+
+    test('migrates_legacy_pin_hash_on_successful_unlock', () async {
+      writeLegacyConfig(duress: '9999');
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.duressPinNeedsReset, isTrue);
+
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+
+      final config = readConfig();
+      final normalHash = config['normal_pin_hash'] as String;
+      expect(normalHash, isNot(FakePinHasher.legacyHash('1234')));
+      expect(normalHash, startsWith('fake\$'));
+      // Só o PIN digitado migra; o de coação continua legado e a tela avisa.
+      expect(config['duress_pin_hash'], FakePinHasher.legacyHash('9999'));
+      expect(controller.duressPinNeedsReset, isTrue);
+
+      await controller.lock();
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      expect(readConfig()['normal_pin_hash'], normalHash, reason: 'sem regravação repetida');
+      controller.dispose();
+    });
+
+    test('migrates legacy duress PIN when it opens the decoy vault', () async {
+      writeLegacyConfig(duress: '9999', mode: 1);
+      final controller = build(_FakeCore(), FakePinHasher());
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await controller.verifyAndUnlockWithPin('9999'), isTrue);
+      expect(controller.isDecoyVault.value, isTrue);
+      expect(readConfig()['duress_pin_hash'], startsWith('fake\$'));
+      expect(controller.duressPinNeedsReset, isFalse);
+      controller.dispose();
+    });
+
+    test('pin_hashes_differ_across_installs_with_same_pin', () async {
+      final otherDir = Directory.systemTemp.createTempSync('viska_duress_other');
+      addTearDown(() => otherDir.deleteSync(recursive: true));
+      final a = build(_FakeCore(), FakePinHasher());
+      final b = LockController(
+        pinHasher: FakePinHasher(),
+        core: _FakeCore(),
+        appDirPath: otherDir.path,
+        localAuth: _FakeLocalAuthentication(shouldSucceed: false),
+      );
+      await a.setNormalPin('1234');
+      await b.setNormalPin('1234');
+
+      final hashA = readConfig()['normal_pin_hash'];
+      final hashB = (jsonDecode(File('${otherDir.path}/security_config.json').readAsStringSync())
+          as Map<String, dynamic>)['normal_pin_hash'];
+      expect(hashA, isNot(hashB));
+      expect(await a.isNormalPin('1234'), isTrue);
+      expect(await b.isNormalPin('1234'), isTrue);
+      a.dispose();
+      b.dispose();
+    });
+
+    test('unlock checks both PINs in a single call whatever PIN is typed', () async {
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await controller.configurePins(normalPin: '1234', duressPin: '9999', actionMode: 1);
+
+      for (final pin in ['1234', '9999', '0000']) {
+        await controller.lock();
+        hasher.checkCalls = 0;
+        await controller.verifyAndUnlockWithPin(pin);
+        expect(hasher.checkCalls, 1, reason: 'PIN $pin');
+      }
+      controller.dispose();
+    });
+
+    test('rejects equal normal and duress PINs given together', () async {
+      final controller = build(_FakeCore(), FakePinHasher());
+      await expectLater(
+        controller.configurePins(normalPin: '1234', duressPin: '1234'),
+        throwsA(isA<PinConfigException>()),
+      );
+      expect(controller.hasNormalPin, isFalse);
+      controller.dispose();
+    });
+
+    test('derivation failure refuses unlock without counting an attempt', () async {
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await controller.setNormalPin('1234');
+      await controller.lock();
+
+      hasher.throwOnCheck = true;
+      for (var i = 0; i < LockController.freePinAttempts + 1; i++) {
+        expect(await controller.verifyAndUnlockWithPin('1234'), isFalse);
+      }
+      expect(controller.pinRetryDelay, Duration.zero);
+
+      hasher.throwOnCheck = false;
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      controller.dispose();
+    });
+
+    test('failed migration still unlocks and resets the attempt counter', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+      for (var i = 0; i < LockController.freePinAttempts - 1; i++) {
+        await controller.verifyAndUnlockWithPin('0000');
+      }
+      expect(readConfig()['failed_pin_attempts'], LockController.freePinAttempts - 1);
+
+      hasher.throwOnHash = true;
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      expect(readConfig().containsKey('failed_pin_attempts'), isFalse);
+      expect(readConfig()['normal_pin_hash'], FakePinHasher.legacyHash('1234'),
+          reason: 'hash antigo continua válido até a próxima tentativa');
+      controller.dispose();
+    });
+
+    test('migration does not overwrite a PIN changed while it was deriving', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      final gate = Completer<void>();
+      hasher.hashGate = gate;
+      final unlocking = controller.verifyAndUnlockWithPin('1234');
+      while (hasher.hashCalls == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      hasher.hashGate = null;
+      await controller.configurePins(normalPin: '5678');
+      gate.complete();
+      expect(await unlocking, isTrue);
+
+      expect(await controller.isNormalPin('5678'), isTrue);
+      expect(await controller.isNormalPin('1234'), isFalse);
+      controller.dispose();
+    });
+
+    test('configurePins does not undo a migration that finishes meanwhile', () async {
+      writeLegacyConfig();
+      final hasher = FakePinHasher();
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      final gate = Completer<void>();
+      hasher.hashGate = gate;
+      final configuring = controller.configurePins(duressPin: '9999', actionMode: 1);
+      while (hasher.hashCalls == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      hasher.hashGate = null;
+      expect(await controller.verifyAndUnlockWithPin('1234'), isTrue);
+      final migrated = readConfig()['normal_pin_hash'] as String;
+      expect(migrated, startsWith('fake\$'));
+
+      gate.complete();
+      await configuring;
+      expect(readConfig()['normal_pin_hash'], migrated);
+      expect(await controller.isDuressPin('9999'), isTrue);
+      controller.dispose();
+    });
+
+    test('failed migration still opens the decoy vault', () async {
+      writeLegacyConfig(duress: '9999', mode: 1);
+      final hasher = FakePinHasher()..throwOnHash = true;
+      final controller = build(_FakeCore(), hasher);
+      await Future<void>.delayed(Duration.zero);
+      await controller.lock();
+
+      expect(await controller.verifyAndUnlockWithPin('9999'), isTrue);
+      expect(controller.isDecoyVault.value, isTrue);
+      expect(controller.duressPinNeedsReset, isTrue);
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen keeps accepting digits while the shorter-PIN check is pending', (tester) async {
+      File('${tempDir.path}/security_config.json').writeAsStringSync(jsonEncode({
+        'normal_pin_hash': FakePinHasher.legacyHash('123456'),
+        'normal_pin_length': 6,
+        'duress_pin_hash': FakePinHasher.legacyHash('9999'),
+        'duress_pin_length': 4,
+        'duress_action_mode': 0,
+      }));
+      final core = _FakeCore();
+      final hasher = FakePinHasher()..checkGate = Completer<void>();
+      final controller = build(core, hasher);
+      await controller.lock();
+
+      await tester.pumpWidget(MaterialApp(home: LockScreen(controller: controller)));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (final d in ['1', '2', '3', '4', '5', '6']) {
+        await tester.tap(find.text(d));
+        await tester.pump();
+      }
+      expect(find.byKey(const Key('pin-verifying')), findsOneWidget);
+
+      hasher.checkGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      expect(core.unlockCalls, 1);
+      expect(controller.isLocked.value, isFalse);
+      expect(core.emergencyEraseCalls, 0);
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen lockout message is not clipped at large text scale', (tester) async {
+      final controller = build(_FakeCore(), FakePinHasher());
+      await tester.runAsync(() async {
+        await controller.setNormalPin('1234');
+        await controller.lock();
+        for (var i = 0; i < LockController.freePinAttempts; i++) {
+          await controller.verifyAndUnlockWithPin('0000');
+        }
+      });
+      expect(controller.pinRetryDelay, greaterThan(Duration.zero));
+
+      final semantics = tester.ensureSemantics();
+      await tester.pumpWidget(MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: LockScreen(controller: controller),
+        ),
+      ));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final message = find.textContaining('Muitas tentativas');
+      expect(message, findsOneWidget);
+      final paragraph = tester.renderObject<RenderParagraph>(message);
+      expect(paragraph.didExceedMaxLines, isFalse);
+      // O texto inteiro cabe na área pintada da linha de status.
+      final slot = tester.getRect(find.ancestor(of: message, matching: find.byType(ConstrainedBox)).first);
+      expect(slot.contains(tester.getRect(message).bottomCenter - const Offset(0, 1)), isTrue);
+      // O leitor de tela recebe minutos, não a contagem de segundos.
+      expect(find.bySemanticsLabel(RegExp(r'Muitas tentativas.*minuto')), findsOneWidget);
+      semantics.dispose();
+      controller.dispose();
+    });
+
+    testWidgets('LockScreen does not bring back a stale wrong-PIN error when the wait ends', (tester) async {
+      var now = DateTime(2026, 1, 1, 12);
+      final controller = LockController(
+        pinHasher: FakePinHasher(),
+        core: _FakeCore(),
+        appDirPath: tempDir.path,
+        localAuth: _FakeLocalAuthentication(shouldSucceed: false),
+        clock: () => now,
+      );
+      await tester.runAsync(() async {
+        await controller.setNormalPin('1234');
+        await controller.lock();
+        for (var i = 0; i < LockController.freePinAttempts - 1; i++) {
+          await controller.verifyAndUnlockWithPin('0000');
+        }
+      });
+
+      await tester.pumpWidget(MaterialApp(home: LockScreen(controller: controller)));
+      await tester.pump(const Duration(milliseconds: 300));
+      for (final d in ['0', '0', '0', '0']) {
+        await tester.tap(find.text(d).last);
+        await tester.pump();
+      }
+      await tester.pump();
+      expect(controller.pinRetryDelay, greaterThan(Duration.zero));
+      expect(find.text('PIN incorreto'), findsNothing);
+
+      now = now.add(const Duration(minutes: 1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(controller.pinRetryDelay, Duration.zero);
+      expect(find.text('PIN incorreto'), findsNothing);
+      controller.dispose();
+    });
+
+    testWidgets('DuressPinScreen warns while the duress PIN is in the legacy format', (tester) async {
+      writeLegacyConfig(duress: '9999');
+      final controller = build(_FakeCore(), FakePinHasher());
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+
+      await tester.pumpWidget(MaterialApp(home: DuressPinScreen(controller: controller)));
+      await tester.pump();
+      expect(find.byKey(const Key('duress-legacy-warning')), findsOneWidget);
+      controller.dispose();
+    });
+
+    testWidgets('DuressPinScreen shows no legacy warning for migrated PINs', (tester) async {
+      final controller = build(_FakeCore(), FakePinHasher());
+      await controller.configurePins(normalPin: '1234', duressPin: '9999');
+
+      await tester.pumpWidget(MaterialApp(home: DuressPinScreen(controller: controller)));
+      await tester.pump();
+      expect(find.byKey(const Key('duress-legacy-warning')), findsNothing);
       controller.dispose();
     });
   });

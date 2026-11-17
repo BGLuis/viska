@@ -24,7 +24,6 @@ dependencies:
   qr_flutter: ^4.1.0
   record: ^6.2.1
   typed_data: ^1.4.0
-  crypto: ^3.0.6
   collection: ^1.19.0
   clock: ^1.1.2
   viska_core:
@@ -37,6 +36,9 @@ dev_dependencies:
   permission_handler_platform_interface: ^4.4.1
   path_provider_platform_interface: ^2.1.3
   fake_async: ^1.3.3
+  # Só o hasher falso dos testes de bloqueio calcula o hash legado do PIN;
+  # o app deriva o PIN no Rust (issue #90).
+  crypto: ^3.0.6
 
 # permission_handler_android 14.x tem um build.gradle.kts quebrado (bloco
 # `kotlin { compilerOptions {} }` que não resolve com o AGP/Kotlin fixados em

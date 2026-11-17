@@ -1157,12 +1157,12 @@ class _MessageBubble extends StatelessWidget {
                   ],
                   if (outgoing && message.deliveryState == DeliveryStateDto.unknown)
                     UnconfirmedDeliveryAction(
-                      label: _deliveryLabel(message.deliveryState),
+                      label: _deliveryLabel(message, controller.isEstablished),
                       onResend: () => controller.resendUnknown(message.id),
                     )
                   else if (outgoing)
                     Text(
-                      _deliveryLabel(message.deliveryState),
+                      _deliveryLabel(message, controller.isEstablished),
                       style: const TextStyle(
                         fontSize: 10.5,
                         color: DarkTechTheme.textMuted,
@@ -1407,9 +1407,15 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
-  String _deliveryLabel(DeliveryStateDto state) {
-    switch (state) {
+  /// Arquivo e nota de voz ficam `pending` durante a transferência inteira; sem
+  /// sessão estabelecida, é só a fila offline (D30) que os segura, e o texto
+  /// diz quando saem.
+  String _deliveryLabel(MessageDto message, bool sessionEstablished) {
+    switch (message.deliveryState) {
       case DeliveryStateDto.pending:
+        if (message.kind != MessageKindDto.text && !sessionEstablished) {
+          return 'Na fila — envia quando conectar';
+        }
         return 'Na fila';
       case DeliveryStateDto.sending:
         return 'Enviando…';

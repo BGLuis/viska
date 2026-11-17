@@ -17,15 +17,20 @@ pub mod discovery;
 pub mod error;
 pub mod framing;
 pub mod jitter;
+pub mod pin;
 pub mod session;
 pub mod signaling;
 pub mod transfer;
+pub mod transfer_handles;
+pub mod transfer_resume;
 pub mod types;
 
 pub use self::core::Core;
 pub use error::FfiError;
 pub use types::{
     ContactDto, DeliveryStateDto, DiscoveryBeaconsDto, FileOfferDto, IncomingMessageDto,
-    MessageDirectionDto, MessageDto, SafetyNumberDto, SealedMessageDto, SendFileStartedDto,
-    SessionStateEventDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto, TransferProgressDto,
+    IncomingResultDto,
+    MessageDirectionDto, MessageDto, MessageEventDto, MessageEventKind, SafetyNumberDto, SealedMessageDto, SendFileStartedDto,
+    SessionStateEventDto, SessionStateKind, SessionStatusDto, SignalingTopicsDto, TransferEventDto,
+    TransferEventKind, TransferProgressDto,
 };

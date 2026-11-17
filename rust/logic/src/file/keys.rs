@@ -9,6 +9,7 @@
 //! ```text
 //! K_file       = derive(FILE_KEY,    transfer_secret ‖ file_id)
 //! K_staging    = derive(STAGING,     K_file)   — páginas do .staging (§7.5)
+//! K_outgoing   = derive(OUTGOING_STAGING, K_file) — cópia do emissor em outgoing/ (§7.5)
 //! K_name       = derive(FILE_NAME,   K_file)   — name_encrypted do manifesto (§7.1)
 //! K_symbol     = derive(FILE_SYMBOL, K_file)   — corpo de cada FILE_SYMBOL (§7.3, D11)
 //! K_audio_chunk = derive(AUDIO_CHUNK, K_file)  — corpo de cada AUDIO_CHUNK (Fase 5, D16)
@@ -42,6 +43,13 @@ pub fn derive_staging_key(transfer_secret: &[u8], file_id: &[u8; FILE_ID_LEN]) -
     kdf::derive(kdf::context::STAGING, k_file.as_bytes())
 }
 
+/// `K_outgoing` — cifra as páginas da cópia do arquivo-fonte que o emissor
+/// guarda em `outgoing/` para retomar o envio (§7.5). Só existe neste aparelho.
+pub fn derive_outgoing_staging_key(transfer_secret: &[u8], file_id: &[u8; FILE_ID_LEN]) -> Key {
+    let k_file = derive_file_key(transfer_secret, file_id);
+    kdf::derive(kdf::context::OUTGOING_STAGING, k_file.as_bytes())
+}
+
 /// `K_name` — cifra `name_encrypted` no manifesto (§7.1).
 pub fn derive_name_key(transfer_secret: &[u8], file_id: &[u8; FILE_ID_LEN]) -> Key {
     let k_file = derive_file_key(transfer_secret, file_id);
@@ -68,7 +76,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_five_keys_are_mutually_distinct() {
+    fn all_six_keys_are_mutually_distinct() {
         let secret = b"segredo-de-transferencia";
         let file_id = [5u8; FILE_ID_LEN];
 
@@ -77,8 +85,10 @@ mod tests {
         let k_name = derive_name_key(secret, &file_id);
         let k_symbol = derive_symbol_key(secret, &file_id);
         let k_audio = derive_audio_key(secret, &file_id);
+        let k_outgoing = derive_outgoing_staging_key(secret, &file_id);
 
         let all = [
+            k_outgoing.as_bytes(),
             k_file.as_bytes(),
             k_staging.as_bytes(),
             k_name.as_bytes(),

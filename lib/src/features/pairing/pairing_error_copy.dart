@@ -42,6 +42,8 @@ String pairingErrorMessage(FfiError error) {
       return 'A suíte criptográfica deste contato foi desativada e requer novo pareamento.';
     case FfiError.offerNotFound:
       return 'A oferta de arquivo não foi encontrada ou já foi cancelada.';
+    case FfiError.queueFull:
+      return 'Há envios demais esperando este contato. Aguarde a conexão.';
     case FfiError.internal:
       return 'Ocorreu um erro inesperado. Tente novamente.';
   }

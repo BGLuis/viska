@@ -59,7 +59,9 @@ const READ_CHUNK_LEN: usize = 65536;
 /// início ao fim, na ordem, exatamente como `Hasher` espera.
 pub fn merkle_root(mut reader: impl Read) -> Result<Hash> {
     let mut hasher = Hasher::new();
-    let mut buf = vec![0u8; READ_CHUNK_LEN];
+    // Passa por aqui o plaintext do arquivo, inclusive o da cópia cifrada do
+    // emissor decifrada para conferir a raiz (§7.5).
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; READ_CHUNK_LEN]);
     loop {
         let n = reader
             .read(&mut buf)

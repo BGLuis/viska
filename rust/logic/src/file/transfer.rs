@@ -110,10 +110,11 @@
 //!   mínima que §7.3 exige. Um token bucket de verdade (ritmo de envio, não
 //!   só parar/continuar) fica para quando houver número real de rede para
 //!   calibrar; não modelado aqui.
-//! - **`transfer_secret` (D15) só vive em RAM** enquanto o valor Rust
-//!   existir. Persisti-lo cifrado no banco local para sobreviver a um
-//!   reinício do app é responsabilidade de quem constrói `SendTransfer`/
-//!   `ReceiveTransfer` (a camada FFI, via `store`), não deste módulo.
+//! - **Persistir `transfer_secret` (D15)** para sobreviver a bloqueio e
+//!   reinício é responsabilidade de quem constrói `SendTransfer`/
+//!   `ReceiveTransfer` (a camada FFI, via `store`). Este módulo só sabe
+//!   recompor o estado do disco: [`ReceiveTransfer::resume`] a partir do
+//!   `.staging`; a cópia do emissor fica em `file::outgoing` (§7.5, D28).
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -265,6 +266,21 @@ impl FileFeedback {
             symbols_received,
             blocks_completed: unpack_bitmap(bitmap_bytes, source_blocks as usize),
         })
+    }
+}
+
+impl FileFeedback {
+    /// Primeiro bloco que o receptor ainda não tem; `blocks_completed.len()`
+    /// se tem todos. Um emissor adiante disto precisa voltar: o receptor que
+    /// retomou do staging pode ter perdido o fim de um bloco que já tinha
+    /// confirmado (§7.5).
+    pub fn first_incomplete_block(&self) -> u32 {
+        let first = self
+            .blocks_completed
+            .iter()
+            .position(|done| !done)
+            .unwrap_or(self.blocks_completed.len());
+        u32::try_from(first).unwrap_or(u32::MAX)
     }
 }
 
@@ -489,6 +505,12 @@ impl<R: Read> SendTransfer<R> {
         self.current_block_index >= self.manifest.source_blocks
     }
 
+    /// Bloco que o emissor está mandando. Só anda para a frente: um receptor
+    /// que voltou a um bloco anterior exige um emissor novo.
+    pub fn current_block(&self) -> u32 {
+        self.current_block_index
+    }
+
     /// Progresso do lado emissor — `bytes_done` é aproximado (blocos
     /// completos × tamanho de bloco, sem contar parcial em voo), porque o
     /// emissor não tem um staging para medir de forma exata como o
@@ -668,7 +690,9 @@ pub struct ReceiveTransfer {
     manifest: Manifest,
     key: Key,
     symbol_key: Key,
-    staging: StagingWriter,
+    /// `None` depois que `finish` gravou a última página: a partir daí o
+    /// staging está completo em disco, e um `finish` repetido só decifra.
+    staging: Option<StagingWriter>,
     current_block_index: u32,
     current_decoder: BlockDecoder,
     symbols_received_current_block: u32,
@@ -703,25 +727,77 @@ impl ReceiveTransfer {
         staging_dir: &Path,
     ) -> Result<Self> {
         let key = staging::derive_staging_key(transfer_secret, &manifest.file_id);
+        let staging = StagingWriter::create(staging_dir, manifest.file_id, key.clone())?;
+        Self::with_staging(manifest, kind, transfer_secret, key, staging, 0, blake3::Hasher::new())
+    }
+
+    /// Retoma um recebimento a partir do `.staging` que sobreviveu a um
+    /// bloqueio ou reinício: conta os blocos inteiros já gravados, recua o
+    /// staging até o fim do último deles e reconstrói o hash do conteúdo
+    /// decifrando o que ficou. O emissor reenvia o resto, guiado pelo bitmap
+    /// de `FILE_FEEDBACK`.
+    ///
+    /// O último bloco nunca conta como já recebido: a página final, menor que
+    /// `PAGE_LEN`, só vai a disco em `finish`, então o fim dele pode ter ficado
+    /// só na RAM que o bloqueio zerou.
+    pub fn resume(
+        manifest: Manifest,
+        kind: TransferKind,
+        transfer_secret: &[u8],
+        staging_dir: &Path,
+    ) -> Result<Self> {
+        let key = staging::derive_staging_key(transfer_secret, &manifest.file_id);
+        let block_bytes = manifest.symbol_size as u64 * manifest.block_symbols as u64;
+        let on_disk = staging::full_pages_on_disk(staging_dir, &manifest.file_id)?
+            .saturating_mul(staging::PAGE_LEN as u64);
+        let blocks_done = on_disk
+            .checked_div(block_bytes)
+            .unwrap_or(0)
+            .min(manifest.source_blocks.saturating_sub(1) as u64) as u32;
+
+        let mut hasher = blake3::Hasher::new();
+        let staging = StagingWriter::resume(
+            staging_dir,
+            manifest.file_id,
+            key.clone(),
+            blocks_done as u64 * block_bytes,
+            |plaintext| {
+                hasher.update(plaintext);
+            },
+        )?;
+        Self::with_staging(manifest, kind, transfer_secret, key, staging, blocks_done, hasher)
+    }
+
+    fn with_staging(
+        manifest: Manifest,
+        kind: TransferKind,
+        transfer_secret: &[u8],
+        key: Key,
+        staging: StagingWriter,
+        blocks_done: u32,
+        content_hasher: blake3::Hasher,
+    ) -> Result<Self> {
         let symbol_key = match kind {
             TransferKind::File => keys::derive_symbol_key(transfer_secret, &manifest.file_id),
             TransferKind::Audio => keys::derive_audio_key(transfer_secret, &manifest.file_id),
         };
-        let staging = StagingWriter::create(staging_dir, manifest.file_id, key.clone())?;
-        let first_block_len = block_len_at(&manifest, 0);
-        let current_decoder = BlockDecoder::new(manifest.symbol_size, first_block_len)?;
-        let blocks_completed = vec![false; manifest.source_blocks as usize];
+        let current_decoder =
+            BlockDecoder::new(manifest.symbol_size, block_len_at(&manifest, blocks_done))?;
+        let mut blocks_completed = vec![false; manifest.source_blocks as usize];
+        for done in blocks_completed.iter_mut().take(blocks_done as usize) {
+            *done = true;
+        }
 
         Ok(Self {
             manifest,
             key,
             symbol_key,
-            staging,
-            current_block_index: 0,
+            staging: Some(staging),
+            current_block_index: blocks_done,
             current_decoder,
             symbols_received_current_block: 0,
             blocks_completed,
-            content_hasher: Box::new(blake3::Hasher::new()),
+            content_hasher: Box::new(content_hasher),
         })
     }
 
@@ -729,7 +805,10 @@ impl ReceiveTransfer {
         TransferProgress {
             blocks_done: self.current_block_index,
             total_blocks: self.manifest.source_blocks,
-            bytes_done: self.staging.bytes_written(),
+            bytes_done: self
+                .staging
+                .as_ref()
+                .map_or(self.manifest.file_size, StagingWriter::bytes_written),
         }
     }
 
@@ -748,7 +827,12 @@ impl ReceiveTransfer {
         {
             Some(plaintext) => {
                 self.content_hasher.update(&plaintext);
-                self.staging.write(&plaintext)?;
+                // Só falta escritor depois de completo, e então nenhum bloco é
+                // corrente: `block_index` já descartou o símbolo acima.
+                self.staging
+                    .as_mut()
+                    .ok_or(Error::InvalidState("símbolo depois de o staging fechar"))?
+                    .write(&plaintext)?;
                 self.blocks_completed[self.current_block_index as usize] = true;
                 self.current_block_index += 1;
                 self.symbols_received_current_block = 0;
@@ -803,30 +887,35 @@ impl ReceiveTransfer {
     /// passagens pelo `.staging` (uma só para verificar, outra para
     /// escrever) em vez de manter o arquivo inteiro em RAM. Devolve o
     /// `FileComplete` a mandar de volta ao emissor.
-    pub fn finish(self, staging_dir: &Path, mut destination: impl Write) -> Result<FileComplete> {
+    ///
+    /// Por referência, não por valor: uma falha de E/S ao decifrar (disco cheio
+    /// no destino) deixa a transferência completa e pronta para outra tentativa,
+    /// sem receber nada de novo. Raiz divergente não melhora com outra tentativa.
+    pub fn finish(&mut self, staging_dir: &Path, mut destination: impl Write) -> Result<FileComplete> {
         if !self.is_complete() {
             return Err(Error::InvalidState(
                 "finish chamado antes de todos os blocos completarem",
             ));
         }
 
-        let ReceiveTransfer {
-            manifest,
-            key,
-            staging,
-            content_hasher,
-            ..
-        } = self;
-        staging.finish()?;
+        // O escritor só sai depois de a última página ir a disco: se ela falhar,
+        // a próxima tentativa a grava de novo.
+        if let Some(writer) = self.staging.as_mut() {
+            writer.finish()?;
+        }
+        self.staging = None;
 
-        merkle::verify_root(&content_hasher.finalize(), &manifest.merkle_root)?;
+        merkle::verify_root(&self.content_hasher.finalize(), &self.manifest.merkle_root)?;
 
-        StagingReader::open(staging_dir, manifest.file_id, key, manifest.file_size)?
+        StagingReader::open(staging_dir, self.manifest.file_id, self.key.clone(), self.manifest.file_size)?
             .decrypt_to(&mut destination)?;
 
-        let _ = std::fs::remove_file(staging::staging_path(staging_dir, &manifest.file_id));
+        // O `.staging` fica: quem chama o apaga junto com a linha da
+        // transferência, na mesma ordem de qualquer outro fim (§7.5). Apagá-lo
+        // aqui, com a linha ainda no banco, faria uma falha logo depois parecer
+        // um staging perdido.
         Ok(FileComplete {
-            file_id: manifest.file_id,
+            file_id: self.manifest.file_id,
         })
     }
 }
@@ -843,11 +932,11 @@ pub fn sweep_orphaned_staging(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn manifesto_de_teste(file_size: u64, symbol_size: u16, block_symbols: u16) -> (Manifest, Vec<u8>) {
+    pub(crate) fn manifesto_de_teste(file_size: u64, symbol_size: u16, block_symbols: u16) -> (Manifest, Vec<u8>) {
         let conteudo: Vec<u8> = (0..file_size).map(|i| (i % 253) as u8).collect();
         let root = merkle::merkle_root(Cursor::new(&conteudo)).unwrap();
         let block_bytes = symbol_size as u64 * block_symbols as u64;
@@ -1155,7 +1244,7 @@ mod tests {
     fn finish_before_complete_is_rejected() {
         let (manifest, _original) = manifesto_de_teste(4096, 512, 8);
         let staging_dir = tempfile::tempdir().unwrap();
-        let receiver =
+        let mut receiver =
             ReceiveTransfer::start(manifest, TransferKind::File, b"segredo", staging_dir.path()).unwrap();
 
         let mut destino = Vec::new();
@@ -1337,6 +1426,171 @@ mod tests {
             assert!(sender.next_symbol().unwrap().is_some());
         }
         assert!(sender.next_symbol().unwrap().is_none());
+    }
+
+    /// Recebe `blocks` blocos inteiros e devolve o receptor ainda aberto.
+    fn receive_blocks(
+        manifest: &Manifest,
+        original: &[u8],
+        secret: &[u8],
+        staging_dir: &Path,
+        blocks: u32,
+    ) -> ReceiveTransfer {
+        let mut receiver = ReceiveTransfer::start(manifest.clone(), TransferKind::File, secret, staging_dir).unwrap();
+        let mut sender = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.to_vec()));
+        while receiver.progress().blocks_done < blocks {
+            let symbol = sender.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+        receiver
+    }
+
+    /// Termina a transferência a partir de `receiver`, com um emissor novo
+    /// que só aprende o progresso pelo feedback. Devolve o menor bloco enviado.
+    pub(crate) fn finish_with_fresh_sender(
+        manifest: &Manifest,
+        sender_file: impl Read,
+        secret: &[u8],
+        mut receiver: ReceiveTransfer,
+        staging_dir: &Path,
+    ) -> (Vec<u8>, u32) {
+        let mut sender = SendTransfer::new(manifest.clone(), TransferKind::File, secret, sender_file);
+        sender.ingest_feedback(&receiver.feedback()).unwrap();
+        let mut lowest_block = u32::MAX;
+        for _ in 0..10_000 {
+            if receiver.is_complete() {
+                break;
+            }
+            let symbol = sender.next_symbol().unwrap().expect("emissor parou antes do fim");
+            lowest_block = lowest_block.min(symbol.block_index);
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+        let mut destino = Vec::new();
+        receiver.finish(staging_dir, &mut destino).unwrap();
+        (destino, lowest_block)
+    }
+
+    #[test]
+    fn receiver_resumes_from_staging_without_refetching_whole_blocks() {
+        // Blocos de 100.000 B: nenhum fim de bloco cai em fronteira de página.
+        let (manifest, original) = manifesto_de_teste(350_000, 1000, 100);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        // Três blocos recebidos (300.000 B), mas só quatro páginas inteiras em
+        // disco (262.144 B): o terceiro bloco ficou em parte só na RAM.
+        drop(receive_blocks(&manifest, &original, secret, staging_dir.path(), 3));
+
+        let resumed = ReceiveTransfer::resume(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        assert_eq!(resumed.progress().blocks_done, 2);
+        assert_eq!(resumed.feedback().blocks_completed, vec![true, true, false, false]);
+
+        let (destino, lowest_block) =
+            finish_with_fresh_sender(&manifest, Cursor::new(original.clone()), secret, resumed, staging_dir.path());
+        assert_eq!(lowest_block, 2, "blocos já gravados não são pedidos de novo");
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn first_incomplete_block_points_at_the_first_gap() {
+        let feedback = |bits: Vec<bool>| FileFeedback {
+            file_id: [0; FILE_ID_LEN],
+            block_index: 0,
+            symbols_received: 0,
+            blocks_completed: bits,
+        };
+        assert_eq!(feedback(vec![true, false, true]).first_incomplete_block(), 1);
+        assert_eq!(feedback(vec![false, true]).first_incomplete_block(), 0);
+        assert_eq!(feedback(vec![true, true]).first_incomplete_block(), 2);
+        assert_eq!(feedback(vec![]).first_incomplete_block(), 0);
+    }
+
+    /// LAN: blocos de 65535 × 1024 B não fecham em página, então o receptor que
+    /// retoma pode voltar a um bloco que já confirmou. Um emissor novo, guiado
+    /// pelo feedback do receptor recuado, termina a transferência.
+    #[test]
+    fn a_fresh_sender_catches_a_receiver_that_fell_behind() {
+        let (manifest, original) = manifesto_de_teste(250_000, 1000, 100);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut sender = SendTransfer::new(manifest.clone(), TransferKind::File, secret, Cursor::new(original.clone()));
+        let mut receiver = ReceiveTransfer::start(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        while receiver.progress().blocks_done < 2 {
+            let symbol = sender.next_symbol().unwrap().unwrap();
+            receiver.ingest_symbol(symbol).unwrap();
+            sender.ingest_feedback(&receiver.feedback()).unwrap();
+        }
+        assert_eq!(sender.current_block(), 2);
+        drop(receiver);
+
+        let resumed = ReceiveTransfer::resume(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        assert!(resumed.feedback().first_incomplete_block() < sender.current_block());
+        let (destino, _) =
+            finish_with_fresh_sender(&manifest, Cursor::new(original.clone()), secret, resumed, staging_dir.path());
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn finish_can_be_retried_after_the_destination_fails() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disco cheio"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (manifest, original) = manifesto_de_teste(250_000, 1000, 100);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        let mut receiver = receive_blocks(&manifest, &original, secret, staging_dir.path(), 3);
+        assert!(receiver.is_complete());
+
+        assert!(receiver.finish(staging_dir.path(), Full).is_err());
+        let mut destino = Vec::new();
+        receiver.finish(staging_dir.path(), &mut destino).unwrap();
+
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn receiver_resume_never_counts_the_last_block_as_done() {
+        let (manifest, original) = manifesto_de_teste(2 * 65536, 1024, 64);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        drop(receive_blocks(&manifest, &original, secret, staging_dir.path(), 2));
+
+        let resumed = ReceiveTransfer::resume(manifest.clone(), TransferKind::File, secret, staging_dir.path()).unwrap();
+        assert_eq!(resumed.progress().blocks_done, 1);
+        let (destino, _) =
+            finish_with_fresh_sender(&manifest, Cursor::new(original.clone()), secret, resumed, staging_dir.path());
+        assert_eq!(destino, original);
+    }
+
+    #[test]
+    fn receiver_resume_rejects_tampered_staging() {
+        let (manifest, original) = manifesto_de_teste(350_000, 1000, 100);
+        let secret = b"segredo-de-transferencia-de-teste";
+        let staging_dir = tempfile::tempdir().unwrap();
+        drop(receive_blocks(&manifest, &original, secret, staging_dir.path(), 3));
+        let path = staging::staging_path(staging_dir.path(), &manifest.file_id);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[100] ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+
+        let err = ReceiveTransfer::resume(manifest, TransferKind::File, secret, staging_dir.path()).unwrap_err();
+        assert!(matches!(err, Error::AeadFailure));
+    }
+
+    #[test]
+    fn receiver_resume_with_wrong_secret_fails() {
+        let (manifest, original) = manifesto_de_teste(350_000, 1000, 100);
+        let staging_dir = tempfile::tempdir().unwrap();
+        drop(receive_blocks(&manifest, &original, b"segredo-certo", staging_dir.path(), 3));
+        let err = ReceiveTransfer::resume(manifest, TransferKind::File, b"segredo-errado", staging_dir.path()).unwrap_err();
+        assert!(matches!(err, Error::AeadFailure));
     }
 
     /// Retomada: o receptor já tem os dois primeiros blocos; o emissor, recém

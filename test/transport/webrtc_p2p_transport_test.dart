@@ -35,6 +35,30 @@ class _FakeCore implements Core {
   Uint8List? Function(Uint8List sealed)? openSignalingPayloadHandler;
 
   @override
+  Future<QueuedTransferDto> queueSendFile({
+    required List<int> peerDeviceId,
+    required String filePath,
+    required bool useLan,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<QueuedTransferDto> queueSendAudio({
+    required List<int> peerDeviceId,
+    required String audioPath,
+    required bool useLan,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<Uint8List?> sealResumedOffer({required List<int> peerDeviceId, required List<int> fileId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<SignalingTopicsDto> signalingTopics({required List<int> peerDeviceId}) async => topics;
 
   @override
@@ -61,17 +85,14 @@ class _FakeCore implements Core {
   }
 
   @override
-  Future<IncomingMessageDto?> decryptIncoming({
+  Future<IncomingResultDto> receiveIncoming({
     required List<int> peerDeviceId,
-    required List<int> envelope,
+    required List<int> bytes,
   }) =>
       throw UnimplementedError();
 
   @override
-  Future<Uint8List?> feedHandshake({
-    required List<int> peerDeviceId,
-    required List<int> bytes,
-  }) =>
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) =>
       throw UnimplementedError();
 
   @override
@@ -266,7 +287,16 @@ class _FakeCore implements Core {
   Stream<SessionStateEventDto> subscribeSessionEvents() => throw UnimplementedError();
 
   @override
-  Future<int> sweepExpiredMessages() => throw UnimplementedError();
+  Stream<TransferEventDto> subscribeTransferEvents() => throw UnimplementedError();
+
+  @override
+  Future<void> checkMessageExpiry() => throw UnimplementedError();
+
+  @override
+  Stream<MessageEventDto> subscribeMessageEvents() => throw UnimplementedError();
+
+  @override
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId}) => throw UnimplementedError();
 
   @override
   Future<void> unlock() => throw UnimplementedError();

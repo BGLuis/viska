@@ -92,6 +92,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // O PIN de coação vive no Dart (hash); esta tabela guardava o PIN em claro
     // e nenhum código a lê mais. O DROP também apaga o dado de quem já gravou.
     "DROP TABLE IF EXISTS decoy_vault_config;",
+    // Oferta já respondida: decide a re-oferta e o prazo de 24 h depois de um
+    // bloqueio ou reinício (§7.5, §7.7), que antes viviam só em RAM.
+    "ALTER TABLE file_transfers ADD COLUMN answered INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.

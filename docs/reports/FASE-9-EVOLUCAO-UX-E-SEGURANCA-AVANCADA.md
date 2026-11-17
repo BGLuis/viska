@@ -79,9 +79,12 @@ Na tela de bloqueio (`LockScreen` / `LockController`):
 - **Modo 1 (Destruição Silenciosa)**: Se `PIN_COACAO` for digitado, o Rust executa imediatamente
   `emergency_erase()` (crypto-shredding de chaves mestras e fechamento de SQLite), simulando uma
   falha fatal ou fechando o app.
-- **Modo 2 (Cofre Falso / Decoy)**: Se `PIN_COACAO` for digitado, o app inicializa um banco SQLCipher
-  secundário isolado (`decoy.db`), com histórico inofensivo e perfil genérico, fornecendo deniabilidade
-  plausível absoluta perante revistas policiais ou interrogatórios.
+- **Modo 2 (Cofre Falso / Decoy)**: Se `PIN_COACAO` for digitado, o app abre um `Core` secundário
+  isolado em `<app_dir>/decoy/` (banco próprio `decoy/viska.sqlite3`), com perfil genérico. Engana
+  quem só olha a tela; **não** dá negação plausível perante perícia no armazenamento, que consegue
+  perceber a existência do segundo cofre (ver `docs/threat-model.md` §3).
+- Os dois PINs são gravados como Argon2id (formato PHC, sal aleatório por hash, derivado no Rust;
+  issue #90), não como hash rápido.
 
 ### 3.4 Verificação Presencial de Safety Number por Câmera
 

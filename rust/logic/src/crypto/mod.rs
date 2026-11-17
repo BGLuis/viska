@@ -10,6 +10,7 @@ pub mod identity;
 pub mod kdf;
 pub mod kem;
 pub mod pairing;
+pub mod pin;
 pub mod ratchet;
 pub mod safety_number;
 pub mod suite;

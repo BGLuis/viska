@@ -54,7 +54,7 @@ class _FakeP2PTransport implements P2PTransport {
   void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
-class _FakeReceptionCore with FakeSessionEvents implements Core {
+class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents implements Core {
   _FakeReceptionCore() {
     peerDeviceId = List.generate(16, (i) => i);
   }
@@ -114,7 +114,47 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
         outgoingHandshake: outgoingHandshake,
       );
 
+  /// Emula o roteamento que o Rust faz em `receiveIncoming`: com a sessão em
+  /// handshake os bytes vão para [feedHandshake]; estabelecida, para
+  /// [decryptIncoming]; falha, para lugar nenhum. Os dois são só ganchos do
+  /// dublê, o `Core` real não os expõe.
   @override
+  Future<IncomingResultDto> receiveIncoming({
+    required List<int> peerDeviceId,
+    required List<int> bytes,
+  }) async {
+    switch (sessionState) {
+      case SessionStateKind.failed:
+        return const IncomingResultDto();
+      case SessionStateKind.handshaking:
+        return IncomingResultDto(
+          reply: await feedHandshake(peerDeviceId: peerDeviceId, bytes: bytes),
+        );
+      case SessionStateKind.established:
+        return IncomingResultDto(
+          message: await decryptIncoming(peerDeviceId: peerDeviceId, envelope: bytes),
+          reply: replyWhenEstablished,
+        );
+    }
+  }
+
+  /// Resposta que o Rust devolveria com a sessão estabelecida: a RESP de uma
+  /// reabertura do par, ou o anúncio de suítes (§11.4).
+  Uint8List? replyWhenEstablished;
+
+  final connectSignalCalls = <List<int>>[];
+
+  /// Bytes que `connectSignal` devolve; sem valor, a INIT pendente enquanto em
+  /// handshake.
+  Uint8List? connectSignalResult;
+
+  @override
+  Future<Uint8List?> connectSignal({required List<int> peerDeviceId}) async {
+    connectSignalCalls.add(peerDeviceId);
+    return connectSignalResult ??
+        (sessionState == SessionStateKind.handshaking ? outgoingHandshake : null);
+  }
+
   Future<Uint8List?> feedHandshake({
     required List<int> peerDeviceId,
     required List<int> bytes,
@@ -127,7 +167,6 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
     return feedHandshakeResponse;
   }
 
-  @override
   Future<IncomingMessageDto?> decryptIncoming({
     required List<int> peerDeviceId,
     required List<int> envelope,
@@ -145,8 +184,12 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
     );
   }
 
+  /// Como o Rust com uma candidata recente: a fila não sai.
+  var holdQueue = false;
+
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
+    if (holdQueue) return [];
     final list = List<SealedMessageDto>.from(pendingToFlush);
     pendingToFlush.clear();
     return list;
@@ -156,6 +199,13 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
   Future<void> markMessageSent({required int messageId}) async {
     markSentCalls.add(messageId);
     if (failMarkSent) throw StateError('banco indisponível');
+  }
+
+  final markFailedCalls = <int>[];
+
+  @override
+  Future<void> markMessageFailed({required int messageId}) async {
+    markFailedCalls.add(messageId);
   }
 
   @override
@@ -175,14 +225,27 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
   Future<List<FileOfferDto>> pendingFileOffers({required List<int> peerDeviceId}) async =>
       pendingOffers;
 
+  /// Quantas chamadas a `finishReceiveFile` falham antes do commit.
+  var finishFailuresLeft = 0;
+
+  /// `null` imita o Rust sem sessão para selar o `FILE_COMPLETE`.
+  Uint8List? fileCompleteToReturn = Uint8List.fromList([0xAA, 0xBB]);
+
   @override
-  Future<Uint8List> finishReceiveFile({
+  Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
     required String destinationPath,
   }) async {
     finishReceiveFileCalls.add(Uint8List.fromList(fileId));
-    return Uint8List.fromList([0xAA, 0xBB]); // FILE_COMPLETE selado
+    if (finishFailuresLeft > 0) {
+      finishFailuresLeft--;
+      throw StateError('disco cheio');
+    }
+    File(destinationPath).writeAsBytesSync([7, 7]);
+    // Como o Rust: depois do commit a transferência some.
+    receiveProgress = null;
+    return fileCompleteToReturn;
   }
 
   @override
@@ -218,6 +281,57 @@ class _FakeReceptionCore with FakeSessionEvents implements Core {
 
   @override
   Future<void> markMessageDelivered({required int messageId}) async {}
+
+  /// O que `resumeTransfers` devolve, como o Rust depois de reconstruir.
+  List<ResumedTransferDto> resumable = [];
+  final resumeCalls = <Uint8List>[];
+
+  /// Como o Rust, cada transferência volta uma vez por pedido configurado:
+  /// um recebimento abandonado, por exemplo, deixa de existir depois do aviso.
+  /// Se definido, cada `resumeTransfers` espera por ele antes de responder.
+  Completer<void>? resumeGate;
+  var resumesInFlight = 0;
+  var maxResumesInFlight = 0;
+
+  @override
+  Future<List<ResumedTransferDto>> resumeTransfers({required List<int> peerDeviceId}) async {
+    resumesInFlight++;
+    if (resumesInFlight > maxResumesInFlight) maxResumesInFlight = resumesInFlight;
+    final gate = resumeGate;
+    if (gate != null) await gate.future;
+    resumesInFlight--;
+    resumeCalls.add(Uint8List.fromList(peerDeviceId));
+    final out = resumable;
+    resumable = [];
+    return out;
+  }
+
+  /// O que `sealResumedOffer` devolve, e quantas vezes foi chamado.
+  Uint8List? offerToSeal;
+  var sealOfferCalls = 0;
+
+  @override
+  Future<Uint8List?> sealResumedOffer({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) async {
+    sealOfferCalls++;
+    return offerToSeal;
+  }
+
+  /// Pedaços que o emissor ainda tem a mandar, na ordem.
+  final outgoingChunks = <Uint8List>[];
+  final nextChunkCalls = <Uint8List>[];
+
+  /// Roda dentro da leitura do emissor: um aviso do Rust que chega justo ali.
+  void Function()? onNextChunkRead;
+
+  @override
+  Future<Uint8List?> nextOutgoingWireChunk({required List<int> fileId}) async {
+    nextChunkCalls.add(Uint8List.fromList(fileId));
+    onNextChunkRead?.call();
+    return outgoingChunks.isEmpty ? null : outgoingChunks.removeAt(0);
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -275,7 +389,7 @@ void main() {
       expect(transport.connectCalls, 1);
     });
 
-    test('decrypts incoming text message and emits MessageReceivedEvent', () async {
+    test('decrypts incoming text message and acknowledges it, leaving the timeline to Rust events', () async {
       core.sessionState = SessionStateKind.established;
       await service.start();
 
@@ -286,17 +400,14 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(core.decryptIncomingCalls, [Uint8List.fromList([1, 2, 3])]);
-      expect(events, hasLength(1));
-      expect(events.first, isA<MessageReceivedEvent>());
-      final received = events.first as MessageReceivedEvent;
-      expect(received.message?.body, 'Decifrado com sucesso');
+      expect(events, isEmpty, reason: 'a linha chega como MessageChangedEvent, não por aqui');
       expect(core.sealOutgoingReceiptCalls, ['42']);
       expect(transport.sendCalls, [Uint8List.fromList([0x11, 1, 2, 3])]);
 
       await sub.cancel();
     });
 
-    test('ephemeral typing indicator emits TypingIndicatorEvent and not MessageReceivedEvent', () async {
+    test('ephemeral typing indicator emits only TypingIndicatorEvent', () async {
       core.sessionState = SessionStateKind.established;
       core.decryptIncomingHandler = (_) => IncomingMessageDto(
             messageId: null,
@@ -335,6 +446,545 @@ void main() {
       expect(events.whereType<SessionStateChangedEvent>(), isNotEmpty);
 
       await sub.cancel();
+    });
+
+    test('reply returned with an established session is sent back to the peer', () async {
+      core.sessionState = SessionStateKind.established;
+      core.replyWhenEstablished = Uint8List.fromList([5, 5]);
+      await service.start();
+
+      transport.emitIncoming(Uint8List.fromList([1, 2, 3]));
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.first, Uint8List.fromList([5, 5]));
+    });
+
+    test('channel opening publishes the connect signal', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.connectSignalResult = Uint8List.fromList([9, 9]);
+      await service.start();
+      await pumpEventQueue();
+
+      expect(core.connectSignalCalls, isNotEmpty);
+      expect(transport.sendCalls.any((b) => listEquals(b, [9, 9])), isTrue);
+    });
+
+    test('session replaced by the peer flushes pending even if it stays established', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 8, bytes: Uint8List.fromList([88])),
+      ];
+
+      core.generation = 1;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [88])), hasLength(1));
+      expect(service.sessionStateFor(contact)?.generation, 1);
+    });
+
+    test('a renewal that expires without confirmation drains the queue after the hold', () async {
+      core.sessionState = SessionStateKind.established;
+      final held = MessageReceptionService(
+        core: core,
+        router: router,
+        renewalHold: const Duration(milliseconds: 50),
+      );
+      addTearDown(held.dispose);
+      await held.start();
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 9, bytes: Uint8List.fromList([90])),
+      ];
+
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), isEmpty);
+
+      // A candidata passa do prazo sem confirmar: o Rust não avisa ninguém.
+      core.holdQueue = false;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(transport.sendCalls.where((b) => listEquals(b, [90])), hasLength(1));
+    });
+
+    test('the end of a renewal reported by any event drains the queue', () async {
+      core.sessionState = SessionStateKind.established;
+      await service.start();
+      await pumpEventQueue();
+      core.holdQueue = true;
+      core.renewing = true;
+      await pumpEventQueue();
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 11, bytes: Uint8List.fromList([110])),
+      ];
+
+      // Alguma chamada depois do prazo publica `renewing` falso antes do timer.
+      core.holdQueue = false;
+      core.renewing = false;
+      await pumpEventQueue();
+
+      expect(transport.sendCalls.where((b) => listEquals(b, [110])), hasLength(1));
+    });
+
+    group('resuming transfers (§7.5)', () {
+      final fileId = Uint8List.fromList(List.filled(16, 0xF1));
+
+      ResumedTransferDto send({bool needsOffer = false}) => ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.send,
+            needsOffer: needsOffer,
+            messageId: 5,
+          );
+
+      TransferProgressDto waiting({bool awaitingAnswer = false}) => TransferProgressDto(
+            blocksDone: 0,
+            totalBlocks: 2,
+            bytesDone: BigInt.zero,
+            isComplete: false,
+            awaitingAnswer: awaitingAnswer,
+          );
+
+      test('established session resends the offer, pumps the send and marks it sent', () async {
+        core.resumable = [send(needsOffer: true)];
+        core.offerToSeal = Uint8List.fromList([0x0F]);
+        core.outgoingChunks.addAll([Uint8List.fromList([1]), Uint8List.fromList([2])]);
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.resumeCalls, isNotEmpty);
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), hasLength(1));
+        expect(transport.sendFileCalls, [Uint8List.fromList([1]), Uint8List.fromList([2])]);
+        expect(core.markSentCalls, contains(5));
+      });
+
+      test('a resumed receive starts sending FILE_FEEDBACK again', () async {
+        core.resumable = [
+          ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.receive,
+            needsOffer: false,
+          ),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 2,
+          bytesDone: BigInt.from(10),
+          isComplete: false, awaitingAnswer: false
+        );
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.fileFeedbackCalls, greaterThan(0));
+      });
+
+      test('nothing resumes while a renewal holds the queue, and the promotion resumes', () async {
+        core.sessionState = SessionStateKind.established;
+        core.renewing = true;
+        await service.start();
+        await pumpEventQueue();
+        core.resumeCalls.clear();
+
+        core.renewing = false;
+        core.generation = 1;
+        await pumpEventQueue();
+
+        expect(core.resumeCalls, isNotEmpty);
+      });
+
+      test('a session drop and a new establishment resume again', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        final before = core.resumeCalls.length;
+
+        // Bloqueio do cofre: a sessão some e a geração recomeça do zero.
+        core.dropSession();
+        core.sessionState = SessionStateKind.established;
+        await pumpEventQueue();
+
+        expect(core.resumeCalls.length, greaterThan(before));
+      });
+
+      test('a resumed send that stops with the transport is marked failed, not sent', () async {
+        core.resumable = [send()];
+        core.outgoingChunks.add(Uint8List.fromList([1]));
+        core.receiveProgress = waiting();
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        // O emissor espera feedback; o transporte cai nesse meio-tempo. A queda
+        // acorda o laço, que não tem nenhum aviso do Rust para esperar.
+        final dropped = transport;
+        await router.closeContact(contact);
+        dropped.emitConnectionEvent(const TransportConnectionEvent(TransportConnectionState.failed));
+        await pumpEventQueue();
+
+        expect(core.markSentCalls, isNot(contains(5)));
+        expect(core.markFailedCalls, contains(5));
+      });
+
+      test('a new channel without a session change resumes too', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        final before = core.resumeCalls.length;
+
+        // O transporte caiu e foi recriado; a sessão continua a mesma.
+        await router.closeContact(contact);
+        transport = _FakeP2PTransport();
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(core.resumeCalls.length, greaterThan(before));
+      });
+
+      test('runOutgoingTransfer sends the offer, pumps and marks the message sent', () async {
+        core.outgoingChunks.add(Uint8List.fromList([3]));
+        await service.start();
+        await pumpEventQueue();
+
+        await service.runOutgoingTransfer(contact, fileId, offer: Uint8List.fromList([0x0E]), messageId: 12);
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0E])), hasLength(1));
+        expect(transport.sendFileCalls, [Uint8List.fromList([3])]);
+        expect(core.markSentCalls, [12]);
+        expect(core.markFailedCalls, isEmpty);
+      });
+
+      test('one lifecycle per file_id: a resume during a running send joins it and resends the offer', () async {
+        core.offerToSeal = Uint8List.fromList([0x0F]);
+        core.receiveProgress = waiting();
+        await service.start();
+        await pumpEventQueue();
+
+        final first = service.runOutgoingTransfer(contact, fileId, messageId: 5, offer: Uint8List.fromList([0x0E]));
+        final second = service.runOutgoingTransfer(contact, fileId, messageId: 5);
+        expect(identical(first, second), isTrue);
+        core.resumable = [send(needsOffer: true)];
+        await service.resumeTransfers(contact);
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0E])), hasLength(1));
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x0F])), hasLength(1),
+            reason: 'o par pode ter perdido a oferta com a sessão anterior (decisão 8)');
+        expect(core.sealOfferCalls, 1);
+        core.receiveProgress = null;
+        await first;
+      });
+
+      test('the offer is sealed only when the resumed send actually starts', () async {
+        core.resumable = [send()];
+        await service.start();
+        await pumpEventQueue();
+
+        expect(core.sealOfferCalls, 0, reason: 'oferta já respondida não é selada');
+      });
+
+      test('an abandoned receive delivers its notice to the sender', () async {
+        core.resumable = [
+          ResumedTransferDto(
+            fileId: fileId,
+            direction: ResumedDirectionDto.abandoned,
+            needsOffer: false,
+            sealedNotice: Uint8List.fromList([0x24]),
+          ),
+        ];
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [0x24])), hasLength(1));
+        expect(core.fileFeedbackCalls, 0);
+      });
+
+      test('the pump follows a transport the router replaced instead of failing', () async {
+        core.receiveProgress = waiting();
+        await service.start();
+        await pumpEventQueue();
+        final run = service.runOutgoingTransfer(contact, fileId, messageId: 5);
+        await pumpEventQueue();
+
+        await router.closeContact(contact);
+        final replacement = _FakeP2PTransport();
+        transport = replacement;
+        router.incomingFor(contact);
+        core.outgoingChunks.add(Uint8List.fromList([4]));
+        // O canal novo acorda o laço sem esperar um aviso do Rust.
+        await pumpEventQueue();
+
+        expect(replacement.sendFileCalls, [Uint8List.fromList([4])]);
+        expect(core.markFailedCalls, isEmpty);
+        core.receiveProgress = null;
+        await run;
+        expect(core.markSentCalls, contains(5));
+      });
+
+      test('the pump waits for ChunkReleased instead of polling, with a long fallback', () {
+        fakeAsync((async) {
+          final waitingService = MessageReceptionService(core: core, router: router);
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          unawaited(waitingService.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object _) {}));
+          async.flushMicrotasks();
+          final reads = core.nextChunkCalls.length;
+
+          // Um chunk que o Rust liberou sem avisar não é visto pelo laço: não há
+          // mais espera curta de 100 ms para achá-lo.
+          core.outgoingChunks.add(Uint8List.fromList([7]));
+          async.elapse(const Duration(seconds: 4));
+          expect(core.nextChunkCalls.length, reads);
+          expect(transport.sendFileCalls, isEmpty);
+
+          // O teto de segurança reconsulta mesmo sem aviso.
+          async.elapse(const Duration(seconds: 2));
+          expect(transport.sendFileCalls, [Uint8List.fromList([7])]);
+
+          core.receiveProgress = null;
+          unawaited(waitingService.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('ChunkReleased for another file does not wake the pump', () {
+        fakeAsync((async) {
+          final waitingService = MessageReceptionService(core: core, router: router);
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          unawaited(waitingService.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object _) {}));
+          async.flushMicrotasks();
+          final reads = core.nextChunkCalls.length;
+
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: Uint8List.fromList(List.filled(16, 0x01)),
+            kind: TransferEventKind.chunkReleased,
+          ));
+          async.flushMicrotasks();
+          expect(core.nextChunkCalls.length, reads);
+
+          core.receiveProgress = null;
+          unawaited(waitingService.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('ChunkReleased arriving while the sender is being read is not lost', () async {
+        core.receiveProgress = waiting();
+        core.outgoingChunks.add(Uint8List.fromList([2]));
+        // O aviso chega durante a leitura do emissor, antes de o laço esperar.
+        core.onNextChunkRead = () {
+          core.onNextChunkRead = null;
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: fileId,
+            kind: TransferEventKind.chunkReleased,
+          ));
+        };
+        await service.start();
+        await pumpEventQueue();
+        final run = service.runOutgoingTransfer(contact, fileId, messageId: 5, offer: Uint8List.fromList([1]));
+        await pumpEventQueue();
+        core.outgoingChunks.add(Uint8List.fromList([3]));
+        core.emitTransferEvent(TransferEventDto(
+          peerDeviceId: Uint8List.fromList(contact.deviceId),
+          fileId: fileId,
+          kind: TransferEventKind.chunkReleased,
+        ));
+        await pumpEventQueue();
+
+        expect(transport.sendFileCalls, [Uint8List.fromList([2]), Uint8List.fromList([3])]);
+        core.receiveProgress = null;
+        core.emitTransferEvent(TransferEventDto(
+          peerDeviceId: Uint8List.fromList(contact.deviceId),
+          fileId: fileId,
+          kind: TransferEventKind.chunkReleased,
+        ));
+        await run;
+      });
+
+      test('a completed send keeps pumping when the sender rewinds, then stops quietly', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = TransferProgressDto(
+            blocksDone: 2,
+            totalBlocks: 2,
+            bytesDone: BigInt.from(20),
+            isComplete: true,
+            awaitingAnswer: false,
+          );
+          router.incomingFor(contact);
+          var done = false;
+          unawaited(idle.runOutgoingTransfer(contact, fileId, messageId: 5).then((_) => done = true));
+          async.flushMicrotasks();
+          expect(done, isTrue, reason: 'quem chamou não espera o laço que sobra');
+          expect(core.markSentCalls, [5]);
+
+          // O receptor retomou atrás: o emissor recuou e tem o que mandar de novo.
+          core.receiveProgress = waiting();
+          core.outgoingChunks.add(Uint8List.fromList([9]));
+          core.emitTransferEvent(TransferEventDto(
+            peerDeviceId: Uint8List.fromList(contact.deviceId),
+            fileId: fileId,
+            kind: TransferEventKind.chunkReleased,
+          ));
+          async.flushMicrotasks();
+          expect(transport.sendFileCalls.where((b) => listEquals(b, [9])), hasLength(1));
+
+          async.elapse(const Duration(minutes: 3));
+          expect(core.markFailedCalls, isEmpty, reason: 'depois de completar, parar não é falha');
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('resumes for one contact run one after the other', () async {
+        await service.start();
+        await pumpEventQueue();
+        core.resumeCalls.clear();
+        core.maxResumesInFlight = 0;
+        core.resumeGate = Completer<void>();
+
+        final first = service.resumeTransfers(contact);
+        final second = service.resumeTransfers(contact);
+        await pumpEventQueue();
+        expect(core.resumesInFlight, 1, reason: 'a segunda espera a primeira terminar');
+
+        core.resumeGate!.complete();
+        await Future.wait([first, second]);
+        expect(core.resumeCalls, hasLength(2));
+        expect(core.maxResumesInFlight, 1);
+      });
+
+      test('a complete receive seen by the feedback tick is finished once', () async {
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 1,
+          bytesDone: BigInt.from(2),
+          isComplete: true,
+          awaitingAnswer: false,
+        );
+        await service.start();
+        await pumpEventQueue();
+
+        await service.watchIncomingTransfer(contact, fileId);
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+        expect(core.finishReceiveFileCalls, hasLength(1));
+      });
+
+      test('a finish that fails before the commit is retried by the next feedback tick', () async {
+        core.finishFailuresLeft = 1;
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.receiveProgress = TransferProgressDto(
+          blocksDone: 1,
+          totalBlocks: 1,
+          bytesDone: BigInt.from(2),
+          isComplete: true,
+          awaitingAnswer: false,
+        );
+        core.ingestWireChunkHandler = (_) => IngestedChunkDto(fileId: fileId, progress: core.receiveProgress!);
+        await service.start();
+        await pumpEventQueue();
+        final events = <MessageReceptionEvent>[];
+        final sub = service.eventsFor(contact).listen(events.add);
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        await Future<void>.delayed(const Duration(milliseconds: 1300));
+
+        expect(core.finishReceiveFileCalls, hasLength(2));
+        expect(events.whereType<FileReceivedEvent>(), hasLength(1));
+        await sub.cancel();
+      });
+
+      test('a committed file is kept when FILE_COMPLETE cannot be sealed', () async {
+        core.fileCompleteToReturn = null;
+        core.pendingOffers = [
+          FileOfferDto(fileId: fileId, name: 'a.bin', fileSize: BigInt.from(2)),
+        ];
+        core.ingestWireChunkHandler = (_) => IngestedChunkDto(
+              fileId: fileId,
+              progress: TransferProgressDto(
+                blocksDone: 1,
+                totalBlocks: 1,
+                bytesDone: BigInt.from(2),
+                isComplete: true,
+                awaitingAnswer: false,
+              ),
+            );
+        await service.start();
+        await pumpEventQueue();
+        final events = <MessageReceptionEvent>[];
+        final sub = service.eventsFor(contact).listen(events.add);
+
+        transport.emitIncomingFile(Uint8List.fromList([1]));
+        await pumpEventQueue();
+
+        final saved = service.getReceivedFilePath(fileId);
+        expect(saved, isNotNull);
+        expect(File(saved!).existsSync(), isTrue);
+        expect(events.whereType<FileReceivedEvent>(), hasLength(1));
+        expect(transport.sendCalls.where((b) => listEquals(b, [0xAA, 0xBB])), isEmpty);
+        await sub.cancel();
+      });
+
+      test('an accepted send with no progress stops after the idle limit', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = waiting();
+          router.incomingFor(contact);
+          Object? error;
+          idle.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object e) => error = e);
+
+          async.elapse(const Duration(minutes: 1));
+          expect(error, isNull);
+          async.elapse(const Duration(minutes: 2));
+
+          expect(error, isA<TransferStalledException>());
+          expect(core.markFailedCalls, [5]);
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
+      test('a send still waiting for the offer to be answered is not stopped', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = waiting(awaitingAnswer: true);
+          router.incomingFor(contact);
+          Object? error;
+          idle.runOutgoingTransfer(contact, fileId, messageId: 5).catchError((Object e) => error = e);
+
+          async.elapse(const Duration(minutes: 10));
+          expect(error, isNull);
+          expect(core.markFailedCalls, isEmpty);
+
+          core.receiveProgress = null;
+          async.elapse(const Duration(seconds: 1));
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
     });
 
     test('handshake completion flushes pending messages and marks them sent', () async {
@@ -420,6 +1070,57 @@ void main() {
 
       expect(events.last.state, SessionStateKind.failed);
       expect(service.sessionStateFor(contact)?.state, SessionStateKind.failed);
+      await sub.cancel();
+    });
+
+    test('republishes Rust offer events as OffersChangedEvent for the right contact', () async {
+      await service.start();
+      final events = <OffersChangedEvent>[];
+      final sub = service.events.where((e) => e is OffersChangedEvent).cast<OffersChangedEvent>().listen(events.add);
+      final fileId = Uint8List.fromList(List.filled(16, 4));
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: fileId,
+        kind: TransferEventKind.offerAppeared,
+      ));
+      await pumpEventQueue();
+
+      expect(events, hasLength(1));
+      expect(events.single.contactId, contact);
+      expect(events.single.fileId, fileId);
+      expect(events.single.kind, TransferEventKind.offerAppeared);
+      await sub.cancel();
+    });
+
+    test('republishes Rust message events as MessageChangedEvent with only identifiers', () async {
+      await service.start();
+      final events = <MessageChangedEvent>[];
+      final sub = service.events.where((e) => e is MessageChangedEvent).cast<MessageChangedEvent>().listen(events.add);
+
+      core.emitMessageEvent(42, MessageEventKind.keyExpired, peer: contact.deviceId);
+      await pumpEventQueue();
+
+      expect(events, hasLength(1));
+      expect(events.single.contactId, contact);
+      expect(events.single.messageId, 42);
+      expect(events.single.kind, MessageEventKind.keyExpired);
+      await sub.cancel();
+    });
+
+    test('ChunkReleased is not republished as an offer event', () async {
+      await service.start();
+      final events = <MessageReceptionEvent>[];
+      final sub = service.events.listen(events.add);
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: Uint8List.fromList(List.filled(16, 4)),
+        kind: TransferEventKind.chunkReleased,
+      ));
+      await pumpEventQueue();
+
+      expect(events.whereType<OffersChangedEvent>(), isEmpty);
       await sub.cancel();
     });
 
@@ -524,7 +1225,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -553,7 +1254,7 @@ void main() {
               blocksDone: 1,
               totalBlocks: 1,
               bytesDone: BigInt.from(100),
-              isComplete: true,
+              isComplete: true, awaitingAnswer: false
             ),
           );
 
@@ -579,7 +1280,7 @@ void main() {
             blocksDone: blocksDone,
             totalBlocks: 4,
             bytesDone: BigInt.zero,
-            isComplete: isComplete,
+            isComplete: isComplete, awaitingAnswer: false
           );
 
       // Encerra pelo caminho normal: sem isso o timer periódico sobrevive ao fakeAsync.
@@ -650,6 +1351,34 @@ void main() {
         });
       });
 
+      test('stops after the idle limit without progress, and a new chunk restarts it', () {
+        fakeAsync((async) {
+          final idle = MessageReceptionService(
+            core: core,
+            router: router,
+            idleLimit: const Duration(minutes: 2),
+          );
+          core.receiveProgress = progress(blocksDone: 1);
+          router.incomingFor(contact);
+          unawaited(idle.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+
+          async.elapse(const Duration(minutes: 3));
+          final sent = core.fileFeedbackCalls;
+          expect(async.periodicTimerCount, 0, reason: 'o emissor sumiu: o feedback para');
+          async.elapse(const Duration(minutes: 1));
+          expect(core.fileFeedbackCalls, sent);
+
+          unawaited(idle.watchIncomingTransfer(contact, fileId));
+          async.flushMicrotasks();
+          expect(core.fileFeedbackCalls, sent + 1);
+          core.receiveProgress = null;
+          async.elapse(const Duration(milliseconds: 500));
+          unawaited(idle.dispose());
+          async.flushMicrotasks();
+        });
+      });
+
       test('stops when the transfer ends or disappears', () {
         fakeAsync((async) {
           core.receiveProgress = progress(blocksDone: 0);
@@ -695,7 +1424,7 @@ void main() {
             blocksDone: complete ? 1 : 0,
             totalBlocks: 1,
             bytesDone: BigInt.from(10),
-            isComplete: complete,
+            isComplete: complete, awaitingAnswer: false
           );
 
       setUp(() {
@@ -735,7 +1464,12 @@ void main() {
 
         complete = true;
         transport.emitIncomingFile(Uint8List.fromList([3]));
-        await pumpEventQueue();
+        // O serviço só cai depois do commit, que passa por E/S de arquivo de
+        // verdade: espera por ele em vez de contar voltas da fila de eventos.
+        final deadline = DateTime.now().add(const Duration(seconds: 10));
+        while (!serviceCalls.contains('stop') && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
         expect(serviceCalls, ['start', 'stop']);
       });
 

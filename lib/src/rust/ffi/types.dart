@@ -4,10 +4,11 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Um contato pareado, como a UI precisa exibi-lo.
 class ContactDto {
@@ -171,6 +172,30 @@ class IncomingMessageDto {
           receivedAtUnixSecs == other.receivedAtUnixSecs;
 }
 
+/// Resultado de `Core::receive_incoming`.
+class IncomingResultDto {
+  /// A mensagem de aplicação decifrada, quando os bytes eram uma.
+  final IncomingMessageDto? message;
+
+  /// Bytes a enviar de volta ao par, sem tocar: RESP, INIT, `REOPEN` ou um
+  /// `CONTROL_SUITES` já cifrado. Material público de handshake ou
+  /// ciphertext, nunca segredo.
+  final Uint8List? reply;
+
+  const IncomingResultDto({this.message, this.reply});
+
+  @override
+  int get hashCode => message.hashCode ^ reply.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is IncomingResultDto &&
+          runtimeType == other.runtimeType &&
+          message == other.message &&
+          reply == other.reply;
+}
+
 /// Resultado de alimentar um pacote do canal `file` — Fase 5, D17:
 /// `Core::ingest_incoming_wire_bytes` já descobre sozinho a qual
 /// transferência o pacote pertence (o `file_id` vem em claro no próprio
@@ -271,6 +296,48 @@ class MessageDto {
           reactions == other.reactions;
 }
 
+/// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.
+/// Só identificadores: o conteúdo o Dart lê com `Core::get_message`.
+class MessageEventDto {
+  final Uint8List peerDeviceId;
+  final PlatformInt64 messageId;
+  final MessageEventKind kind;
+
+  const MessageEventDto({
+    required this.peerDeviceId,
+    required this.messageId,
+    required this.kind,
+  });
+
+  @override
+  int get hashCode =>
+      peerDeviceId.hashCode ^ messageId.hashCode ^ kind.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MessageEventDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          messageId == other.messageId &&
+          kind == other.kind;
+}
+
+/// O que aconteceu com a mensagem.
+enum MessageEventKind {
+  /// Linha nova na timeline. Repetida para a mesma linha é inofensiva.
+  added,
+
+  /// Estado de entrega ou ligação com o arquivo mudou.
+  updated,
+
+  /// A chave efêmera foi destruída: a linha continua, mas sem o conteúdo.
+  keyExpired,
+
+  /// As reações da mensagem mudaram.
+  reactionsChanged,
+}
+
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —
 /// Fase 5. Espelha os tipos de pacote que entram em `messages` (`MSG_TEXT`/
 /// `AUDIO_CHUNK`/`FILE_METADATA` — arquivo genérico adicionado na Fase 4
@@ -278,6 +345,91 @@ class MessageDto {
 /// nesta tabela (`store::messages::reject_typing` e o resto do desenho da
 /// Fase 3).
 enum MessageKindDto { text, voiceNote, file }
+
+/// Envio enfileirado sem sessão (`Core::queue_send_file`/`queue_send_audio`,
+/// D30): só o que a UI precisa para ligar a linha da timeline. A oferta sai
+/// depois, por `Core::resume_transfers`.
+class QueuedTransferDto {
+  final Uint8List fileId;
+
+  /// `id` na tabela `messages`, já `Pending`.
+  final PlatformInt64 messageId;
+
+  const QueuedTransferDto({required this.fileId, required this.messageId});
+
+  @override
+  int get hashCode => fileId.hashCode ^ messageId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is QueuedTransferDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          messageId == other.messageId;
+}
+
+/// O que fazer com uma transferência devolvida por `Core::resume_transfers`.
+enum ResumedDirectionDto {
+  /// Quem chama volta a bombear `next_outgoing_wire_chunk`.
+  send,
+
+  /// Quem chama volta a mandar `file_feedback` a cada 500 ms (§7.4).
+  receive,
+
+  /// O recebimento não tinha como continuar e foi encerrado aqui; quem chama
+  /// só entrega `sealed_notice` (um `FILE_REJECT`) ao par, para o emissor
+  /// parar de tentar.
+  abandoned,
+}
+
+/// Uma transferência retomada com o contato — `Core::resume_transfers` (§7.5).
+/// Nada aqui é segredo.
+class ResumedTransferDto {
+  final Uint8List fileId;
+  final ResumedDirectionDto direction;
+
+  /// Envio cuja oferta ainda não teve resposta e pode ter se perdido com a
+  /// sessão anterior: quem chama pede o `FILE_METADATA` a
+  /// `Core::seal_resumed_offer` logo antes de mandá-lo. Selar só então evita
+  /// gastar um contador do ratchet numa oferta que não vai sair.
+  final bool needsOffer;
+
+  /// Pacote de controle já selado a entregar ao par: o `FILE_REJECT` de um
+  /// recebimento `Abandoned`.
+  final Uint8List? sealedNotice;
+
+  /// A linha da timeline do envio, para `Core::mark_message_sent` quando o
+  /// bombeamento terminar. `None` no recebimento.
+  final PlatformInt64? messageId;
+
+  const ResumedTransferDto({
+    required this.fileId,
+    required this.direction,
+    required this.needsOffer,
+    this.sealedNotice,
+    this.messageId,
+  });
+
+  @override
+  int get hashCode =>
+      fileId.hashCode ^
+      direction.hashCode ^
+      needsOffer.hashCode ^
+      sealedNotice.hashCode ^
+      messageId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResumedTransferDto &&
+          runtimeType == other.runtimeType &&
+          fileId == other.fileId &&
+          direction == other.direction &&
+          needsOffer == other.needsOffer &&
+          sealedNotice == other.sealedNotice &&
+          messageId == other.messageId;
+}
 
 /// O safety number entre a identidade local e um contato, nas duas
 /// representações da spec §3.3.
@@ -424,15 +576,33 @@ class SessionStateEventDto {
   final SessionStateKind? state;
   final bool needsRehandshake;
 
+  /// Muda quando a sessão com o par é trocada por outra, inclusive quando o
+  /// par reabriu e a nossa continuou `Established` (§11.4). Quem precisa
+  /// refazer algo que dependia da sessão anterior compara este valor. É só
+  /// um contador local, sem relação com nenhuma chave.
+  final int generation;
+
+  /// Há uma sessão candidata segurando a fila de envio (§11.4). Quando ela
+  /// passa do prazo (30 s, `viska_proto::session::CANDIDATE_TIMEOUT_SECS`)
+  /// nada no Rust avisa, porque o Rust não tem relógio próprio: quem vê
+  /// `true` drena a fila depois do prazo, e a drenagem publica o estado novo.
+  final bool renewing;
+
   const SessionStateEventDto({
     required this.peerDeviceId,
     this.state,
     required this.needsRehandshake,
+    required this.generation,
+    required this.renewing,
   });
 
   @override
   int get hashCode =>
-      peerDeviceId.hashCode ^ state.hashCode ^ needsRehandshake.hashCode;
+      peerDeviceId.hashCode ^
+      state.hashCode ^
+      needsRehandshake.hashCode ^
+      generation.hashCode ^
+      renewing.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -441,7 +611,9 @@ class SessionStateEventDto {
           runtimeType == other.runtimeType &&
           peerDeviceId == other.peerDeviceId &&
           state == other.state &&
-          needsRehandshake == other.needsRehandshake;
+          needsRehandshake == other.needsRehandshake &&
+          generation == other.generation &&
+          renewing == other.renewing;
 }
 
 /// Estado de uma sessão, sem nenhum dos campos criptográficos de
@@ -523,6 +695,49 @@ class SignalingTopicsDto {
           subscribeTopics == other.subscribeTopics;
 }
 
+/// Evento de transferência, empurrado pelo stream de
+/// `Core::subscribe_transfer_events`. Só avisa que algo mudou: nome, tamanho e
+/// qualquer segredo da oferta ficam no Rust, o Dart os lê pelas consultas.
+class TransferEventDto {
+  final Uint8List peerDeviceId;
+  final Uint8List fileId;
+  final TransferEventKind kind;
+
+  const TransferEventDto({
+    required this.peerDeviceId,
+    required this.fileId,
+    required this.kind,
+  });
+
+  @override
+  int get hashCode => peerDeviceId.hashCode ^ fileId.hashCode ^ kind.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransferEventDto &&
+          runtimeType == other.runtimeType &&
+          peerDeviceId == other.peerDeviceId &&
+          fileId == other.fileId &&
+          kind == other.kind;
+}
+
+/// O que aconteceu. Novos eventos de transferência entram aqui como variantes.
+enum TransferEventKind {
+  /// Oferta retida aguardando confirmação (`unconfirmed_file_offers`).
+  offerAppeared,
+
+  /// A oferta deixou de estar pendente: aceita, recusada, cancelada ou
+  /// descartada no bloqueio do cofre.
+  offerGone,
+
+  /// O estado de um envio mudou e vale pedir o próximo bloco: chegou um
+  /// `FILE_FEEDBACK`, ou a transferência acabou (concluída, recusada,
+  /// cancelada ou largada no bloqueio). Quem bombeia o envio acorda e
+  /// reconsulta, em vez de dormir um tempo fixo.
+  chunkReleased,
+}
+
 /// Progresso de uma transferência em andamento, de qualquer lado.
 class TransferProgressDto {
   final int blocksDone;
@@ -530,11 +745,17 @@ class TransferProgressDto {
   final BigInt bytesDone;
   final bool isComplete;
 
+  /// Envio cuja oferta ainda não teve resposta: o emissor espera o aceite
+  /// (que pode levar horas, §7.6) e não deve ser dado como parado. Sempre
+  /// falso no recebimento.
+  final bool awaitingAnswer;
+
   const TransferProgressDto({
     required this.blocksDone,
     required this.totalBlocks,
     required this.bytesDone,
     required this.isComplete,
+    required this.awaitingAnswer,
   });
 
   @override
@@ -542,7 +763,8 @@ class TransferProgressDto {
       blocksDone.hashCode ^
       totalBlocks.hashCode ^
       bytesDone.hashCode ^
-      isComplete.hashCode;
+      isComplete.hashCode ^
+      awaitingAnswer.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -552,5 +774,6 @@ class TransferProgressDto {
           blocksDone == other.blocksDone &&
           totalBlocks == other.totalBlocks &&
           bytesDone == other.bytesDone &&
-          isComplete == other.isComplete;
+          isComplete == other.isComplete &&
+          awaitingAnswer == other.awaitingAnswer;
 }
