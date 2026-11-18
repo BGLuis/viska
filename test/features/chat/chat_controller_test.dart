@@ -349,6 +349,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   var listMessagesCalls = 0;
   Completer<void>? listMessagesGate;
+  Object? listMessagesError;
   Object? getMessageError;
 
   /// Atraso de `getMessage` por id, para provocar leituras que terminam fora de ordem.
@@ -359,6 +360,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
     listMessagesCalls++;
     final gate = listMessagesGate;
     if (gate != null) await gate.future;
+    if (listMessagesError != null) throw listMessagesError!;
     return messagesToReturn;
   }
 
@@ -740,6 +742,31 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   Future<ContactDto> repairFromQr({required List<int> payload}) => throw UnimplementedError();
 }
 
+Stream<T> _trackListeners<T>(Stream<T> source, void Function(int delta) onDelta) {
+  return Stream<T>.multi((controller) {
+    onDelta(1);
+    final sub = source.listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+    controller.onCancel = () {
+      onDelta(-1);
+      return sub.cancel();
+    };
+  }, isBroadcast: true);
+}
+
+class _SpyMessageReceptionService extends MessageReceptionService {
+  _SpyMessageReceptionService({required super.core, required super.router});
+
+  var activeEventListeners = 0;
+
+  @override
+  Stream<MessageReceptionEvent> eventsFor(ContactId contactId) =>
+      _trackListeners(super.eventsFor(contactId), (d) => activeEventListeners += d);
+}
+
 class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
@@ -751,6 +778,7 @@ class _FakeP2PTransport implements P2PTransport {
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
+  var activeConnectionListeners = 0;
 
   /// Segura `connect()` para simular um transporte que ainda não voltou.
   Completer<void>? connectGate;
@@ -775,7 +803,8 @@ class _FakeP2PTransport implements P2PTransport {
   Stream<Uint8List> get incomingFile => _incomingFile.stream;
 
   @override
-  Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
+  Stream<TransportConnectionEvent> get connectionEvents =>
+      _trackListeners(_connectionEvents.stream, (d) => activeConnectionListeners += d);
 
   @override
   Future<void> close() async {}
@@ -2446,6 +2475,202 @@ void main() {
       await settle();
 
       expect(controller.messages.map((m) => m.id), [2]);
+    });
+  });
+
+  group('initialize and reconnect listener lifecycle (issue #97)', () {
+    test('calling initialize multiple times is idempotent and keeps one reception and one connection listener', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      for (var i = 0; i < 4; i++) {
+        await ctrl.initialize();
+      }
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3); // 1 router + 1 receptionService + 1 ChatController
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [1]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('retry after failed initialize cancels prior reception subscription without leaking', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      core.listMessagesError = StateError('Locked');
+      await ctrl.initialize();
+      expect(ctrl.connectionError, isNotNull);
+
+      core.listMessagesError = null;
+      await ctrl.initialize();
+
+      expect(ctrl.connectionError, isNull);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(42, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [42]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('concurrent initialize calls run once and keep single listeners', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final gate = Completer<void>();
+      core.listMessagesGate = gate;
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      final f1 = ctrl.initialize();
+      final f2 = ctrl.initialize();
+      gate.complete();
+      await Future.wait([f1, f2]);
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('reconnectTransport replaces failed transport without re-running initialize or leaking listeners', () async {
+      final transports = <_FakeP2PTransport>[];
+      final localRouter = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) {
+          final t = _FakeP2PTransport();
+          transports.add(t);
+          return t;
+        },
+      );
+      final spyReception = _SpyMessageReceptionService(core: core, router: localRouter);
+      final ctrl = ChatController(
+        core: core,
+        router: localRouter,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      await ctrl.initialize();
+      expect(core.listMessagesCalls, 1);
+      expect(transports, hasLength(1));
+
+      for (var i = 0; i < 3; i++) {
+        transports.last.emitConnectionEvent(
+          TransportConnectionEvent(TransportConnectionState.failed, reason: 'sem rota $i'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(ctrl.connectionError, 'sem rota $i');
+
+        await ctrl.reconnectTransport();
+
+        expect(ctrl.connectionError, isNull);
+        expect(core.listMessagesCalls, 1);
+        expect(spyReception.activeEventListeners, 1);
+        for (var j = 0; j < transports.length - 1; j++) {
+          expect(transports[j].activeConnectionListeners, 0);
+        }
+        expect(transports.last.activeConnectionListeners, 3);
+      }
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(10, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [10]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      expect(transports.last.activeConnectionListeners, 2);
+
+      // Eventos tardios no transporte após dispose não devem mais alterar o controlador.
+      transports.last.emitConnectionEvent(
+        const TransportConnectionEvent(TransportConnectionState.failed, reason: 'tardio'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(ctrl.connectionError, isNull);
+
+      await spyReception.dispose();
+      await localRouter.closeAll();
+    });
+
+    test('reconnectTransport retries initialize when initial initialize failed', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      core.listMessagesError = StateError('Locked');
+      await ctrl.initialize();
+      expect(ctrl.connectionError, contains('bloqueado'));
+
+      core.listMessagesError = null;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 5,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.text,
+          body: 'recuperada',
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+        ),
+      ];
+      await ctrl.reconnectTransport();
+
+      expect(ctrl.connectionError, isNull);
+      expect(ctrl.messages.map((m) => m.id), [5]);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      ctrl.dispose();
+      await spyReception.dispose();
+      await router.closeAll();
     });
   });
 }
