@@ -73,7 +73,7 @@ Unknown.
   ```sh
   cd rust
   cargo test
-  cargo clippy --all-targets -- -D warnings
+  cargo clippy --workspace --all-targets -- -D warnings
   cd ..
   ```
 

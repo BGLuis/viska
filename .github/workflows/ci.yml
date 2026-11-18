@@ -37,7 +37,7 @@ jobs:
 
       - name: Clippy (zero warnings)
         working-directory: rust
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Compilação com todas as features (GEMINI.md)
         working-directory: rust

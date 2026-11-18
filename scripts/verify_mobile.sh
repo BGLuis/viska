@@ -39,7 +39,7 @@ log_step "1/6. Executando testes unitários do Rust Core..."
 log_success "Rust Core: 100% dos testes passaram."
 
 log_step "2/6. Verificando clippy no Rust (zero warnings)..."
-(cd rust && cargo clippy --all-targets -- -D warnings)
+(cd rust && cargo clippy --workspace --all-targets -- -D warnings)
 log_success "Rust Clippy: zero warnings."
 
 log_step "3/6. Executando análise estática do Flutter..."

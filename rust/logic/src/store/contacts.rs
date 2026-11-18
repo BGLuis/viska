@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(contact.0.signing, id2.signing);
         assert_eq!(contact.0.dh, id2.dh);
         assert_eq!(contact.2.as_deref(), Some("Amigo Bob"));
-        assert_eq!(contact.3, false, "is_verified deve ser zerado no re-pareamento");
+        assert!(!contact.3, "is_verified deve ser zerado no re-pareamento");
         assert_eq!(get_suite_id(&conn, &id1.device_id).unwrap(), 2);
 
         // Mensagens anteriores preservadas
