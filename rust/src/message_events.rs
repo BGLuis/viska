@@ -60,6 +60,7 @@ fn to_dto(change: MessageChange) -> MessageEventDto {
             MessageChangeKind::Updated => MessageEventKind::Updated,
             MessageChangeKind::KeyExpired => MessageEventKind::KeyExpired,
             MessageChangeKind::ReactionsChanged => MessageEventKind::ReactionsChanged,
+            MessageChangeKind::Removed => MessageEventKind::Removed,
         },
     }
 }
@@ -87,12 +88,15 @@ mod tests {
         events.emit(change(1, MessageChangeKind::Added));
         events.emit(change(1, MessageChangeKind::Updated));
         events.emit(change(2, MessageChangeKind::KeyExpired));
+        events.emit(change(3, MessageChangeKind::Removed));
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), 4);
         assert_eq!(seen[0].peer_device_id, vec![7; 16]);
         assert_eq!(seen[1].kind, MessageEventKind::Updated);
         assert_eq!(seen[2].message_id, 2);
+        assert_eq!(seen[3].kind, MessageEventKind::Removed);
+        assert_eq!(seen[3].message_id, 3);
     }
 
     #[test]

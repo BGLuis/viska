@@ -50,6 +50,9 @@ pub struct StoredTransfer {
     /// O destinatário já respondeu a oferta com um `FILE_FEEDBACK` (§7.7 item
     /// 5). Só faz sentido no envio.
     pub answered: bool,
+    /// A oferta (`FILE_METADATA`) já foi selada para envio — falso enquanto o
+    /// item só está na fila offline (D30).
+    pub offered: bool,
 }
 
 impl core::fmt::Debug for StoredTransfer {
@@ -60,12 +63,13 @@ impl core::fmt::Debug for StoredTransfer {
             .field("transfer_secret", &"<redigido>")
             .field("kind", &self.kind)
             .field("answered", &self.answered)
+            .field("offered", &self.offered)
             .finish_non_exhaustive()
     }
 }
 
 const COLUMNS: &str = "file_id, direction, contact_device_id, manifest_cbor, transfer_secret, \
-    created_at_unix_secs, kind, staging_cipher_version, answered";
+    created_at_unix_secs, kind, staging_cipher_version, answered, offered";
 
 #[allow(clippy::too_many_arguments)]
 pub fn insert(
@@ -77,11 +81,12 @@ pub fn insert(
     transfer_secret: &[u8],
     created_at_unix_secs: i64,
     kind: TransferKind,
+    offered: bool,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO file_transfers
-            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+            (file_id, direction, contact_device_id, manifest_cbor, transfer_secret, created_at_unix_secs, kind, staging_cipher_version, offered)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
         rusqlite::params![
             file_id.as_slice(),
             direction as i64,
@@ -90,6 +95,7 @@ pub fn insert(
             transfer_secret,
             created_at_unix_secs,
             kind as i64,
+            i64::from(offered),
         ],
     )
     .map_err(|_| Error::Store)?;
@@ -228,6 +234,16 @@ pub fn mark_answered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<
     Ok(())
 }
 
+/// Registra que a oferta (`FILE_METADATA`) já foi selada para envio. Idempotente.
+pub fn mark_offered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<()> {
+    conn.execute(
+        "UPDATE file_transfers SET offered = 1 WHERE file_id = ?1",
+        [file_id.as_slice()],
+    )
+    .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
 /// Todos os `file_id` persistidos — usado por
 /// `file::staging::sweep_orphaned` para nunca apagar o `.staging` de uma
 /// transferência que o banco ainda considera ativa.
@@ -270,6 +286,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
     let kind: i64 = row.get(6)?;
     let staging_cipher_version: i64 = row.get(7)?;
     let answered: i64 = row.get(8)?;
+    let offered: i64 = row.get(9)?;
 
     Ok(StoredTransfer {
         file_id: file_id.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -283,6 +300,7 @@ fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> 
         kind: TransferKind::from_u8(kind as u8).map_err(|_| rusqlite::Error::InvalidQuery)?,
         staging_cipher_version: staging_cipher_version as u8,
         answered: answered != 0,
+        offered: offered != 0,
     })
 }
 
@@ -318,6 +336,7 @@ mod tests {
             b"segredo-de-32-bytes-ou-nao",
             1000,
             TransferKind::Audio,
+            true,
         )
         .unwrap();
 
@@ -328,6 +347,7 @@ mod tests {
         assert_eq!(found.manifest_cbor, b"manifesto-cbor");
         assert_eq!(found.transfer_secret.as_slice(), b"segredo-de-32-bytes-ou-nao");
         assert!(!found.answered);
+        assert!(found.offered);
         assert_eq!(found.created_at_unix_secs, 1000);
         assert_eq!(found.kind, TransferKind::Audio);
     }
@@ -352,6 +372,7 @@ mod tests {
             b"s",
             0,
             TransferKind::File,
+            false,
         )
         .unwrap();
 
@@ -375,7 +396,7 @@ mod tests {
             ([6u8; 16], Direction::Sending, TransferKind::File, 500), // ainda no prazo
         ];
         for (id, direction, kind, at) in rows {
-            insert(&conn, &id, direction, &contact, b"m", b"s", at, kind).unwrap();
+            insert(&conn, &id, direction, &contact, b"m", b"s", at, kind, true).unwrap();
         }
         mark_answered(&conn, &[2u8; 16]).unwrap();
         mark_answered(&conn, &[2u8; 16]).unwrap();
@@ -398,10 +419,10 @@ mod tests {
     fn counts_only_unanswered_sends_of_the_contact() {
         let contact = [8u8; 16];
         let conn = conn_with_contact(contact);
-        insert(&conn, &[1u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
-        insert(&conn, &[2u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::Audio).unwrap();
-        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
-        insert(&conn, &[4u8; 16], Direction::Receiving, &contact, b"m", b"s", 1, TransferKind::File).unwrap();
+        insert(&conn, &[1u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File, false).unwrap();
+        insert(&conn, &[2u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::Audio, false).unwrap();
+        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"s", 1, TransferKind::File, true).unwrap();
+        insert(&conn, &[4u8; 16], Direction::Receiving, &contact, b"m", b"s", 1, TransferKind::File, false).unwrap();
         mark_answered(&conn, &[3u8; 16]).unwrap();
 
         assert_eq!(count_unanswered_sending(&conn, &contact).unwrap(), 2);
@@ -412,7 +433,7 @@ mod tests {
     fn debug_never_prints_the_transfer_secret() {
         let contact = [7u8; 16];
         let conn = conn_with_contact(contact);
-        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"segredo-visivel", 0, TransferKind::File)
+        insert(&conn, &[3u8; 16], Direction::Sending, &contact, b"m", b"segredo-visivel", 0, TransferKind::File, false)
             .unwrap();
         let shown = format!("{:?}", find(&conn, &[3u8; 16]).unwrap().unwrap());
         assert!(!shown.contains("segredo-visivel"));
@@ -435,9 +456,9 @@ mod tests {
         let recebendo_de_a = [1u8; 16];
         let enviando_para_a = [2u8; 16];
         let recebendo_de_b = [3u8; 16];
-        insert(&conn, &recebendo_de_a, Direction::Receiving, &contact_a, b"m", b"s", 0, TransferKind::File).unwrap();
-        insert(&conn, &enviando_para_a, Direction::Sending, &contact_a, b"m", b"s", 1, TransferKind::File).unwrap();
-        insert(&conn, &recebendo_de_b, Direction::Receiving, &contact_b, b"m", b"s", 2, TransferKind::File).unwrap();
+        insert(&conn, &recebendo_de_a, Direction::Receiving, &contact_a, b"m", b"s", 0, TransferKind::File, false).unwrap();
+        insert(&conn, &enviando_para_a, Direction::Sending, &contact_a, b"m", b"s", 1, TransferKind::File, true).unwrap();
+        insert(&conn, &recebendo_de_b, Direction::Receiving, &contact_b, b"m", b"s", 2, TransferKind::File, false).unwrap();
 
         let ofertas_de_a = list_for_contact(&conn, &contact_a, Direction::Receiving).unwrap();
         assert_eq!(ofertas_de_a.len(), 1);
@@ -450,8 +471,8 @@ mod tests {
         let conn = conn_with_contact(contact);
         let a = [1u8; 16];
         let b = [2u8; 16];
-        insert(&conn, &a, Direction::Sending, &contact, b"m", b"s", 0, TransferKind::File).unwrap();
-        insert(&conn, &b, Direction::Receiving, &contact, b"m", b"s", 0, TransferKind::Audio).unwrap();
+        insert(&conn, &a, Direction::Sending, &contact, b"m", b"s", 0, TransferKind::File, false).unwrap();
+        insert(&conn, &b, Direction::Receiving, &contact, b"m", b"s", 0, TransferKind::Audio, false).unwrap();
 
         let mut ids = list_active_file_ids(&conn).unwrap();
         ids.sort();

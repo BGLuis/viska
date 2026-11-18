@@ -56,6 +56,8 @@ pub enum MessageChangeKind {
     KeyExpired,
     /// As reações da mensagem mudaram.
     ReactionsChanged,
+    /// A linha foi removida da timeline (cancelamento de item na fila offline).
+    Removed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +605,7 @@ impl Store {
         transfer_secret: &[u8],
         created_at_unix_secs: i64,
         kind: crate::file::transfer::TransferKind,
+        offered: bool,
     ) -> Result<()> {
         self.with_conn(|conn| {
             transfers::insert(
@@ -614,8 +617,34 @@ impl Store {
                 transfer_secret,
                 created_at_unix_secs,
                 kind,
+                offered,
             )
         })
+    }
+
+    /// Cancela um item na fila offline, apagando `file_transfers` e a mensagem
+    /// `Pending` numa transação única se `is_idle` confirmar ausência de handle
+    /// ativo. Anuncia [`MessageChangeKind::Removed`] fora da trava do banco.
+    pub fn cancel_queued_transfer_if<F>(
+        &self,
+        message_id: i64,
+        is_idle: F,
+    ) -> Result<Option<[u8; 16]>>
+    where
+        F: FnOnce(&[u8; 16]) -> bool,
+    {
+        let cancelled = self.with_conn(|conn| messages::cancel_queued_transfer_if(conn, message_id, is_idle))?;
+        if let Some((file_id, contact_device_id)) = cancelled {
+            if let Some(observer) = self.observer.read().ok().and_then(|slot| slot.clone()) {
+                observer(MessageChange {
+                    contact_device_id,
+                    message_id,
+                    kind: MessageChangeKind::Removed,
+                });
+            }
+            return Ok(Some(file_id));
+        }
+        Ok(None)
     }
 
     /// Busca uma transferência persistida pelo `file_id`.
@@ -643,6 +672,11 @@ impl Store {
     /// Registra que a oferta da transferência foi respondida (§7.7 item 5).
     pub fn mark_file_transfer_answered(&self, file_id: &[u8; 16]) -> Result<()> {
         self.with_conn(|conn| transfers::mark_answered(conn, file_id))
+    }
+
+    /// Registra que a oferta (`FILE_METADATA`) da transferência foi selada.
+    pub fn mark_file_transfer_offered(&self, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|conn| transfers::mark_offered(conn, file_id))
     }
 
     /// Quantos envios ao contato ainda esperam resposta (a fila offline, D30).
@@ -1346,6 +1380,38 @@ mod tests {
             let contact = LocalIdentity::generate().unwrap().public();
             store.insert_contact(&contact, 100, None).unwrap();
             store.insert_pending_message(&contact.device_id, PacketType::MsgText, "oi", 1000).unwrap();
+        }
+
+        #[test]
+        fn cancel_queued_transfer_announces_removed_with_owner() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            let file_id = [21u8; 16];
+            let msg_id = store
+                .insert_pending_message(&contact, PacketType::FileMetadata, "doc.pdf", 1000)
+                .unwrap();
+            store.set_message_file_id(msg_id, &file_id).unwrap();
+            store
+                .insert_file_transfer(
+                    &file_id,
+                    transfers::Direction::Sending,
+                    &contact,
+                    b"m",
+                    b"s",
+                    1000,
+                    crate::file::transfer::TransferKind::File,
+                    false,
+                )
+                .unwrap();
+            seen.lock().unwrap().clear();
+
+            let cancelled = store.cancel_queued_transfer_if(msg_id, |_| true).unwrap();
+
+            assert_eq!(cancelled, Some(file_id));
+            assert_eq!(kinds(&seen), vec![MessageChangeKind::Removed]);
+            let event = seen.lock().unwrap()[0];
+            assert_eq!(event.message_id, msg_id);
+            assert_eq!(event.contact_device_id, contact);
         }
     }
 }

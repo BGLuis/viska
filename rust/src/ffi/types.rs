@@ -156,6 +156,8 @@ pub enum MessageEventKind {
     KeyExpired,
     /// As reações da mensagem mudaram.
     ReactionsChanged,
+    /// A linha foi apagada da timeline (ex.: cancelamento na fila offline).
+    Removed,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão

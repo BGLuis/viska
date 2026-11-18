@@ -115,7 +115,7 @@ impl Core {
         self.transfers.lock().map_err(|_| FfiError::Internal)
     }
 
-    fn lock_claims(&self) -> Result<MutexGuard<'_, HashSet<[u8; FILE_ID_LEN]>>, FfiError> {
+    pub(super) fn lock_claims(&self) -> Result<MutexGuard<'_, HashSet<[u8; FILE_ID_LEN]>>, FfiError> {
         self.transfer_claims.lock().map_err(|_| FfiError::Internal)
     }
 
