@@ -620,7 +620,11 @@ mod tests {
                 .bytes
                 .into_iter()
                 .collect();
-            out.extend(from.flush_pending(from_peer).unwrap().into_iter().filter_map(|m| m.bytes));
+            while let Some(m) = from.flush_next_pending(from_peer.clone()).unwrap() {
+                if let Some(bytes) = m.bytes {
+                    out.push(bytes);
+                }
+            }
             for bytes in out {
                 to.receive_incoming(to_peer.clone(), bytes).unwrap();
             }

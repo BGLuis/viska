@@ -100,7 +100,7 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) =>
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) =>
       throw UnimplementedError();
 
   @override

@@ -276,6 +276,23 @@ impl Session {
         self.needs_rehandshake
     }
 
+    /// `true` quando a sessão pode cifrar agora: está estabelecida, com cadeia
+    /// de envio pronta, sem renovação em aberto nem rehandshake pendente.
+    pub fn can_send(&self) -> bool {
+        !self.needs_rehandshake
+            && !self.is_renewing()
+            && matches!(&self.state, SessionState::Established(r) if r.has_sending_chain())
+    }
+
+    /// Só para teste: quantas chaves puladas estão guardadas na sessão.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn skipped_keys_len(&self) -> usize {
+        match &self.state {
+            SessionState::Established(ratchet) => ratchet.skipped_len(),
+            _ => 0,
+        }
+    }
+
     /// Retorna a suíte atualmente em uso nesta sessão.
     pub fn current_suite(&self) -> u8 {
         self.current_suite

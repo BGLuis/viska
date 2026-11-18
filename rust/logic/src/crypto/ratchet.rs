@@ -702,6 +702,11 @@ impl RatchetState {
         }
     }
 
+    /// `true` quando há uma cadeia de envio pronta para derivar chaves.
+    pub fn has_sending_chain(&self) -> bool {
+        self.sending_chain.is_some()
+    }
+
     /// Descarta o resultado do último `receiving_key` sem aplicá-lo.
     ///
     /// Chamar depois que o AEAD rejeitar a mensagem correspondente. Também é
@@ -729,6 +734,14 @@ impl core::fmt::Debug for RatchetState {
             .field("dh_self", &"<redigida>")
             .field("own_kem_secret", &"<redigida>")
             .finish()
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl RatchetState {
+    /// Só para teste: quantas chaves puladas estão guardadas agora.
+    pub fn skipped_len(&self) -> usize {
+        self.skipped.len()
     }
 }
 
