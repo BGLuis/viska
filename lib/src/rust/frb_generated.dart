@@ -3884,8 +3884,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto dco_decode_message_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return MessageDto(
       id: dco_decode_i_64(arr[0]),
       globalId: dco_decode_opt_String(arr[1]),
@@ -3899,6 +3899,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       replyToId: dco_decode_opt_box_autoadd_i_64(arr[9]),
       viewOnce: dco_decode_bool(arr[10]),
       reactions: dco_decode_list_String(arr[11]),
+      canCancelQueued: dco_decode_bool(arr[12]),
     );
   }
 
@@ -4647,6 +4648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_replyToId = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_viewOnce = sse_decode_bool(deserializer);
     var var_reactions = sse_decode_list_String(deserializer);
+    var var_canCancelQueued = sse_decode_bool(deserializer);
     return MessageDto(
       id: var_id,
       globalId: var_globalId,
@@ -4660,6 +4662,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       replyToId: var_replyToId,
       viewOnce: var_viewOnce,
       reactions: var_reactions,
+      canCancelQueued: var_canCancelQueued,
     );
   }
 
@@ -5492,6 +5495,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_i_64(self.replyToId, serializer);
     sse_encode_bool(self.viewOnce, serializer);
     sse_encode_list_String(self.reactions, serializer);
+    sse_encode_bool(self.canCancelQueued, serializer);
   }
 
   @protected

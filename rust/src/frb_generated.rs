@@ -4671,6 +4671,7 @@ impl SseDecode for crate::ffi::types::MessageDto {
         let mut var_replyToId = <Option<i64>>::sse_decode(deserializer);
         let mut var_viewOnce = <bool>::sse_decode(deserializer);
         let mut var_reactions = <Vec<String>>::sse_decode(deserializer);
+        let mut var_canCancelQueued = <bool>::sse_decode(deserializer);
         return crate::ffi::types::MessageDto {
             id: var_id,
             global_id: var_globalId,
@@ -4684,6 +4685,7 @@ impl SseDecode for crate::ffi::types::MessageDto {
             reply_to_id: var_replyToId,
             view_once: var_viewOnce,
             reactions: var_reactions,
+            can_cancel_queued: var_canCancelQueued,
         };
     }
 }
@@ -5668,6 +5670,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::MessageDto {
             self.reply_to_id.into_into_dart().into_dart(),
             self.view_once.into_into_dart().into_dart(),
             self.reactions.into_into_dart().into_dart(),
+            self.can_cancel_queued.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -6435,6 +6438,7 @@ impl SseEncode for crate::ffi::types::MessageDto {
         <Option<i64>>::sse_encode(self.reply_to_id, serializer);
         <bool>::sse_encode(self.view_once, serializer);
         <Vec<String>>::sse_encode(self.reactions, serializer);
+        <bool>::sse_encode(self.can_cancel_queued, serializer);
     }
 }
 
