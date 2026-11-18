@@ -228,6 +228,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       emitMessageEvent(sealed.messageId, MessageEventKind.added);
@@ -271,6 +272,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
               replyToId: m.replyToId,
               viewOnce: m.viewOnce,
               reactions: m.reactions,
+              canCancelQueued: m.canCancelQueued,
             );
           }()
         else
@@ -452,6 +454,25 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   @override
   Future<void> cancelTransfer({required List<int> fileId}) async {}
+
+  final cancelQueuedTransferCalls = <int>[];
+  FutureOr<Uint8List?> Function(int messageId)? cancelQueuedTransferHandler;
+
+  @override
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId}) async {
+    cancelQueuedTransferCalls.add(messageId);
+    if (cancelQueuedTransferHandler != null) {
+      return await cancelQueuedTransferHandler!(messageId);
+    }
+    final target = messagesToReturn.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (target == null) return null;
+    messagesToReturn = messagesToReturn.where((m) => m.id != messageId).toList();
+    emitMessageEvent(messageId, MessageEventKind.removed);
+    return target.audioFileId ?? Uint8List.fromList(List.filled(16, 6));
+  }
 
   Uint8List? fileFeedbackResponse;
   final fileFeedbackCalls = <Uint8List>[];
@@ -845,6 +866,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1173,6 +1195,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1364,6 +1387,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
@@ -1414,6 +1438,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           ),
         ];
         core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
@@ -1504,6 +1529,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       );
 
       transport.emitIncomingFile(Uint8List.fromList([1]));
@@ -1549,6 +1575,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       final first = noteFor(fileId);
@@ -1611,6 +1638,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       core.finishReceiveAudioHandler = (id, destPath) {
@@ -1715,6 +1743,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       /// Emissor esgotado e sem `FILE_FEEDBACK` à vista: o laço de envio fica
@@ -1976,6 +2005,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isFileReady(msg), isTrue,
             reason: 'caminho deve estar cacheado após recebimento completo');
@@ -2199,6 +2229,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2220,6 +2251,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2241,6 +2273,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2279,6 +2312,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: reactions,
+          canCancelQueued: false,
         );
 
     Future<void> settle() => pumpEventQueue();
@@ -2445,6 +2479,139 @@ void main() {
       await settle();
 
       expect(controller.messages.map((m) => m.id), [2]);
+    });
+
+    test('Removed drops the row on the queue without calling getMessage', () async {
+      core.messagesToReturn = [row(1), row(2)];
+      controller = makeController();
+      await controller.initialize();
+      core.getMessageCalls.clear();
+
+      core.emitMessageEvent(1, MessageEventKind.removed);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [2]);
+      expect(core.getMessageCalls, isEmpty);
+    });
+  });
+
+  group('cancelling offline-queued transfers', () {
+    Future<void> settle() => pumpEventQueue();
+
+    test('cancelQueuedTransfer removes queued file and evicts cached file path', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      transport.connectGate = Completer<void>();
+      controller = makeController(connectTimeout: const Duration(milliseconds: 50));
+      await controller.initialize();
+
+      await controller.sendFile('/tmp/queued.pdf');
+      final fileId = Uint8List.fromList(List.filled(16, 6));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'queued.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await settle();
+      expect(controller.messages, hasLength(1));
+
+      await controller.cancelQueuedTransfer(1);
+      await settle();
+
+      expect(core.cancelQueuedTransferCalls, [1]);
+      expect(controller.messages, isEmpty);
+      expect(controller.isFileReady(MessageDto(
+        id: 1,
+        direction: MessageDirectionDto.outgoing,
+        kind: MessageKindDto.file,
+        body: 'queued.pdf',
+        audioFileId: fileId,
+        deliveryState: DeliveryStateDto.pending,
+        createdAtUnixSecs: 100,
+        isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
+        canCancelQueued: false,
+      )), isFalse);
+    });
+
+    test('cancelQueuedTransfer removes queued voice note, evicts audio cache and stops playback', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      final audioId = Uint8List.fromList(List.filled(16, 7));
+      final oggFile = File('${tempDir.path}/queued-voice.ogg')..writeAsBytesSync([1, 2, 3]);
+      recorder.pathToReturnOnStop = oggFile.path;
+      core.startSendAudioHandler = (_) => throw FfiError.noActiveSession;
+
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.startRecording();
+      await controller.stopRecordingAndSend();
+
+      final voiceMsg = MessageDto(
+        id: 1,
+        direction: MessageDirectionDto.outgoing,
+        kind: MessageKindDto.voiceNote,
+        body: '',
+        audioFileId: audioId,
+        deliveryState: DeliveryStateDto.pending,
+        createdAtUnixSecs: 100,
+        isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
+        canCancelQueued: true,
+      );
+      core.messagesToReturn = [voiceMsg];
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await settle();
+      expect(controller.isVoiceNoteReady(voiceMsg), isTrue);
+
+      await controller.play(voiceMsg);
+      expect(controller.playingMessageId, 1);
+
+      await controller.cancelQueuedTransfer(1);
+      await settle();
+
+      expect(controller.messages, isEmpty);
+      expect(controller.isVoiceNoteReady(voiceMsg), isFalse);
+      expect(controller.playingMessageId, isNull);
+      expect(player.stopCalls, greaterThanOrEqualTo(1));
+    });
+
+    test('cancelQueuedTransfer keeps message when Rust refuses because sending started', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 5,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'started.bin',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+      core.cancelQueuedTransferHandler = (_) => null;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.cancelQueuedTransfer(5);
+      await settle();
+
+      expect(controller.messages, hasLength(1));
+      expect(controller.fileError, isNull);
     });
   });
 }

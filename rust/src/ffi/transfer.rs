@@ -480,6 +480,7 @@ impl Core {
             &*transfer_secret,
             created_at,
             kind,
+            sealed.is_some(),
         );
         if let Err(err) = inserted {
             let _ = self.store.mark_message_failed(message_id);
@@ -776,6 +777,28 @@ impl Core {
         self.end_transfer(&file_id)
     }
 
+    /// Cancela um item de arquivo ou nota de voz ainda na fila offline (D30):
+    /// apaga a linha de `file_transfers`, a mensagem `Pending` e a cópia
+    /// cifrada em `outgoing/`, emitindo `Removed` pelo observador do `Store`.
+    /// Só age se nenhuma oferta foi selada/respondida e não há handle ativo
+    /// em memória; devolve `Some(file_id)` se cancelou ou `None` caso
+    /// contrário (inclusive se já foi removido ou já começou a sair).
+    pub fn cancel_queued_transfer(&self, message_id: i64) -> Result<Option<Vec<u8>>, FfiError> {
+        self.ensure_not_locked()?;
+        let cancelled = {
+            let transfers = self.lock_transfers()?;
+            let claims = self.lock_claims()?;
+            self.store.cancel_queued_transfer_if(message_id, |file_id| {
+                !transfers.contains_key(file_id) && !claims.contains(file_id)
+            })?
+        };
+        if let Some(file_id) = cancelled {
+            let _ = std::fs::remove_file(staging::staging_path(&self.outgoing_dir, &file_id));
+            return Ok(Some(file_id.to_vec()));
+        }
+        Ok(None)
+    }
+
     /// Lista os `file_id` de transferências de arquivo ativas persistidas em banco.
     pub fn list_active_file_transfer_ids(&self) -> Result<Vec<Vec<u8>>, FfiError> {
         self.ensure_not_locked()?;
@@ -997,6 +1020,7 @@ impl Core {
             transfer_secret,
             received_at,
             kind,
+            false,
         )?;
 
         if kind == TransferKind::Audio {
@@ -2796,7 +2820,7 @@ pub(super) mod tests {
         let contact = to_device_id(pair.device_id_a.clone()).unwrap();
         pair.core_b
             .store
-            .insert_file_transfer(&bad_id, Direction::Receiving, &contact, &manifest.encode().unwrap(), &*secret, 0, kind)
+            .insert_file_transfer(&bad_id, Direction::Receiving, &contact, &manifest.encode().unwrap(), &*secret, 0, kind, false)
             .unwrap();
         // Uma transferência boa do mesmo contato precisa continuar listada.
         pair.core_b.set_auto_accept_file_size_limit(u64::MAX).unwrap();

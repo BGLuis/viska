@@ -115,8 +115,15 @@ impl Core {
         self.transfers.lock().map_err(|_| FfiError::Internal)
     }
 
-    fn lock_claims(&self) -> Result<MutexGuard<'_, HashSet<[u8; FILE_ID_LEN]>>, FfiError> {
+    pub(super) fn lock_claims(&self) -> Result<MutexGuard<'_, HashSet<[u8; FILE_ID_LEN]>>, FfiError> {
         self.transfer_claims.lock().map_err(|_| FfiError::Internal)
+    }
+
+    /// `true` se `file_id` já tem handle em RAM ou reserva de reconstrução.
+    pub(super) fn has_active_transfer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<bool, FfiError> {
+        let transfers = self.lock_transfers()?;
+        let claims = self.lock_claims()?;
+        Ok(transfers.contains_key(file_id) || claims.contains(file_id))
     }
 
     /// Reserva `file_id` para reconstruir o handle a partir do disco. Conferido

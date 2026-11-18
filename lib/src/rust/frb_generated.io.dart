@@ -6,7 +6,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
-
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
@@ -15,7 +14,6 @@ import 'ffi/pin.dart';
 import 'ffi/types.dart';
 import 'frb_generated.dart';
 import 'lib.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_io.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {

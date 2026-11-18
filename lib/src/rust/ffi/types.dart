@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
@@ -247,6 +246,10 @@ class MessageDto {
   final bool viewOnce;
   final List<String> reactions;
 
+  /// `true` apenas para envios de arquivo ou nota de voz ainda na fila offline
+  /// antes de qualquer oferta selada ou handle ativo (issue #111).
+  final bool canCancelQueued;
+
   const MessageDto({
     required this.id,
     this.globalId,
@@ -260,6 +263,7 @@ class MessageDto {
     this.replyToId,
     required this.viewOnce,
     required this.reactions,
+    required this.canCancelQueued,
   });
 
   @override
@@ -275,7 +279,8 @@ class MessageDto {
       isEphemeral.hashCode ^
       replyToId.hashCode ^
       viewOnce.hashCode ^
-      reactions.hashCode;
+      reactions.hashCode ^
+      canCancelQueued.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -293,7 +298,8 @@ class MessageDto {
           isEphemeral == other.isEphemeral &&
           replyToId == other.replyToId &&
           viewOnce == other.viewOnce &&
-          reactions == other.reactions;
+          reactions == other.reactions &&
+          canCancelQueued == other.canCancelQueued;
 }
 
 /// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.
@@ -336,6 +342,9 @@ enum MessageEventKind {
 
   /// As reações da mensagem mudaram.
   reactionsChanged,
+
+  /// A linha foi apagada da timeline (ex.: cancelamento na fila offline).
+  removed,
 }
 
 /// Distingue uma mensagem de texto de uma nota de voz na timeline única —

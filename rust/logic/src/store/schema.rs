@@ -95,6 +95,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // Oferta já respondida: decide a re-oferta e o prazo de 24 h depois de um
     // bloqueio ou reinício (§7.5, §7.7), que antes viviam só em RAM.
     "ALTER TABLE file_transfers ADD COLUMN answered INTEGER NOT NULL DEFAULT 0;",
+    // Oferta já selada (`start_send` ou `seal_resumed_offer`): impede cancelar
+    // como item só da fila offline depois que o `FILE_METADATA` já saiu (issue #111).
+    "ALTER TABLE file_transfers ADD COLUMN offered INTEGER NOT NULL DEFAULT 1;",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
