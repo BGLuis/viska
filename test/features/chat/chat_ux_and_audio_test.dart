@@ -18,6 +18,8 @@ import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
+import 'package:viska/src/common_widgets/feedback/viska_banner.dart';
+import 'package:viska/src/transport/message_reception_service.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
@@ -133,9 +135,23 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async => [];
 
   List<MessageDto> messagesToReturn = [];
+  var listMessagesCalls = 0;
+  final getMessageCalls = <int>[];
 
   @override
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async {
+    listMessagesCalls++;
+    return messagesToReturn;
+  }
+
+  @override
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId}) async {
+    getMessageCalls.add(messageId);
+    for (final m in messagesToReturn) {
+      if (m.id == messageId) return m;
+    }
+    return null;
+  }
 
   @override
   Future<List<MessageDto>> listMessagesPaginated({
@@ -182,11 +198,37 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+Stream<T> _trackListeners<T>(Stream<T> source, void Function(int delta) onDelta) {
+  return Stream<T>.multi((controller) {
+    onDelta(1);
+    final sub = source.listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+    controller.onCancel = () {
+      onDelta(-1);
+      return sub.cancel();
+    };
+  }, isBroadcast: true);
+}
+
+class _SpyMessageReceptionService extends MessageReceptionService {
+  _SpyMessageReceptionService({required super.core, required super.router});
+
+  var activeEventListeners = 0;
+
+  @override
+  Stream<MessageReceptionEvent> eventsFor(ContactId contactId) =>
+      _trackListeners(super.eventsFor(contactId), (d) => activeEventListeners += d);
+}
+
 class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
+  var activeConnectionListeners = 0;
 
   @override
   Future<void> connect() async {}
@@ -199,9 +241,12 @@ class _FakeP2PTransport implements P2PTransport {
   @override
   Stream<Uint8List> get incomingFile => _incomingFile.stream;
   @override
-  Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
+  Stream<TransportConnectionEvent> get connectionEvents =>
+      _trackListeners(_connectionEvents.stream, (d) => activeConnectionListeners += d);
   @override
   Future<void> close() async {}
+
+  void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
 void main() {
@@ -878,6 +923,76 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('offers_error_banner')), findsNothing);
+    });
+
+    testWidgets('tapping RECONECTAR N times on SESSÃO INTERROMPIDA keeps one reception and one connection listener', (tester) async {
+      final transports = <_FakeP2PTransport>[];
+      final localRouter = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) {
+          final t = _FakeP2PTransport();
+          transports.add(t);
+          return t;
+        },
+      );
+      final spyReception = _SpyMessageReceptionService(core: core, router: localRouter);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: localRouter,
+            receptionService: spyReception,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transports, hasLength(1));
+      expect(transports.last.activeConnectionListeners, 3); // 1 router + 1 receptionService + 1 ChatController
+
+      const reconnectAttempts = 3;
+      for (var i = 0; i < reconnectAttempts; i++) {
+        transports.last.emitConnectionEvent(
+          TransportConnectionEvent(TransportConnectionState.failed, reason: 'queda $i'),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('SESSÃO INTERROMPIDA'), findsOneWidget);
+        final bannerFinder = find.ancestor(
+          of: find.text('SESSÃO INTERROMPIDA'),
+          matching: find.byType(ViskaBanner),
+        );
+        await tester.tap(find.descendant(of: bannerFinder, matching: find.text('RECONECTAR')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('SESSÃO INTERROMPIDA'), findsNothing);
+        expect(core.listMessagesCalls, 1, reason: 'RECONECTAR não deve chamar initialize() de novo');
+        expect(spyReception.activeEventListeners, 1);
+        for (var j = 0; j < transports.length - 1; j++) {
+          expect(transports[j].activeConnectionListeners, 0);
+        }
+        expect(transports.last.activeConnectionListeners, 3);
+      }
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(77, MessageEventKind.added, peer: List.filled(16, 1));
+      await tester.pumpAndSettle();
+      expect(core.getMessageCalls, [77]);
+
+      // Desmontar a tela cancela todas as assinaturas do ChatController.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(spyReception.activeEventListeners, 0);
+      expect(transports.last.activeConnectionListeners, 2); // só router + receptionService
+
+      unawaited(spyReception.dispose());
+      unawaited(localRouter.closeAll());
     });
   });
 }
