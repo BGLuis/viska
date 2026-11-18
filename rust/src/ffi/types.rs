@@ -246,6 +246,9 @@ pub struct MessageDto {
     pub reply_to_id: Option<i64>,
     pub view_once: bool,
     pub reactions: Vec<String>,
+    /// `true` apenas para envios de arquivo ou nota de voz ainda na fila offline
+    /// antes de qualquer oferta selada ou handle ativo (issue #111).
+    pub can_cancel_queued: bool,
 }
 
 /// Pacote já selado que o Dart precisa enviar a um contato depois que a Core

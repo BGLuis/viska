@@ -598,7 +598,17 @@ impl Core {
         // Falha da varredura não pode esconder a timeline.
         let _ = self.enforce_transfer_deadlines();
         let stored = self.store.list_messages_paginated(&device_id, since_id, limit)?;
-        Ok(stored.into_iter().map(message_dto).collect())
+        let transfers = self.lock_transfers()?;
+        let claims = self.lock_claims()?;
+        Ok(stored
+            .into_iter()
+            .map(|msg| {
+                let active = msg
+                    .file_id
+                    .is_some_and(|fid| transfers.contains_key(&fid) || claims.contains(&fid));
+                message_dto(msg, active)
+            })
+            .collect())
     }
 
     /// Uma mensagem pelo `id`, para o Dart atualizar só aquela linha quando um
@@ -606,7 +616,14 @@ impl Core {
     /// esconde, como os comandos de reação).
     pub fn get_message(&self, message_id: i64) -> Result<Option<MessageDto>, FfiError> {
         self.ensure_not_locked()?;
-        Ok(self.store.get_message(message_id)?.map(message_dto))
+        let Some(msg) = self.store.get_message(message_id)? else {
+            return Ok(None);
+        };
+        let active = match msg.file_id {
+            Some(fid) => self.has_active_transfer(&fid)?,
+            None => false,
+        };
+        Ok(Some(message_dto(msg, active)))
     }
 
     /// Passa a receber os eventos de mudança em mensagens e põe a expiração
@@ -652,7 +669,10 @@ impl Core {
 /// que é quem escreve essas linhas) — um valor que não decodifica como hex
 /// vira `audio_file_id: None` em vez de erro, mesma política de "nunca
 /// panica com dado próprio corrompido" do resto da fronteira FFI.
-fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageDto {
+fn message_dto(
+    message: viska_proto::store::messages::StoredMessage,
+    has_active_transfer: bool,
+) -> MessageDto {
     let direction = match message.direction {
         viska_proto::store::messages::Direction::Outgoing => MessageDirectionDto::Outgoing,
         viska_proto::store::messages::Direction::Incoming => MessageDirectionDto::Incoming,
@@ -690,6 +710,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         reply_to_id: message.reply_to_id,
         view_once: message.view_once,
         reactions: message.reactions,
+        can_cancel_queued: message.can_cancel_queued && !has_active_transfer,
     }
 }
 

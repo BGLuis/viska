@@ -619,7 +619,13 @@ impl Store {
                 kind,
                 offered,
             )
-        })
+        })?;
+        // A linha em `messages` já foi anunciada antes desta inserção; quando o
+        // item entra na fila offline, `can_cancel_queued` passa a valer aqui.
+        if direction == transfers::Direction::Sending && !offered {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(())
     }
 
     /// Cancela um item na fila offline, apagando `file_transfers` e a mensagem
@@ -676,7 +682,10 @@ impl Store {
 
     /// Registra que a oferta (`FILE_METADATA`) da transferência foi selada.
     pub fn mark_file_transfer_offered(&self, file_id: &[u8; 16]) -> Result<()> {
-        self.with_conn(|conn| transfers::mark_offered(conn, file_id))
+        if let Some(contact_device_id) = self.with_conn(|conn| transfers::mark_offered(conn, file_id))? {
+            self.announce_by_file_id(file_id, &contact_device_id);
+        }
+        Ok(())
     }
 
     /// Quantos envios ao contato ainda esperam resposta (a fila offline, D30).

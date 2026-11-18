@@ -234,14 +234,20 @@ pub fn mark_answered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<
     Ok(())
 }
 
-/// Registra que a oferta (`FILE_METADATA`) já foi selada para envio. Idempotente.
-pub fn mark_offered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<()> {
-    conn.execute(
-        "UPDATE file_transfers SET offered = 1 WHERE file_id = ?1",
-        [file_id.as_slice()],
-    )
-    .map_err(|_| Error::Store)?;
-    Ok(())
+/// Registra que a oferta (`FILE_METADATA`) já foi selada para envio. Idempotente;
+/// devolve o `contact_device_id` só quando mudou de `0` para `1`.
+pub fn mark_offered(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<Option<[u8; 16]>> {
+    let contact: Option<Vec<u8>> = conn
+        .query_row(
+            "UPDATE file_transfers SET offered = 1 WHERE file_id = ?1 AND offered = 0 RETURNING contact_device_id",
+            [file_id.as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+    contact
+        .map(|raw| <[u8; 16]>::try_from(raw.as_slice()).map_err(|_| Error::Store))
+        .transpose()
 }
 
 /// Todos os `file_id` persistidos — usado por

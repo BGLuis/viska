@@ -1376,6 +1376,8 @@ mod tests {
             .queue_send_file(pair.device_id_b.clone(), path, false)
             .unwrap();
         assert!(outgoing_copy_exists(&pair.core_a, &queued.file_id));
+        assert!(pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
+        assert!(pair.core_a.list_messages(pair.device_id_b.clone()).unwrap()[0].can_cancel_queued);
 
         let cancelled = pair.core_a.cancel_queued_transfer(queued.message_id).unwrap();
         assert_eq!(cancelled, Some(queued.file_id.clone()));
@@ -1443,6 +1445,7 @@ mod tests {
             .core_a
             .start_send_file(pair.device_id_b.clone(), path.clone(), false)
             .unwrap();
+        assert!(!pair.core_a.get_message(started.message_id).unwrap().unwrap().can_cancel_queued);
         assert_eq!(pair.core_a.cancel_queued_transfer(started.message_id).unwrap(), None);
         assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
 
@@ -1453,6 +1456,7 @@ mod tests {
             Err(FfiError::Locked)
         );
         pair.core_a.unlock().unwrap();
+        assert!(!pair.core_a.get_message(started.message_id).unwrap().unwrap().can_cancel_queued);
         assert_eq!(pair.core_a.cancel_queued_transfer(started.message_id).unwrap(), None);
 
         // 2. Item enfileirado retomado (`resume_transfers` instalou handle em RAM) não é cancelado.
@@ -1460,9 +1464,11 @@ mod tests {
             .core_a
             .queue_send_file(pair.device_id_b.clone(), path, false)
             .unwrap();
+        assert!(pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
         reconnect(&pair, true);
         let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
         assert!(resumed.iter().any(|r| r.file_id == queued.file_id));
+        assert!(!pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
         assert_eq!(pair.core_a.cancel_queued_transfer(queued.message_id).unwrap(), None);
         assert!(pair.core_a.store.find_file_transfer(&fid(&queued.file_id)).unwrap().is_some());
 

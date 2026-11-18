@@ -90,6 +90,10 @@ pub struct StoredMessage {
     pub reply_to_id: Option<i64>,
     pub view_once: bool,
     pub reactions: Vec<String>,
+    pub file_id: Option<[u8; 16]>,
+    /// Verdadeiro apenas quando a mensagem é um envio pendente na fila offline
+    /// cuja oferta nunca foi selada nem respondida (issue #111).
+    pub can_cancel_queued: bool,
 }
 
 fn reject_non_storable(packet_type: PacketType) -> Result<()> {
@@ -810,7 +814,7 @@ pub fn reopen_failed_by_file_id(
     Ok(changed > 0)
 }
 
-/// Remove atomicidade de um item na fila offline (D30): apaga a linha de
+/// Remove atomicamente um item da fila offline (D30): apaga a linha de
 /// `file_transfers`, eventuais chaves efêmeras/reações ligadas à mensagem e a
 /// própria linha `Pending` em `messages`, numa única transação, **só se** a
 /// mensagem ainda for um envio pendente de arquivo/nota de voz cuja oferta nunca
@@ -1151,7 +1155,13 @@ fn load_messages(
                     m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
                     m.body_cipher_version,
                     ek.key,
-                    rx.reactions
+                    rx.reactions,
+                    m.contact_device_id,
+                    m.file_id,
+                    ft.direction,
+                    ft.contact_device_id,
+                    ft.answered,
+                    ft.offered
              FROM messages m
              LEFT JOIN ephemeral_message_keys ek ON (m.is_ephemeral = 1 AND ek.message_id = m.id)
              LEFT JOIN (
@@ -1159,6 +1169,7 @@ fn load_messages(
                  FROM message_reactions
                  GROUP BY message_id
              ) rx ON rx.message_id = m.id
+             LEFT JOIN file_transfers ft ON ft.file_id = m.file_id
              WHERE (?1 IS NULL OR m.contact_device_id = ?1)
                AND (?4 IS NULL OR m.id = ?4)
                AND (?2 IS NULL OR m.id > ?2)
@@ -1195,6 +1206,12 @@ fn load_messages(
         let body_cipher_version: i64 = row.get(10).map_err(|_| Error::Store)?;
         let ek_key: Option<Vec<u8>> = row.get(11).map_err(|_| Error::Store)?;
         let reactions_concat: Option<String> = row.get(12).map_err(|_| Error::Store)?;
+        let msg_contact_raw: Vec<u8> = row.get(13).map_err(|_| Error::Store)?;
+        let file_id_raw: Option<Vec<u8>> = row.get(14).map_err(|_| Error::Store)?;
+        let ft_direction: Option<i64> = row.get(15).map_err(|_| Error::Store)?;
+        let ft_contact_raw: Option<Vec<u8>> = row.get(16).map_err(|_| Error::Store)?;
+        let ft_answered: Option<i64> = row.get(17).map_err(|_| Error::Store)?;
+        let ft_offered: Option<i64> = row.get(18).map_err(|_| Error::Store)?;
 
         let direction = match direction_raw {
             0 => Direction::Outgoing,
@@ -1212,6 +1229,17 @@ fn load_messages(
             Some(s) if !s.is_empty() => s.split('\u{001f}').map(|e| e.to_string()).collect(),
             _ => Vec::new(),
         };
+        let file_id = file_id_raw
+            .as_deref()
+            .and_then(|b| <[u8; 16]>::try_from(b).ok());
+        let can_cancel_queued = direction == Direction::Outgoing
+            && delivery_state == DeliveryState::Pending
+            && (packet_type == PacketType::FileMetadata || packet_type == PacketType::AudioChunk)
+            && file_id.is_some()
+            && ft_direction == Some(crate::store::transfers::Direction::Sending as i64)
+            && ft_contact_raw.as_deref() == Some(msg_contact_raw.as_slice())
+            && ft_answered == Some(0)
+            && ft_offered == Some(0);
 
         messages.push(StoredMessage {
             id,
@@ -1225,6 +1253,8 @@ fn load_messages(
             reply_to_id,
             view_once: view_once != 0,
             reactions,
+            file_id,
+            can_cancel_queued,
         });
     }
     Ok(messages)
@@ -1342,6 +1372,8 @@ pub fn list_pending(
             reply_to_id,
             view_once: view_once != 0,
             reactions: Vec::new(),
+            file_id: None,
+            can_cancel_queued: false,
         });
     }
     Ok(messages)
@@ -2407,6 +2439,8 @@ mod tests {
         )
         .unwrap();
 
+        assert!(get_by_id(&conn, msg_id).unwrap().unwrap().can_cancel_queued);
+
         let cancelled = cancel_queued_transfer_if(&conn, msg_id, |_| true).unwrap();
         assert_eq!(cancelled, Some((file_id, contact)));
         assert!(get_by_id(&conn, msg_id).unwrap().is_none());
@@ -2443,6 +2477,7 @@ mod tests {
             true,
         )
         .unwrap();
+        assert!(!get_by_id(&conn, offered_msg).unwrap().unwrap().can_cancel_queued);
         assert_eq!(cancel_queued_transfer_if(&conn, offered_msg, |_| true).unwrap(), None);
         assert!(get_by_id(&conn, offered_msg).unwrap().is_some());
 
