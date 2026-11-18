@@ -1160,6 +1160,39 @@ class _MessageBubble extends StatelessWidget {
                       label: _deliveryLabel(message, controller.isEstablished),
                       onResend: () => controller.resendUnknown(message.id),
                     )
+                  else if (outgoing &&
+                      message.kind != MessageKindDto.text &&
+                      message.deliveryState == DeliveryStateDto.pending &&
+                      !controller.isEstablished)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _deliveryLabel(message, controller.isEstablished),
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            color: DarkTechTheme.textMuted,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        InkWell(
+                          key: Key('cancel_queued_transfer_${message.id}'),
+                          onTap: controller.isCancellingTransfer(message.id)
+                              ? null
+                              : () => controller.cancelQueuedTransfer(message.id),
+                          child: Text(
+                            'Cancelar',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: controller.isCancellingTransfer(message.id)
+                                  ? DarkTechTheme.textMuted
+                                  : DarkTechTheme.alert,
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
                   else if (outgoing)
                     Text(
                       _deliveryLabel(message, controller.isEstablished),
@@ -1190,6 +1223,19 @@ class _MessageBubble extends StatelessWidget {
   Widget _buildVoiceNoteContent(BuildContext context) {
     final ready = controller.isVoiceNoteReady(message);
     if (!ready) {
+      if (message.direction == MessageDirectionDto.outgoing) {
+        return const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.mic_rounded, color: DarkTechTheme.primary, size: 20),
+            SizedBox(width: 8),
+            Text(
+              'Nota de voz',
+              style: TextStyle(fontSize: 13, color: DarkTechTheme.textPrimary),
+            ),
+          ],
+        );
+      }
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
