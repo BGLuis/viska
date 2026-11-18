@@ -28,7 +28,7 @@ Em conformidade com `GEMINI.md` / `CLAUDE.md`:
 ## 🧪 Validação Local Executada
 
 - [ ] `cd rust && cargo test --workspace` (passou sem erros)
-- [ ] `cd rust && cargo clippy --all-targets -- -D warnings` (zero warnings)
+- [ ] `cd rust && cargo clippy --workspace --all-targets -- -D warnings` (zero warnings)
 - [ ] `cd rust && cargo build --all-features && cargo build --no-default-features` (compilou com sucesso)
 - [ ] `flutter analyze` (zero erros de análise)
 - [ ] `flutter test` (todos os testes passaram)

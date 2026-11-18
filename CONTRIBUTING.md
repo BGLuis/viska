@@ -62,7 +62,7 @@ Antes de abrir um Pull Request, execute os seguintes comandos localmente e garan
 # Validação do núcleo Rust (executar a partir de rust/)
 cd rust
 cargo test --workspace
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo build --all-features
 cargo build --no-default-features
 cd ..
