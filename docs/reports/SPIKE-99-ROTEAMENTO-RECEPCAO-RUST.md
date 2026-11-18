@@ -5,7 +5,7 @@
 | **Status** | 🟡 Parcial — `Core::receive_incoming` e `Core::connect_signal` existem (#78), mas recibos, drenagem pós-pacote, timer de renovação e gatilhos de conexão continuam no Dart |
 | **Cobertura** | ~45 % (roteamento por tamanho, `REOPEN` e candidatas no Rust; orquestração pós-pacote e gatilhos no Dart) |
 | **Esforço** | 2,5–3,5 dias-dev para o escopo completo; 1,5–2 d para o mínimo viável |
-| **Depende de** | PR #106 (`feat/78`, já mesclado em `develop` no commit `6726106`) |
+| **Depende de** | PR #106 (`feat/78`, commit `8dca56e`, ancestral do HEAD `6726106` de `develop`) |
 | **Relacionado** | Issue #99 · Issue #96 (reconexão sem drenagem) · D27 · D29 |
 
 ---
@@ -119,9 +119,10 @@ mensagens pendentes), (b) `resume_transfers: bool`, (c) `typing: bool` quando ap
   persistir `PacketType::MsgText` não-reação (`:409-424`), o Rust sela `MSG_RECEIPT` na própria
   sessão (usando `global_id` quando presente, ou `message_id.to_string()`, corrigindo a omissão do
   `global_id` em `message_reception_service.dart:422`) e o inclui em `outbound`. Se o pacote era o
-  primeiro do iniciador, `session.receive` (`renewal.rs:356-371`) acabou de criar a cadeia de envio
-  do respondedor e selar `CONTROL_SUITES` — ambos saem juntos na mesma chamada FFI, e
-  `Core::seal_outgoing_receipt` (`rust/src/ffi/session.rs:458-484`) deixa a API pública do FFI.
+  primeiro do iniciador, `Session::accept` (`renewal.rs:356-371`, via `Session::receive` em
+  `renewal.rs:169-195`) acabou de criar a cadeia de envio do respondedor e selar `CONTROL_SUITES` —
+  ambos saem juntos na mesma chamada FFI, e `Core::seal_outgoing_receipt`
+  (`rust/src/ffi/session.rs:458-484`) deixa a API pública do FFI.
 - **Drenagem orientada por transição interna:** `rust/logic/src/session/mod.rs` expõe
   `can_send_now(&self) -> bool` (sessão `Established`, não `is_renewing()`, não `needs_rehandshake`,
   e com cadeia de envio inicializada). `Core::receive_incoming` compara `can_send_now` antes e
@@ -148,7 +149,10 @@ mensagens pendentes), (b) `resume_transfers: bool`, (c) `typing: bool` quando ap
   `message_reception_service.dart:268`), `SessionStateEventDto` (ou `SessionActionsDto`) informa
   `renewal_retry_after_ms: Option<u64>`. O Dart agenda um único `Timer` burro que chama
   `Core::drain_pending(peer)` quando vence, e o Rust devolve `outbound` + `resume_transfers` sem o
-  Dart manter `_sessionStates` nem inferir `holdEnded`/`renewed`.
+  Dart computar `wasEstablished`/`holdEnded`/`renewed` nem disparar drenagem em
+  `_handleSessionEvent`. `_sessionStates` e `sessionStateFor` (`message_reception_service.dart:181,223`)
+  permanecem apenas como cache passivo do último evento para `ChatController.initialize()`
+  (`chat_controller.dart:386`) e seus testes (`message_reception_service_test.dart:484,1072,1150`).
 
 ### 2.4 O que não fazer
 
@@ -156,7 +160,7 @@ mensagens pendentes), (b) `resume_transfers: bool`, (c) `typing: bool` quando ap
   chamar `_router.sendToContact` de dentro do Rust: a inversão de controle via retorno de
   `OutboundPacketDto` dá o mesmo encapsulamento da máquina de estados sem quebrar a arquitetura
   síncrona documentada em `rust/src/ffi/session.rs:1-8`.
-- Não remover `MessageReceptionService._flushPending`'s rollback (`markMessageSent` /
+- Não remover o rollback de `MessageReceptionService._flushPending` (`markMessageSent` /
   `requeueMessage`), pois falhas de `RTCDataChannel.send` ou socket TCP continuam ocorrendo no Dart
   após a cifragem.
 
@@ -174,10 +178,12 @@ mensagens pendentes), (b) `resume_transfers: bool`, (c) `typing: bool` quando ap
    `flutter_rust_bridge_codegen generate` para `rust/src/frb_generated.rs` e
    `lib/src/rust/frb_generated*.dart`; migrar os 4 transportes para `status.isInitiator`.
 3. **Simplificação do `MessageReceptionService` e `ChatController` (0,5–1 d)** — remover de
-   `message_reception_service.dart` o `_sessionStates`, o cálculo de `wasEstablished`/`renewed`/
-   `holdEnded`, `_sendReceipt`, a chamada incondicional a `_flushPending` em `_handleIncomingRaw`, e a
-   constante duplicada `defaultRenewalHold = 31 s`; manter apenas um despachante genérico de
-   `SessionActionsDto` (`_dispatchActions`) com rollback via `markMessageSent`/`requeueMessage`.
+   `message_reception_service.dart` o cálculo de `wasEstablished`/`renewed`/`holdEnded` em
+   `_handleSessionEvent` (mantendo `_sessionStates`/`sessionStateFor` apenas como cache passivo
+   para `ChatController.initialize()`), `_sendReceipt`, a chamada incondicional a `_flushPending` em
+   `_handleIncomingRaw`, e a constante duplicada `defaultRenewalHold = 31 s`; manter apenas um
+   despachante genérico de `SessionActionsDto` (`_dispatchActions`) com rollback via
+   `markMessageSent`/`requeueMessage`.
 4. **Atualização de testes e dublês em Rust e Dart (0,5–1 d)** — atualizar `rust/src/test_support.rs`,
    os testes de `rust/src/ffi/session.rs` e `core.rs`, e os dublês `implements Core` afetados em
    `test/`.
@@ -201,7 +207,7 @@ duas vezes e permite validar toda a máquina de estados em `cargo test` antes de
 | Falha no 1º pacote de `outbound` após `flush_pending` marcar lote inteiro como `Sending` | Preservar `message_id: Option<i64>` em `OutboundPacketDto`; no Dart, ao falhar envio do índice `i`, chamar `requeueMessage` apenas para itens onde `messageId != null` em `i..` (`message_reception_service.dart:726-736`) |
 | `handle_incoming_plaintext` selar recibo antes da cadeia de envio existir ou durante `is_renewing()` | Chamar a selagem de recibo só depois de `session.receive` (onde `accept` já ocorreu) e ignorar silenciosamente `Err` como faz `seal_outgoing_receipt` hoje (`rust/src/ffi/session.rs:478`), pois recibos não têm fila (`docs/protocol.md:880-882`) |
 | Relógio do sistema voltar para trás ou app suspender durante os `30 s` de `CANDIDATE_TIMEOUT_SECS` | Manter `within` (`rust/logic/src/session/renewal.rs:41-43`) e chamar `drain_pending` no `handleAppResumed` se houver timer pendente |
-| Quebra silenciosa nos dublês `implements Core` que hoje emulam roteamento no Dart | Remover os ganchos falsos `feedHandshake`/`decryptIncoming` de `test/transport/message_reception_service_test.dart:117-168` e `test/features/chat/chat_controller_test.dart:154-199` |
+| Quebra silenciosa nos dublês `implements Core` que hoje emulam roteamento no Dart | Remover os ganchos falsos `feedHandshake`/`decryptIncoming` de `test/transport/message_reception_service_test.dart:117-185` e `test/features/chat/chat_controller_test.dart:154-199,282-289` |
 
 ---
 
@@ -228,8 +234,9 @@ duas vezes e permite validar toda a máquina de estados em `cargo test` antes de
       `messageId != null` do 2º em diante (sem requeue em `reply`/`MSG_RECEIPT`) — guarda armadilha 3.
 - [ ] `test/transport/message_reception_service_test.dart`: timer de renovação usa o prazo
       fornecido pelo Rust e chama `drainPending` ao expirar — guarda decisão 2.3.
-- [ ] `test/features/chat/chat_controller_test.dart` e `test/transport/*_transport_test.dart`:
-      todos os 24 dublês `implements Core` compilam e passam após regeneração FRB `2.13.0` [F2].
+- [ ] `test/features/chat/chat_controller_test.dart`, `test/transport/*_transport_test.dart` e demais
+      arquivos em `test/transport/`, `test/discovery/` e `test/features/` (`24` dublês
+      `implements Core`) compilam e passam após regeneração FRB `2.13.0` [F2].
 
 ---
 
@@ -260,11 +267,11 @@ duas vezes e permite validar toda a máquina de estados em `cargo test` antes de
 | `rust/src/ffi/session.rs` | Selar recibos e drenar condicionalmente em `receive_incoming`; adicionar `on_channel_connected`/`drain_pending`; internalizar `seal_outgoing_receipt`; atualizar testes §11.4 |
 | `rust/src/test_support.rs` e `rust/src/ffi/core.rs` | Adaptar helpers `feed_handshake`/`decrypt_incoming` à nova assinatura de `receive_incoming` |
 | `rust/src/frb_generated.rs` e `lib/src/rust/**` | Regenerados via `flutter_rust_bridge_codegen generate` |
-| `lib/src/transport/message_reception_service.dart` | Substituir `_handleIncomingRaw`, `_sendReceipt`, `_publishConnectSignal`, `_handleSessionEvent` e `_renewalTimers` por despacho único de `SessionActionsDto` |
+| `lib/src/transport/message_reception_service.dart` | Substituir `_handleIncomingRaw`, `_sendReceipt`, `_publishConnectSignal`, a detecção de bordas em `_handleSessionEvent` (mantendo `_sessionStates`/`sessionStateFor` como cache passivo) e `_renewalTimers` por despacho único de `SessionActionsDto` |
 | `lib/src/features/chat/chat_controller.dart` | Simplificar `reconnectSession` para usar retorno de `resetSession`; revisar `sendText`/`_trySendSealed` |
 | `lib/src/transport/{webrtc_p2p,lan/lan,multipeer/multipeer,wifi_aware/wifi_aware}_transport.dart` | Ler `status.isInitiator` em vez de `status.outgoingHandshake != null` |
 | `test/transport/message_reception_service_test.dart` e `test/features/chat/chat_controller_test.dart` | Remover emulação de `feedHandshake`/`decryptIncoming` e adaptar testes de drenagem/recibo/timer |
-| `test/transport/{webrtc_p2p,lan/lan,multipeer/multipeer,wifi_aware/wifi_aware}_transport_test.dart`, `test/features/chat/chat_ux_and_audio_test.dart`, `test/features/smoke/main_app_smoke_test.dart`, `test/support/fake_session_events.dart` | Atualizar construtores de `SessionStatusDto` e assinaturas de `Core` |
+| Demais arquivos em `test/{transport,discovery,features}/` com dublês `implements Core` (24 classes no total) e `test/support/fake_session_events.dart` | Atualizar construtores de `SessionStatusDto` (8 arquivos) e assinaturas alteradas de `Core` |
 
 ---
 
