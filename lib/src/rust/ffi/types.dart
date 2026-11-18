@@ -461,7 +461,7 @@ class SealedMessageDto {
 
   /// `None` quando a sessão ainda não está `Established`: a mensagem já
   /// está persistida como `pending`, mas não há nada para enviar ainda —
-  /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_pending` assim
+  /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_next_pending` assim
   /// que a sessão ficar pronta.
   final Uint8List? bytes;
 

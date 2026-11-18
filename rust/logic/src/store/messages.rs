@@ -397,7 +397,7 @@ fn insert_with_options_internal(
 ) -> Result<i64> {
     reject_non_storable(packet_type)?;
 
-    // Reenvio de `flush_pending` sai recifrado com novo passo do ratchet, então só o
+    // Reenvio de `flush_next_pending` sai recifrado com novo passo do ratchet, então só o
     // `global_id` do corpo identifica a repetição. O acesso ao banco é serializado por
     // `with_conn`, logo consultar e inserir não corre contra outra inserção.
     if direction == Direction::Incoming {

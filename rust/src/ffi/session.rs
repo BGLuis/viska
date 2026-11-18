@@ -75,7 +75,7 @@ impl Core {
     /// provar a chave.
     ///
     /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-    /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+    /// antiga e `flush_next_pending` os cifra de novo). Envios e recebimentos de
     /// arquivo não são tocados: não dependem da sessão (D15), e
     /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
     /// nova (§7.5).
@@ -230,7 +230,7 @@ impl Core {
     /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
     /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
     /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
-    /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+    /// está persistida, e `flush_next_pending` a entrega assim que isso mudar.
     /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
     /// enviá-los deve chamar `requeue_message`.
     pub fn seal_outgoing_text(
@@ -980,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn message_sent_before_session_ready_stays_pending_and_flush_pending_delivers_it() {
+    fn message_sent_before_session_ready_stays_pending_and_flush_next_pending_delivers_it() {
         let p = paired_pair();
 
         // `seal_outgoing_text` antes mesmo de `ensure_session`: nenhuma
@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_pending_without_sending_chain_returns_empty_and_keeps_row_pending() {
+    fn flush_next_pending_without_sending_chain_returns_empty_and_keeps_row_pending() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -1056,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_pending_does_not_send_a_file_row_as_text() {
+    fn flush_next_pending_does_not_send_a_file_row_as_text() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -1078,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_pending_marks_rows_sending_so_a_second_flush_is_empty() {
+    fn flush_next_pending_marks_rows_sending_so_a_second_flush_is_empty() {
         let p = paired_pair();
         let sealed = p
             .core_a
@@ -1242,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_text_is_not_redrained_by_flush_pending() {
+    fn unknown_text_is_not_redrained_by_flush_next_pending() {
         let p = paired_pair();
         sending_text(&p);
 

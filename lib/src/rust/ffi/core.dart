@@ -353,7 +353,7 @@ abstract class Core implements RustOpaqueInterface {
   /// provar a chave.
   ///
   /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-  /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+  /// antiga e `flush_next_pending` os cifra de novo). Envios e recebimentos de
   /// arquivo não são tocados: não dependem da sessão (D15), e
   /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
   /// nova (§7.5).
@@ -410,7 +410,7 @@ abstract class Core implements RustOpaqueInterface {
   /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
   /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
   /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
-  /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+  /// está persistida, e `flush_next_pending` a entrega assim que isso mudar.
   /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
   /// enviá-los deve chamar `requeue_message`.
   Future<SealedMessageDto> sealOutgoingText({
