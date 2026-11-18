@@ -289,10 +289,9 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
-    final result = pendingToFlush;
-    pendingToFlush = [];
-    return result;
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async {
+    if (pendingToFlush.isEmpty) return null;
+    return pendingToFlush.removeAt(0);
   }
 
   @override
