@@ -21,12 +21,18 @@ class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
   bool Function(Uint8List)? sendError;
+  Object? connectError;
+  Completer<void>? connectGate;
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
 
   @override
-  Future<void> connect() async => connectCalls++;
+  Future<void> connect() async {
+    connectCalls++;
+    if (connectError != null) throw connectError!;
+    await connectGate?.future;
+  }
 
   @override
   Future<void> send(Uint8List envelope) async {
@@ -186,10 +192,12 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessage
 
   /// Como o Rust com uma candidata recente: a fila não sai.
   var holdQueue = false;
+  var flushPendingCalls = 0;
 
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
-    if (holdQueue) return [];
+    flushPendingCalls++;
+    if (sessionState != SessionStateKind.established || holdQueue) return [];
     final list = List<SealedMessageDto>.from(pendingToFlush);
     pendingToFlush.clear();
     return list;
@@ -1568,6 +1576,170 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(core.decryptIncomingCalls, [Uint8List.fromList([2, 2, 2])]);
+    });
+
+    group('reconnect flush with established session (Issue #96)', () {
+      test('reconnecting transport with established session flushes pending messages', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        // Transporte cai e volta sem mudança no estado da sessão.
+        await router.closeContact(contact);
+        transport = _FakeP2PTransport();
+        core.pendingToFlush = [
+          SealedMessageDto(messageId: 12, bytes: Uint8List.fromList([12, 12])),
+        ];
+
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [12, 12])), hasLength(1));
+        expect(core.markSentCalls, [12]);
+      });
+
+      test('emitting connected after binding flushes pending messages', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        core.pendingToFlush = [
+          SealedMessageDto(messageId: 13, bytes: Uint8List.fromList([13, 13])),
+        ];
+        transport.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.connected),
+        );
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [13, 13])), hasLength(1));
+        expect(core.markSentCalls, [13]);
+      });
+
+      test('pending messages wait for connect() and are not flushed when connect fails', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        // 1. Falha no connect(): não toca na fila nem marca nada como Sending.
+        await router.closeContact(contact);
+        transport = _FakeP2PTransport()..connectError = StateError('sem rede');
+        core.pendingToFlush = [
+          SealedMessageDto(messageId: 14, bytes: Uint8List.fromList([14, 14])),
+        ];
+        final callsBefore = core.flushPendingCalls;
+
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(core.flushPendingCalls, callsBefore);
+        expect(core.pendingToFlush, hasLength(1));
+        expect(core.markSentCalls, isEmpty);
+
+        // 2. Próxima tentativa com connect() em andamento: espera concluir antes de drenar.
+        await router.closeContact(contact);
+        final gate = Completer<void>();
+        transport = _FakeP2PTransport()..connectGate = gate;
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(core.flushPendingCalls, callsBefore);
+        expect(transport.sendCalls, isEmpty);
+
+        gate.complete();
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [14, 14])), hasLength(1));
+        expect(core.markSentCalls, [14]);
+      });
+
+      test('paused service does not flush pending when transport connects', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+        service.pause();
+        core.pendingToFlush = [
+          SealedMessageDto(messageId: 15, bytes: Uint8List.fromList([15])),
+        ];
+        final callsBefore = core.flushPendingCalls;
+
+        transport.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.connected),
+        );
+        await pumpEventQueue();
+
+        expect(core.flushPendingCalls, callsBefore);
+        expect(transport.sendCalls, isEmpty);
+      });
+
+      test('send failure before DataChannel opens requeues and connected retries once', () async {
+        core.sessionState = SessionStateKind.established;
+        await service.start();
+        await pumpEventQueue();
+
+        await router.closeContact(contact);
+        var channelReady = false;
+        transport = _FakeP2PTransport()..sendError = (_) => !channelReady;
+        final queued = SealedMessageDto(messageId: 16, bytes: Uint8List.fromList([16, 16]));
+        core.pendingToFlush = [queued];
+
+        service.ensureListening(contact);
+        await pumpEventQueue();
+
+        expect(core.requeueCalls, [16]);
+        expect(core.markSentCalls, isEmpty);
+
+        // Simula o Rust devolvendo a mensagem à fila e o DataChannel abrindo depois.
+        core.pendingToFlush = [queued];
+        channelReady = true;
+        transport.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.connected),
+        );
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [16, 16])), hasLength(1));
+        expect(core.markSentCalls, [16]);
+      });
+
+      test('handleAppResumed reconnects and flushes after a synchronous connect() failure', () async {
+        core.sessionState = SessionStateKind.established;
+        var nextFails = false;
+        router = P2PTransportRouter(
+          core: core,
+          transportFactory: (_, _) {
+            transport = _FakeP2PTransport()
+              ..connectError = nextFails ? StateError('sem rede') : null;
+            return transport;
+          },
+        );
+        await service.dispose();
+        service = MessageReceptionService(
+          core: core,
+          router: router,
+          tempDirProvider: () async => tempDir.path,
+        );
+        await service.start();
+        await pumpEventQueue();
+
+        // Queda inicial seguida de tentativa que falha já em connect().
+        nextFails = true;
+        transport.emitConnectionEvent(
+          const TransportConnectionEvent(TransportConnectionState.failed),
+        );
+        await pumpEventQueue();
+        service.handleAppResumed();
+        await pumpEventQueue();
+
+        // Rede volta e app retoma primeiro plano sem nenhum pacote do par.
+        nextFails = false;
+        core.pendingToFlush = [
+          SealedMessageDto(messageId: 17, bytes: Uint8List.fromList([17, 17])),
+        ];
+        service.handleAppResumed();
+        await pumpEventQueue();
+
+        expect(transport.sendCalls.where((b) => listEquals(b, [17, 17])), hasLength(1));
+        expect(core.markSentCalls, [17]);
+      });
     });
   });
 }

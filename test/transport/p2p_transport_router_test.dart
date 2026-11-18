@@ -200,6 +200,37 @@ void main() {
       expect(created[bob]!.closeCalls, 1);
     });
 
+    test('pendingConnectFor returns the active connect future or null when absent', () async {
+      final contact = ContactId([9, 9, 9]);
+      expect(router.pendingConnectFor(contact), isNull);
+
+      final gate = Completer<void>();
+      router = P2PTransportRouter(
+        core: _UnusedCore(),
+        transportFactory: (_, id) {
+          final transport = _FakeP2PTransport()..connectGate = gate;
+          created[id] = transport;
+          return transport;
+        },
+      );
+
+      router.incomingFor(contact);
+      final pending = router.pendingConnectFor(contact);
+      expect(pending, isNotNull);
+
+      var completed = false;
+      unawaited(pending!.then((_) => completed = true));
+      await Future<void>.delayed(Duration.zero);
+      expect(completed, isFalse);
+
+      gate.complete();
+      await pending;
+      expect(completed, isTrue);
+
+      await router.closeContact(contact);
+      expect(router.pendingConnectFor(contact), isNull);
+    });
+
     group('awaitConnected', () {
       final contact = ContactId([7]);
 

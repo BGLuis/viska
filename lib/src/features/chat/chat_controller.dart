@@ -886,8 +886,8 @@ class ChatController extends ChangeNotifier {
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
   /// volta à fila (`pending`) via `requeueMessage`, porque o Rust a deixou em
-  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia no próximo
-  /// pacote recebido ou ao reiniciar.
+  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia quando o
+  /// transporte reconecta, no próximo pacote recebido ou ao reiniciar.
   Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);

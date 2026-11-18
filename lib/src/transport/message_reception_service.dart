@@ -331,14 +331,33 @@ class MessageReceptionService {
     unawaited(_incomingFileSubs.remove(contactId)?.cancel());
     unawaited(_connectionSubs.remove(contactId)?.cancel());
 
+    void markLost() {
+      if (_disposed || !identical(_boundTransports[contactId], transport)) return;
+      _lostTransports.add(contactId);
+      // Nenhum aviso do Rust acompanha a queda do canal, e o laço de envio
+      // precisa vê-la para sair (ou seguir o canal novo).
+      _wakePumps();
+      _scheduleRetry(contactId, transport);
+    }
+
+    final connectFuture = _router.pendingConnectFor(contactId);
+    if (connectFuture != null) {
+      connectFuture.then((_) {}, onError: (Object _) => markLost());
+    }
+
     _connectionSubs[contactId] = transport.connectionEvents.listen((event) {
-      if (event.state == TransportConnectionState.failed ||
+      if (event.state == TransportConnectionState.connected) {
+        // Transportes assíncronos (ex.: DataChannel WebRTC no respondedor) só
+        // ficam prontos para enviar quando este evento chega, depois de
+        // `ensureListening` já ter sido chamado.
+        unawaited(_flushPending(
+          contactId,
+          expectedTransport: transport,
+          connectFuture: connectFuture,
+        ));
+      } else if (event.state == TransportConnectionState.failed ||
           event.state == TransportConnectionState.closed) {
-        _lostTransports.add(contactId);
-        // Nenhum aviso do Rust acompanha a queda do canal, e o laço de envio
-        // precisa vê-la para sair (ou seguir o canal novo).
-        _wakePumps();
-        _scheduleRetry(contactId, transport);
+        markLost();
       }
     });
 
@@ -363,8 +382,14 @@ class MessageReceptionService {
     // (docs/protocol.md §11.4).
     unawaited(_publishConnectSignal(contactId));
     // Um canal novo sem troca de sessão (queda de transporte) não gera evento
-    // de sessão: sem isto, o envio que parou com o canal velho só voltaria no
-    // próximo bloqueio ou reabertura. Sem sessão pronta, o Rust devolve vazio.
+    // de sessão: sem isto, textos na fila e envios que pararam com o canal
+    // velho só voltariam no próximo pacote recebido ou reabertura. Sem sessão
+    // pronta ou cadeia de envio, o Rust devolve vazio.
+    unawaited(_flushPending(
+      contactId,
+      expectedTransport: transport,
+      connectFuture: connectFuture,
+    ));
     unawaited(resumeTransfers(contactId));
   }
 
@@ -712,8 +737,49 @@ class MessageReceptionService {
     await _flushPending(contactId);
   }
 
-  Future<void> _flushPending(ContactId contactId) async {
+  /// Drenagens em curso por contato: a abertura do canal, o evento `connected`
+  /// e os avisos de sessão podem pedir a mesma drenagem juntos, e elas rodam
+  /// uma depois da outra.
+  final Map<ContactId, Future<void>> _flushQueue = {};
+
+  Future<void> _flushPending(
+    ContactId contactId, {
+    P2PTransport? expectedTransport,
+    Future<void>? connectFuture,
+  }) {
+    final previous = _flushQueue[contactId] ?? Future<void>.value();
+    final next = previous.then(
+      (_) => _flushOnce(
+        contactId,
+        expectedTransport: expectedTransport,
+        connectFuture: connectFuture,
+      ),
+    );
+    _flushQueue[contactId] = next;
+    unawaited(next.whenComplete(() {
+      if (identical(_flushQueue[contactId], next)) _flushQueue.remove(contactId);
+    }));
+    return next;
+  }
+
+  Future<void> _flushOnce(
+    ContactId contactId, {
+    P2PTransport? expectedTransport,
+    Future<void>? connectFuture,
+  }) async {
+    if (_isPaused || _disposed) return;
     try {
+      // Espera o canal atual terminar de conectar antes de marcar a fila como
+      // `Sending` e gastar passos do ratchet: se a conexão falhar, os textos
+      // ficam `Pending` sem risco de virar `Unknown` no meio do caminho.
+      final connecting = connectFuture ?? _router.pendingConnectFor(contactId);
+      if (connecting != null) await connecting;
+      if (_isPaused || _disposed) return;
+      if (expectedTransport != null &&
+          !identical(_router.transportFor(contactId), expectedTransport)) {
+        return;
+      }
+
       final sealed = await _core.flushPending(peerDeviceId: contactId.deviceId);
       // O Rust já marcou o lote inteiro como `Sending`: o que não sair aqui
       // precisa voltar à fila, senão fica fora dela até o app reiniciar.
