@@ -228,6 +228,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       emitMessageEvent(sealed.messageId, MessageEventKind.added);
@@ -271,6 +272,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
               replyToId: m.replyToId,
               viewOnce: m.viewOnce,
               reactions: m.reactions,
+              canCancelQueued: m.canCancelQueued,
             );
           }()
         else
@@ -864,6 +866,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1192,6 +1195,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1383,6 +1387,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
@@ -1433,6 +1438,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           ),
         ];
         core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
@@ -1523,6 +1529,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       );
 
       transport.emitIncomingFile(Uint8List.fromList([1]));
@@ -1568,6 +1575,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       final first = noteFor(fileId);
@@ -1630,6 +1638,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       core.finishReceiveAudioHandler = (id, destPath) {
@@ -1734,6 +1743,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       /// Emissor esgotado e sem `FILE_FEEDBACK` à vista: o laço de envio fica
@@ -1995,6 +2005,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isFileReady(msg), isTrue,
             reason: 'caminho deve estar cacheado após recebimento completo');
@@ -2218,6 +2229,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2239,6 +2251,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2260,6 +2273,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2298,6 +2312,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: reactions,
+          canCancelQueued: false,
         );
 
     Future<void> settle() => pumpEventQueue();
@@ -2502,6 +2517,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: true,
         ),
       ];
       core.emitMessageEvent(1, MessageEventKind.added);
@@ -2524,6 +2540,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       )), isFalse);
     });
 
@@ -2551,6 +2568,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: true,
       );
       core.messagesToReturn = [voiceMsg];
       core.emitMessageEvent(1, MessageEventKind.added);
@@ -2582,6 +2600,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       core.cancelQueuedTransferHandler = (_) => null;

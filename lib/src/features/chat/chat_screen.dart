@@ -1163,7 +1163,8 @@ class _MessageBubble extends StatelessWidget {
                   else if (outgoing &&
                       message.kind != MessageKindDto.text &&
                       message.deliveryState == DeliveryStateDto.pending &&
-                      !controller.isEstablished)
+                      !controller.isEstablished &&
+                      message.canCancelQueued)
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

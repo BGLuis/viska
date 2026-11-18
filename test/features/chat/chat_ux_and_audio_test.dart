@@ -568,6 +568,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -619,6 +620,7 @@ void main() {
           isEphemeral: true,
           viewOnce: true,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -710,6 +712,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -745,6 +748,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -908,6 +912,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: true,
         ),
       ];
 
@@ -939,6 +944,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: true,
         ),
       ];
 
@@ -968,6 +974,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: true,
         ),
         MessageDto(
           id: 13,
@@ -979,6 +986,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -991,6 +999,43 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('cancel_queued_transfer_12')), findsNothing);
+    });
+
+    testWidgets('already-offered pending transfer after restart hides cancel button even offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 14,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'ja-ofertado.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+        MessageDto(
+          id: 15,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: Uint8List.fromList(List.filled(16, 8)),
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('ja-ofertado.pdf'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_14')), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_15')), findsNothing);
     });
   });
 }
