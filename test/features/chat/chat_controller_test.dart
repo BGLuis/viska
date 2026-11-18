@@ -290,6 +290,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   @override
   Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
+    if (sessionState != SessionStateKind.established) return [];
     final result = pendingToFlush;
     pendingToFlush = [];
     return result;
