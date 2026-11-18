@@ -6,9 +6,7 @@
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'error.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `maintain_transfers_at_rest`, `reset_inflight_state`
@@ -135,15 +133,16 @@ abstract class Core implements RustOpaqueInterface {
     required String destinationPath,
   });
 
-  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
-  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-  /// estabelecer. Para na primeira falha de cifragem (ex.:
+  /// Cifra a próxima mensagem `pending` de um contato — chamar em laço ao
+  /// drenar a fila, uma linha por vez.
+  ///
+  /// Selar uma única linha por chamada evita que uma queda do transporte no
+  /// meio de um lote queime contadores do ratchet para mensagens que nem
+  /// chegaram a ser tentadas no fio. Para na primeira falha de cifragem (ex.:
   /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
   /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
   /// ordem de entrega.
-  Future<List<SealedMessageDto>> flushPending({
-    required List<int> peerDeviceId,
-  });
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId});
 
   /// Consulta chave de configuração arbitrária.
   Future<String?> getConfig({required String key});

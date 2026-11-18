@@ -5,7 +5,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-
 import 'ffi/core.dart';
 import 'ffi/error.dart';
 import 'ffi/framing.dart';
@@ -16,7 +15,6 @@ import 'frb_generated.dart';
 import 'frb_generated.io.dart'
     if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'lib.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// Main entrypoint of the Rust API
@@ -72,7 +70,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 680092110;
+  int get rustContentHash => -611530110;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -169,7 +167,7 @@ abstract class RustLibApi extends BaseApi {
     required String destinationPath,
   });
 
-  Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
+  Future<SealedMessageDto?> crateFfiCoreCoreFlushNextPending({
     required Core that,
     required List<int> peerDeviceId,
   });
@@ -1144,7 +1142,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<List<SealedMessageDto>> crateFfiCoreCoreFlushPending({
+  Future<SealedMessageDto?> crateFfiCoreCoreFlushNextPending({
     required Core that,
     required List<int> peerDeviceId,
   }) {
@@ -1165,19 +1163,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_sealed_message_dto,
+          decodeSuccessData: sse_decode_opt_box_autoadd_sealed_message_dto,
           decodeErrorData: sse_decode_ffi_error,
         ),
-        constMeta: kCrateFfiCoreCoreFlushPendingConstMeta,
+        constMeta: kCrateFfiCoreCoreFlushNextPendingConstMeta,
         argValues: [that, peerDeviceId],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateFfiCoreCoreFlushPendingConstMeta =>
+  TaskConstMeta get kCrateFfiCoreCoreFlushNextPendingConstMeta =>
       const TaskConstMeta(
-        debugName: "Core_flush_pending",
+        debugName: "Core_flush_next_pending",
         argNames: ["that", "peerDeviceId"],
       );
 
@@ -3643,6 +3641,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SealedMessageDto dco_decode_box_autoadd_sealed_message_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_sealed_message_dto(raw);
+  }
+
+  @protected
   SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_session_state_kind(raw);
@@ -3822,12 +3826,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_sealed_message_dto).toList();
-  }
-
-  @protected
   List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_sealed_notice_dto).toList();
@@ -3924,6 +3922,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto? dco_decode_opt_box_autoadd_message_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_message_dto(raw);
+  }
+
+  @protected
+  SealedMessageDto? dco_decode_opt_box_autoadd_sealed_message_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_sealed_message_dto(raw);
   }
 
   @protected
@@ -4319,6 +4323,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SealedMessageDto sse_decode_box_autoadd_sealed_message_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_sealed_message_dto(deserializer));
+  }
+
+  @protected
   SessionStateKind sse_decode_box_autoadd_session_state_kind(
     SseDeserializer deserializer,
   ) {
@@ -4555,20 +4567,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  List<SealedMessageDto> sse_decode_list_sealed_message_dto(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <SealedMessageDto>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_sealed_message_dto(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
   List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
     SseDeserializer deserializer,
   ) {
@@ -4718,6 +4716,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_message_dto(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  SealedMessageDto? sse_decode_opt_box_autoadd_sealed_message_dto(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_sealed_message_dto(deserializer));
     } else {
       return null;
     }
@@ -5190,6 +5201,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_sealed_message_dto(
+    SealedMessageDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_sealed_message_dto(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_session_state_kind(
     SessionStateKind self,
     SseSerializer serializer,
@@ -5404,18 +5424,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_list_sealed_message_dto(
-    List<SealedMessageDto> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_sealed_message_dto(item, serializer);
-    }
-  }
-
-  @protected
   void sse_encode_list_sealed_notice_dto(
     List<SealedNoticeDto> self,
     SseSerializer serializer,
@@ -5554,6 +5562,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_message_dto(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_sealed_message_dto(
+    SealedMessageDto? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_sealed_message_dto(self, serializer);
     }
   }
 
@@ -6036,15 +6057,18 @@ class CoreImpl extends RustOpaque implements Core {
     destinationPath: destinationPath,
   );
 
-  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
-  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-  /// estabelecer. Para na primeira falha de cifragem (ex.:
+  /// Cifra a próxima mensagem `pending` de um contato — chamar em laço ao
+  /// drenar a fila, uma linha por vez.
+  ///
+  /// Selar uma única linha por chamada evita que uma queda do transporte no
+  /// meio de um lote queime contadores do ratchet para mensagens que nem
+  /// chegaram a ser tentadas no fio. Para na primeira falha de cifragem (ex.:
   /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
   /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
   /// ordem de entrega.
-  Future<List<SealedMessageDto>> flushPending({
+  Future<SealedMessageDto?> flushNextPending({
     required List<int> peerDeviceId,
-  }) => RustLib.instance.api.crateFfiCoreCoreFlushPending(
+  }) => RustLib.instance.api.crateFfiCoreCoreFlushNextPending(
     that: this,
     peerDeviceId: peerDeviceId,
   );
