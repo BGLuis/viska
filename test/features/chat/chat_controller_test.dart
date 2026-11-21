@@ -228,6 +228,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       emitMessageEvent(sealed.messageId, MessageEventKind.added);
@@ -271,6 +272,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
               replyToId: m.replyToId,
               viewOnce: m.viewOnce,
               reactions: m.reactions,
+              canCancelQueued: m.canCancelQueued,
             );
           }()
         else
@@ -289,10 +291,11 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
-    final result = pendingToFlush;
-    pendingToFlush = [];
-    return result;
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async {
+    if (sessionState != SessionStateKind.established || pendingToFlush.isEmpty) {
+      return null;
+    }
+    return pendingToFlush.removeAt(0);
   }
 
   @override
@@ -348,6 +351,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   var listMessagesCalls = 0;
   Completer<void>? listMessagesGate;
+  Object? listMessagesError;
   Object? getMessageError;
 
   /// Atraso de `getMessage` por id, para provocar leituras que terminam fora de ordem.
@@ -358,6 +362,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
     listMessagesCalls++;
     final gate = listMessagesGate;
     if (gate != null) await gate.future;
+    if (listMessagesError != null) throw listMessagesError!;
     return messagesToReturn;
   }
 
@@ -452,6 +457,25 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
 
   @override
   Future<void> cancelTransfer({required List<int> fileId}) async {}
+
+  final cancelQueuedTransferCalls = <int>[];
+  FutureOr<Uint8List?> Function(int messageId)? cancelQueuedTransferHandler;
+
+  @override
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId}) async {
+    cancelQueuedTransferCalls.add(messageId);
+    if (cancelQueuedTransferHandler != null) {
+      return await cancelQueuedTransferHandler!(messageId);
+    }
+    final target = messagesToReturn.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (target == null) return null;
+    messagesToReturn = messagesToReturn.where((m) => m.id != messageId).toList();
+    emitMessageEvent(messageId, MessageEventKind.removed);
+    return target.audioFileId ?? Uint8List.fromList(List.filled(16, 6));
+  }
 
   Uint8List? fileFeedbackResponse;
   final fileFeedbackCalls = <Uint8List>[];
@@ -739,6 +763,31 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   Future<ContactDto> repairFromQr({required List<int> payload}) => throw UnimplementedError();
 }
 
+Stream<T> _trackListeners<T>(Stream<T> source, void Function(int delta) onDelta) {
+  return Stream<T>.multi((controller) {
+    onDelta(1);
+    final sub = source.listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+    controller.onCancel = () {
+      onDelta(-1);
+      return sub.cancel();
+    };
+  }, isBroadcast: true);
+}
+
+class _SpyMessageReceptionService extends MessageReceptionService {
+  _SpyMessageReceptionService({required super.core, required super.router});
+
+  var activeEventListeners = 0;
+
+  @override
+  Stream<MessageReceptionEvent> eventsFor(ContactId contactId) =>
+      _trackListeners(super.eventsFor(contactId), (d) => activeEventListeners += d);
+}
+
 class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
@@ -750,6 +799,7 @@ class _FakeP2PTransport implements P2PTransport {
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
+  var activeConnectionListeners = 0;
 
   /// Segura `connect()` para simular um transporte que ainda não voltou.
   Completer<void>? connectGate;
@@ -774,7 +824,8 @@ class _FakeP2PTransport implements P2PTransport {
   Stream<Uint8List> get incomingFile => _incomingFile.stream;
 
   @override
-  Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
+  Stream<TransportConnectionEvent> get connectionEvents =>
+      _trackListeners(_connectionEvents.stream, (d) => activeConnectionListeners += d);
 
   @override
   Future<void> close() async {}
@@ -845,6 +896,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1030,7 +1082,7 @@ void main() {
     expect(controller.isEstablished, isTrue);
   });
 
-  test('established session flushes pending messages (flushPending)', () async {
+  test('established session flushes pending messages (flushNextPending)', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
     core.establishOnFeedHandshake = true;
@@ -1111,7 +1163,7 @@ void main() {
     expect(controller.connectionError, isNull);
   });
 
-  test('failed send stays pending: flushPending keeps every message pending when the connection is down', () async {
+  test('failed send stays pending: flushNextPending keeps every message pending when the connection is down', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
     core.establishOnFeedHandshake = true;
@@ -1173,6 +1225,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       ),
     ];
     controller = makeController();
@@ -1364,6 +1417,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isVoiceNoteReady(sent), isTrue, reason: 'cacheado antes de mandar, para poder reproduzir a própria nota enviada');
       },
@@ -1414,6 +1468,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           ),
         ];
         core.ingestIncomingWireBytesHandler = (_) => IngestedChunkDto(
@@ -1504,6 +1559,7 @@ void main() {
         isEphemeral: false,
         viewOnce: false,
         reactions: const [],
+        canCancelQueued: false,
       );
 
       transport.emitIncomingFile(Uint8List.fromList([1]));
@@ -1549,6 +1605,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       final first = noteFor(fileId);
@@ -1611,6 +1668,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       core.finishReceiveAudioHandler = (id, destPath) {
@@ -1715,6 +1773,7 @@ void main() {
             isEphemeral: false,
             viewOnce: false,
             reactions: const [],
+            canCancelQueued: false,
           );
 
       /// Emissor esgotado e sem `FILE_FEEDBACK` à vista: o laço de envio fica
@@ -1976,6 +2035,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         );
         expect(controller.isFileReady(msg), isTrue,
             reason: 'caminho deve estar cacheado após recebimento completo');
@@ -2199,6 +2259,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2220,6 +2281,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2241,6 +2303,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       controller = makeController();
@@ -2279,6 +2342,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: reactions,
+          canCancelQueued: false,
         );
 
     Future<void> settle() => pumpEventQueue();
@@ -2445,6 +2509,336 @@ void main() {
       await settle();
 
       expect(controller.messages.map((m) => m.id), [2]);
+    });
+
+    test('Removed drops the row on the queue without calling getMessage', () async {
+      core.messagesToReturn = [row(1), row(2)];
+      controller = makeController();
+      await controller.initialize();
+      core.getMessageCalls.clear();
+
+      core.emitMessageEvent(1, MessageEventKind.removed);
+      await settle();
+
+      expect(controller.messages.map((m) => m.id), [2]);
+      expect(core.getMessageCalls, isEmpty);
+    });
+  });
+
+  group('cancelling offline-queued transfers', () {
+    Future<void> settle() => pumpEventQueue();
+
+    test('cancelQueuedTransfer removes queued file and evicts cached file path', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      transport.connectGate = Completer<void>();
+      controller = makeController(connectTimeout: const Duration(milliseconds: 50));
+      await controller.initialize();
+
+      await controller.sendFile('/tmp/queued.pdf');
+      final fileId = Uint8List.fromList(List.filled(16, 6));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 1,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'queued.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await settle();
+      expect(controller.messages, hasLength(1));
+
+      await controller.cancelQueuedTransfer(1);
+      await settle();
+
+      expect(core.cancelQueuedTransferCalls, [1]);
+      expect(controller.messages, isEmpty);
+      expect(controller.isFileReady(MessageDto(
+        id: 1,
+        direction: MessageDirectionDto.outgoing,
+        kind: MessageKindDto.file,
+        body: 'queued.pdf',
+        audioFileId: fileId,
+        deliveryState: DeliveryStateDto.pending,
+        createdAtUnixSecs: 100,
+        isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
+        canCancelQueued: false,
+      )), isFalse);
+    });
+
+    test('cancelQueuedTransfer removes queued voice note, evicts audio cache and stops playback', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      final audioId = Uint8List.fromList(List.filled(16, 7));
+      final oggFile = File('${tempDir.path}/queued-voice.ogg')..writeAsBytesSync([1, 2, 3]);
+      recorder.pathToReturnOnStop = oggFile.path;
+      core.startSendAudioHandler = (_) => throw FfiError.noActiveSession;
+
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.startRecording();
+      await controller.stopRecordingAndSend();
+
+      final voiceMsg = MessageDto(
+        id: 1,
+        direction: MessageDirectionDto.outgoing,
+        kind: MessageKindDto.voiceNote,
+        body: '',
+        audioFileId: audioId,
+        deliveryState: DeliveryStateDto.pending,
+        createdAtUnixSecs: 100,
+        isEphemeral: false,
+        viewOnce: false,
+        reactions: const [],
+        canCancelQueued: true,
+      );
+      core.messagesToReturn = [voiceMsg];
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await settle();
+      expect(controller.isVoiceNoteReady(voiceMsg), isTrue);
+
+      await controller.play(voiceMsg);
+      expect(controller.playingMessageId, 1);
+
+      await controller.cancelQueuedTransfer(1);
+      await settle();
+
+      expect(controller.messages, isEmpty);
+      expect(controller.isVoiceNoteReady(voiceMsg), isFalse);
+      expect(controller.playingMessageId, isNull);
+      expect(player.stopCalls, greaterThanOrEqualTo(1));
+    });
+
+    test('cancelQueuedTransfer keeps message when Rust refuses because sending started', () async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 5,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'started.bin',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+      core.cancelQueuedTransferHandler = (_) => null;
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.cancelQueuedTransfer(5);
+      await settle();
+
+      expect(controller.messages, hasLength(1));
+      expect(controller.fileError, isNull);
+    });
+  });
+
+  group('initialize and reconnect listener lifecycle (issue #97)', () {
+    test('calling initialize multiple times is idempotent and keeps one reception and one connection listener', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      for (var i = 0; i < 4; i++) {
+        await ctrl.initialize();
+      }
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3); // 1 router + 1 receptionService + 1 ChatController
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(1, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [1]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('retry after failed initialize cancels prior reception subscription without leaking', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      core.listMessagesError = StateError('Locked');
+      await ctrl.initialize();
+      expect(ctrl.connectionError, isNotNull);
+
+      core.listMessagesError = null;
+      await ctrl.initialize();
+
+      expect(ctrl.connectionError, isNull);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(42, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [42]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('concurrent initialize calls run once and keep single listeners', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final gate = Completer<void>();
+      core.listMessagesGate = gate;
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      final f1 = ctrl.initialize();
+      final f2 = ctrl.initialize();
+      gate.complete();
+      await Future.wait([f1, f2]);
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      await spyReception.dispose();
+      await router.closeAll();
+    });
+
+    test('reconnectTransport replaces failed transport without re-running initialize or leaking listeners', () async {
+      final transports = <_FakeP2PTransport>[];
+      final localRouter = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) {
+          final t = _FakeP2PTransport();
+          transports.add(t);
+          return t;
+        },
+      );
+      final spyReception = _SpyMessageReceptionService(core: core, router: localRouter);
+      final ctrl = ChatController(
+        core: core,
+        router: localRouter,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      await ctrl.initialize();
+      expect(core.listMessagesCalls, 1);
+      expect(transports, hasLength(1));
+
+      for (var i = 0; i < 3; i++) {
+        transports.last.emitConnectionEvent(
+          TransportConnectionEvent(TransportConnectionState.failed, reason: 'sem rota $i'),
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(ctrl.connectionError, 'sem rota $i');
+
+        await ctrl.reconnectTransport();
+
+        expect(ctrl.connectionError, isNull);
+        expect(core.listMessagesCalls, 1);
+        expect(spyReception.activeEventListeners, 1);
+        for (var j = 0; j < transports.length - 1; j++) {
+          expect(transports[j].activeConnectionListeners, 0);
+        }
+        expect(transports.last.activeConnectionListeners, 3);
+      }
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(10, MessageEventKind.added);
+      await Future<void>.delayed(Duration.zero);
+      expect(core.getMessageCalls, [10]);
+
+      ctrl.dispose();
+      expect(spyReception.activeEventListeners, 0);
+      expect(transports.last.activeConnectionListeners, 2);
+
+      // Eventos tardios no transporte após dispose não devem mais alterar o controlador.
+      transports.last.emitConnectionEvent(
+        const TransportConnectionEvent(TransportConnectionState.failed, reason: 'tardio'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(ctrl.connectionError, isNull);
+
+      await spyReception.dispose();
+      await localRouter.closeAll();
+    });
+
+    test('reconnectTransport retries initialize when initial initialize failed', () async {
+      final spyReception = _SpyMessageReceptionService(core: core, router: router);
+      final ctrl = ChatController(
+        core: core,
+        router: router,
+        contactId: contact,
+        receptionService: spyReception,
+        recorder: recorder,
+        player: player,
+      );
+
+      core.listMessagesError = StateError('Locked');
+      await ctrl.initialize();
+      expect(ctrl.connectionError, contains('bloqueado'));
+
+      core.listMessagesError = null;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 5,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.text,
+          body: 'recuperada',
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+      await ctrl.reconnectTransport();
+
+      expect(ctrl.connectionError, isNull);
+      expect(ctrl.messages.map((m) => m.id), [5]);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transport.activeConnectionListeners, 3);
+
+      ctrl.dispose();
+      await spyReception.dispose();
+      await router.closeAll();
     });
   });
 }

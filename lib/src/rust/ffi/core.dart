@@ -6,9 +6,7 @@
 import '../frb_generated.dart';
 import '../lib.dart';
 import 'error.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
 import 'types.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ensure_not_locked`, `maintain_transfers_at_rest`, `reset_inflight_state`
@@ -41,6 +39,14 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
   Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
+
+  /// Cancela um item de arquivo ou nota de voz ainda na fila offline (D30):
+  /// apaga a linha de `file_transfers`, a mensagem `Pending` e a cópia
+  /// cifrada em `outgoing/`, emitindo `Removed` pelo observador do `Store`.
+  /// Só age se nenhuma oferta foi selada/respondida e não há handle ativo
+  /// em memória; devolve `Some(file_id)` se cancelou ou `None` caso
+  /// contrário (inclusive se já foi removido ou já começou a sair).
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId});
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
@@ -135,15 +141,16 @@ abstract class Core implements RustOpaqueInterface {
     required String destinationPath,
   });
 
-  /// Cifra todas as mensagens `pending` de um contato — chamar quando o
-  /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-  /// estabelecer. Para na primeira falha de cifragem (ex.:
+  /// Cifra a próxima mensagem `pending` de um contato — chamar em laço ao
+  /// drenar a fila, uma linha por vez.
+  ///
+  /// Selar uma única linha por chamada evita que uma queda do transporte no
+  /// meio de um lote queime contadores do ratchet para mensagens que nem
+  /// chegaram a ser tentadas no fio. Para na primeira falha de cifragem (ex.:
   /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
   /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
   /// ordem de entrega.
-  Future<List<SealedMessageDto>> flushPending({
-    required List<int> peerDeviceId,
-  });
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId});
 
   /// Consulta chave de configuração arbitrária.
   Future<String?> getConfig({required String key});
@@ -354,7 +361,7 @@ abstract class Core implements RustOpaqueInterface {
   /// provar a chave.
   ///
   /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-  /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+  /// antiga e `flush_next_pending` os cifra de novo). Envios e recebimentos de
   /// arquivo não são tocados: não dependem da sessão (D15), e
   /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
   /// nova (§7.5).
@@ -411,7 +418,7 @@ abstract class Core implements RustOpaqueInterface {
   /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
   /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
   /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
-  /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+  /// está persistida, e `flush_next_pending` a entrega assim que isso mudar.
   /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
   /// enviá-los deve chamar `requeue_message`.
   Future<SealedMessageDto> sealOutgoingText({

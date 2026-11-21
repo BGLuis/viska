@@ -156,6 +156,8 @@ pub enum MessageEventKind {
     KeyExpired,
     /// As reações da mensagem mudaram.
     ReactionsChanged,
+    /// A linha foi apagada da timeline (ex.: cancelamento na fila offline).
+    Removed,
 }
 
 /// Uma mensagem de saída já persistida como `pending`, e cifrada se a sessão
@@ -166,7 +168,7 @@ pub struct SealedMessageDto {
     pub message_id: i64,
     /// `None` quando a sessão ainda não está `Established`: a mensagem já
     /// está persistida como `pending`, mas não há nada para enviar ainda —
-    /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_pending` assim
+    /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_next_pending` assim
     /// que a sessão ficar pronta.
     pub bytes: Option<Vec<u8>>,
 }
@@ -244,6 +246,9 @@ pub struct MessageDto {
     pub reply_to_id: Option<i64>,
     pub view_once: bool,
     pub reactions: Vec<String>,
+    /// `true` apenas para envios de arquivo ou nota de voz ainda na fila offline
+    /// antes de qualquer oferta selada ou handle ativo (issue #111).
+    pub can_cancel_queued: bool,
 }
 
 /// Pacote já selado que o Dart precisa enviar a um contato depois que a Core

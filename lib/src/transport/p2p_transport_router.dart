@@ -86,6 +86,10 @@ class P2PTransportRouter {
   /// Retorna o [P2PTransport] atualmente instanciado para o contato, se houver.
   P2PTransport? transportFor(ContactId contact) => _routed[contact]?.transport;
 
+  /// Futuro da tentativa de conexão do transporte atual do contato, ou `null`
+  /// se nenhum transporte está ativo no momento.
+  Future<void>? pendingConnectFor(ContactId contact) => _routed[contact]?.connectFuture;
+
   /// Fecha e esquece o transporte de um contato — a próxima chamada de
   /// qualquer método para ele cria um transporte novo do zero.
   Future<void> closeContact(ContactId contact) async {

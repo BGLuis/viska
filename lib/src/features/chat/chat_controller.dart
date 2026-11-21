@@ -204,7 +204,7 @@ class ChatController extends ChangeNotifier {
     try {
       _isVerified = await _core.isContactVerified(contactDeviceId: _contactId.deviceId);
       _isKeyChanged = await _core.isKeyChanged(contactDeviceId: _contactId.deviceId);
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     } catch (_) {}
   }
 
@@ -360,27 +360,94 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  final Set<int> _cancellingMessageIds = {};
+
+  /// `true` enquanto o cancelamento do item [messageId] está em voo no FFI.
+  bool isCancellingTransfer(int messageId) => _cancellingMessageIds.contains(messageId);
+
+  /// Cancela um arquivo ou nota de voz ainda na fila offline (D30). A linha só
+  /// sai da timeline quando o Rust emite `MessageEventKind.removed`.
+  Future<void> cancelQueuedTransfer(int messageId) async {
+    if (_cancellingMessageIds.contains(messageId)) return;
+    _cancellingMessageIds.add(messageId);
+    notifyListeners();
+    try {
+      final cancelledFileId = await _core.cancelQueuedTransfer(messageId: messageId);
+      if (_disposed) return;
+      if (cancelledFileId != null) {
+        _evictTransferCaches(messageId, cancelledFileId);
+      }
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao cancelar item $messageId da fila: $e\n$stack');
+      if (_disposed) return;
+      final msg = _messages.cast<MessageDto?>().firstWhere(
+            (m) => m?.id == messageId,
+            orElse: () => null,
+          );
+      if (msg?.kind == MessageKindDto.voiceNote) {
+        _voiceError = 'Não foi possível cancelar a nota de voz.';
+      } else {
+        _fileError = 'Não foi possível cancelar o envio do arquivo.';
+      }
+    } finally {
+      _cancellingMessageIds.remove(messageId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _evictTransferCaches(int messageId, Uint8List fileId) {
+    final hexId = _hex(fileId);
+    _voiceNoteAudio.remove(hexId);
+    _receivedFilePaths.remove(hexId);
+    if (_decodedWav?.id == hexId) _decodedWav = null;
+    _receptionService.evictCachedTransfer(fileId);
+    if (_playingMessageId == messageId) {
+      unawaited(stopVoicePlayback());
+    }
+  }
+
   Map<String, int> reactionsFor(int messageId) => _reactions[messageId] ?? const {};
 
   Set<String> userReactionsFor(int messageId) => _userReactions[messageId] ?? const {};
 
   StreamSubscription<MessageReceptionEvent>? _receptionSub;
   StreamSubscription<TransportConnectionEvent>? _connectionSub;
+  var _initialized = false;
+  Future<void>? _initInFlight;
+  var _reconnectingTransport = false;
   var _disposed = false;
+
+  void _subscribeReception() {
+    unawaited(_receptionSub?.cancel());
+    _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
+  }
+
+  void _subscribeConnection() {
+    unawaited(_connectionSub?.cancel());
+    _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
+  }
 
   /// Carrega o histórico, conecta o transporte (via [P2PTransportRouter],
   /// que faz isso sob demanda) e tenta publicar a mensagem de handshake se
-  /// formos iniciador. Chamar uma vez, normalmente em `initState`.
-  Future<void> initialize() async {
+  /// formos iniciador. Idempotente depois de concluída: chamadas seguintes
+  /// não recarregam o histórico nem acumulam ouvintes.
+  Future<void> initialize() {
+    if (_disposed || _initialized) return Future<void>.value();
+    return _initInFlight ??= _doInitialize().whenComplete(() => _initInFlight = null);
+  }
+
+  Future<void> _doInitialize() async {
     try {
+      _connectionError = null;
       _receptionService.ensureListening(_contactId);
       // Assina antes de carregar: o que mudar durante a carga fica na fila
       // atrás dela e é aplicado por id depois, sem se perder nem duplicar. É
       // isto que dispensa um retrato do Rust ao assinar.
-      _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
+      _subscribeReception();
       _changeQueue = _loadMessages();
       await _changeQueue;
-      _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
+      if (_disposed) return;
+      _subscribeConnection();
 
       // Eventos que passaram antes de esta conversa abrir já estão no serviço.
       final known = _receptionService.sessionStateFor(_contactId);
@@ -388,26 +455,32 @@ class ChatController extends ChangeNotifier {
         _applySessionState(known.state, known.needsRehandshake, fromStream: true);
       }
       final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      if (_disposed) return;
       // Só vale se nenhum evento chegou: um evento que passe durante o await é
       // mais recente que esta leitura e não deve ser sobrescrito por ela.
       if (!_session.streamed) {
         _applySessionState(session.state, session.needsRehandshake, fromStream: false);
       }
       await refreshTrustState();
+      if (_disposed) return;
       await loadUnconfirmedOffers();
+      if (!_disposed) {
+        _initialized = true;
+      }
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
           ? 'Aplicativo bloqueado. Desbloqueie para conversar.'
           : 'Falha ao inicializar transporte: $e';
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
   void _handleReceptionEvent(MessageReceptionEvent event) {
+    if (_disposed) return;
     switch (event) {
-      case MessageChangedEvent(:final messageId):
-        _enqueueChange(messageId);
+      case MessageChangedEvent(:final messageId, :final kind):
+        _enqueueChange(messageId, kind);
       case TypingIndicatorEvent():
         break;
       case SessionStateChangedEvent(:final state, :final needsRehandshake):
@@ -829,12 +902,42 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handleConnectionEvent(TransportConnectionEvent event) {
+    if (_disposed) return;
     if (event.state == TransportConnectionState.failed) {
       _connectionError = event.reason;
       notifyListeners();
     } else if (event.state == TransportConnectionState.connected) {
       _connectionError = null;
       notifyListeners();
+    }
+  }
+
+  /// Fecha eventual transporte estagnado para o contato e reinicia a conexão
+  /// sem reinicializar a conversa nem duplicar assinaturas de eventos. Se a
+  /// inicialização ainda não concluiu, tenta [initialize] de novo.
+  Future<void> reconnectTransport() async {
+    if (_disposed) return;
+    if (!_initialized) {
+      await initialize();
+      return;
+    }
+    if (_reconnectingTransport) return;
+    _reconnectingTransport = true;
+    try {
+      await _router.closeContact(_contactId);
+      if (_disposed) return;
+      _connectionError = null;
+      notifyListeners();
+      _receptionService.ensureListening(_contactId);
+      _subscribeConnection();
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reconectar transporte: $e\n$stack');
+      if (!_disposed) {
+        _connectionError = 'Falha ao reconectar transporte: $e';
+        notifyListeners();
+      }
+    } finally {
+      _reconnectingTransport = false;
     }
   }
 
@@ -886,8 +989,8 @@ class ChatController extends ChangeNotifier {
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
   /// volta à fila (`pending`) via `requeueMessage`, porque o Rust a deixou em
-  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia no próximo
-  /// pacote recebido ou ao reiniciar.
+  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia quando o
+  /// transporte reconecta, no próximo pacote recebido ou ao reiniciar.
   Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);
@@ -926,15 +1029,29 @@ class ChatController extends ChangeNotifier {
   /// mais antiga por cima. A carga inicial é o primeiro elo.
   Future<void> _changeQueue = Future<void>.value();
 
-  void _enqueueChange(int messageId) {
-    _changeQueue = _changeQueue.catchError((Object _) {}).then((_) => _applyMessageChange(messageId));
+  void _enqueueChange(int messageId, MessageEventKind kind) {
+    _changeQueue = _changeQueue
+        .catchError((Object _) {})
+        .then((_) => _applyMessageChange(messageId, kind));
   }
 
   /// Troca só a linha de [messageId] pelo que o Rust tem agora: entra se é nova,
   /// sai se sumiu (ou se a lista a esconde). A leitura é sempre a atual, então
   /// aplicar duas vezes o mesmo aviso dá o mesmo resultado.
-  Future<void> _applyMessageChange(int messageId) async {
+  Future<void> _applyMessageChange(int messageId, MessageEventKind kind) async {
     try {
+      if (kind == MessageEventKind.removed) {
+        if (_disposed) return;
+        final index = _messages.indexWhere((m) => m.id == messageId);
+        if (index == -1) return;
+        final removed = _messages.removeAt(index);
+        if (removed.audioFileId != null) {
+          _evictTransferCaches(messageId, removed.audioFileId!);
+        }
+        _aggregateReactions();
+        notifyListeners();
+        return;
+      }
       final fresh = await _core.getMessage(messageId: messageId);
       if (_disposed) return;
       final index = _messages.indexWhere((m) => m.id == messageId);

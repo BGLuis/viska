@@ -581,11 +581,12 @@ morre com a linha do banco. E o arquivo genérico também é copiado, em vez de 
 o caminho do seletor pode apontar para um cache que o sistema apaga, e o conteúdo pode mudar entre
 enfileirar e enviar (as mesmas razões de D28).
 
-**Custo:** um arquivo enfileirado ocupa o dobro em disco até ser enviado ou expirar; o teto de 10
+**Custo:** um arquivo enfileirado ocupa o dobro em disco até ser enviado, cancelado ou expirar; o teto de 10
 envios limita o pior caso, e não há limite de tamanho por arquivo. Sem sessão, o `use_lan` do
 manifesto é só uma aposta: quem enfileira no DataChannel manda símbolos de 16384 B mesmo se a
-conexão acabar sendo pela LAN. Não há como cancelar um item da fila: a saída é a validade de 24 h
-(follow-up pedido). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
+conexão acabar sendo pela LAN. Um item ainda na fila (antes de qualquer oferta selada) pode ser
+cancelado localmente por `Core::cancel_queued_transfer`; após selar a oferta, vale o prazo de 24 h
+(cancelamento com aviso ao par é da issue #108). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
 o que antes só acontecia aos 7 dias.
 
 **Custo de reverter:** enfileirar sem a cópia exigiria guardar o caminho em claro e tratar arquivo

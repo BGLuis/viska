@@ -75,7 +75,7 @@ impl Core {
     /// provar a chave.
     ///
     /// Efeitos: textos em `Sending` voltam à fila (foram cifrados na sessão
-    /// antiga e `flush_pending` os cifra de novo). Envios e recebimentos de
+    /// antiga e `flush_next_pending` os cifra de novo). Envios e recebimentos de
     /// arquivo não são tocados: não dependem da sessão (D15), e
     /// `Core::resume_transfers` reenvia a oferta ainda sem resposta na sessão
     /// nova (§7.5).
@@ -230,7 +230,7 @@ impl Core {
     /// `bytes` do DTO devolvido vem `None` quando a sessão ainda não está
     /// `Established` ou ainda não tem cadeia de envio (o respondedor só a
     /// ganha ao processar a primeira mensagem do iniciador): a mensagem já
-    /// está persistida, e `flush_pending` a entrega assim que isso mudar.
+    /// está persistida, e `flush_next_pending` a entrega assim que isso mudar.
     /// Quando devolve bytes, a linha passa a `Sending`; quem não conseguir
     /// enviá-los deve chamar `requeue_message`.
     pub fn seal_outgoing_text(
@@ -242,6 +242,11 @@ impl Core {
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
         let created_at = viska_proto::util::time::unix_seconds() as i64;
+
+        // Inserir sob o lock de sessões: impede que um `flush_next_pending`
+        // concorrente leia a linha `Pending` antes de esta chamada cifrá-la e
+        // marcá-la `Sending` (mesma invariante de `flush_next_pending`).
+        let mut sessions = self.lock_sessions()?;
 
         // Se o corpo for uma reação, vincula à mensagem no banco local:
         if let Some((target_id, emoji)) = viska_proto::store::messages::parse_reaction_metadata(&body) {
@@ -255,22 +260,28 @@ impl Core {
             created_at,
         )?;
 
-        let mut sessions = self.lock_sessions()?;
         let bytes = match sessions.get_mut(&device_id) {
-            Some(session) if session.is_established() => {
-                let ciphertext = session
-                    .encrypt_outgoing(PacketType::MsgText, body.into_bytes(), Transport::DataChannel)
-                    .ok()
-                    // Sem conseguir marcar `Sending`, os bytes não podem sair:
-                    // a linha segue `Pending` e `flush_pending` a cifra de novo
-                    // (o contador gasto aqui é só um salto no ratchet).
-                    .filter(|_| self.store.mark_message_sending(message_id).is_ok());
-                if let Some(ref ct) = ciphertext {
-                    if let Ok(cnt) = viska_proto::wire::envelope::counter(ct) {
-                        let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
+            Some(session) if session.can_send() => {
+                if self.store.try_mark_message_sending(message_id).unwrap_or(false) {
+                    match session.encrypt_outgoing(
+                        PacketType::MsgText,
+                        body.into_bytes(),
+                        Transport::DataChannel,
+                    ) {
+                        Ok(ct) => {
+                            if let Ok(cnt) = viska_proto::wire::envelope::counter(&ct) {
+                                let _ = self.store.update_message_ratchet_counter(message_id, cnt as i64);
+                            }
+                            Some(ct)
+                        }
+                        Err(_) => {
+                            let _ = self.store.requeue_message(message_id);
+                            None
+                        }
                     }
+                } else {
+                    None
                 }
-                ciphertext
             }
             _ => None,
         };
@@ -521,57 +532,61 @@ impl Core {
         Ok(())
     }
 
-    /// Cifra todas as mensagens `pending` de um contato — chamar quando o
-    /// transporte reabre (reconexão do `DataChannel`) ou a sessão termina de
-    /// estabelecer. Para na primeira falha de cifragem (ex.:
+    /// Cifra a próxima mensagem `pending` de um contato — chamar em laço ao
+    /// drenar a fila, uma linha por vez.
+    ///
+    /// Selar uma única linha por chamada evita que uma queda do transporte no
+    /// meio de um lote queime contadores do ratchet para mensagens que nem
+    /// chegaram a ser tentadas no fio. Para na primeira falha de cifragem (ex.:
     /// `needs_rehandshake`): as mensagens seguintes continuam `pending` para
     /// a próxima tentativa, em vez de pular uma no meio da fila e quebrar a
     /// ordem de entrega.
-    pub fn flush_pending(
+    pub fn flush_next_pending(
         &self,
         peer_device_id: Vec<u8>,
-    ) -> Result<Vec<SealedMessageDto>, FfiError> {
+    ) -> Result<Option<SealedMessageDto>, FfiError> {
         let device_id = to_device_id(peer_device_id)?;
         // Declarado antes do lock de sessões, de propósito: é solto depois dele.
         let _publish = self.publish_on_exit(device_id);
-        // Listar sob o lock de sessões: duas drenagens concorrentes não podem
-        // ver a mesma linha `Pending` antes de a primeira marcá-la `Sending`.
+        // Consultar e marcar sob o lock de sessões: duas drenagens concorrentes
+        // não podem ver a mesma linha `Pending` antes de a primeira marcá-la
+        // `Sending`.
         let mut sessions = self.lock_sessions()?;
-        let pending = self.store.list_pending_messages(&device_id)?;
-        if pending.is_empty() {
-            return Ok(Vec::new());
-        }
+        let Some(message) = self.store.next_pending_message(&device_id)? else {
+            return Ok(None);
+        };
 
         let session = sessions
             .get_mut(&device_id)
             .ok_or(FfiError::NoActiveSession)?;
-        if !session.is_established() {
-            return Ok(Vec::new());
+        if !session.can_send() {
+            return Ok(None);
         }
 
-        let mut sealed = Vec::with_capacity(pending.len());
-        for message in pending {
-            match session.encrypt_outgoing(
-                PacketType::MsgText,
-                message.body.into_bytes(),
-                Transport::DataChannel,
-            ) {
-                Ok(bytes) => {
-                    // Falhar ao marcar não pode descartar o que já foi
-                    // selado: as linhas anteriores estão `Sending` e perderiam
-                    // seus bytes. Esta segue `Pending` para a próxima drenagem.
-                    if self.store.mark_message_sending(message.id).is_err() {
-                        break;
-                    }
-                    sealed.push(SealedMessageDto {
-                        message_id: message.id,
-                        bytes: Some(bytes),
-                    });
+        // Marca `Sending` antes de cifrar: se o banco falhar, o laço para sem
+        // consumir nenhum contador do ratchet.
+        if !self.store.try_mark_message_sending(message.id)? {
+            return Ok(None);
+        }
+        match session.encrypt_outgoing(
+            PacketType::MsgText,
+            message.body.into_bytes(),
+            Transport::DataChannel,
+        ) {
+            Ok(bytes) => {
+                if let Ok(cnt) = viska_proto::wire::envelope::counter(&bytes) {
+                    let _ = self.store.update_message_ratchet_counter(message.id, cnt as i64);
                 }
-                Err(_) => break,
+                Ok(Some(SealedMessageDto {
+                    message_id: message.id,
+                    bytes: Some(bytes),
+                }))
+            }
+            Err(_) => {
+                let _ = self.store.requeue_message(message.id);
+                Ok(None)
             }
         }
-        Ok(sealed)
     }
 
     /// Status atual da sessão com um contato, sem alterar nada — `None` se
@@ -598,7 +613,17 @@ impl Core {
         // Falha da varredura não pode esconder a timeline.
         let _ = self.enforce_transfer_deadlines();
         let stored = self.store.list_messages_paginated(&device_id, since_id, limit)?;
-        Ok(stored.into_iter().map(message_dto).collect())
+        let transfers = self.lock_transfers()?;
+        let claims = self.lock_claims()?;
+        Ok(stored
+            .into_iter()
+            .map(|msg| {
+                let active = msg
+                    .file_id
+                    .is_some_and(|fid| transfers.contains_key(&fid) || claims.contains(&fid));
+                message_dto(msg, active)
+            })
+            .collect())
     }
 
     /// Uma mensagem pelo `id`, para o Dart atualizar só aquela linha quando um
@@ -606,7 +631,14 @@ impl Core {
     /// esconde, como os comandos de reação).
     pub fn get_message(&self, message_id: i64) -> Result<Option<MessageDto>, FfiError> {
         self.ensure_not_locked()?;
-        Ok(self.store.get_message(message_id)?.map(message_dto))
+        let Some(msg) = self.store.get_message(message_id)? else {
+            return Ok(None);
+        };
+        let active = match msg.file_id {
+            Some(fid) => self.has_active_transfer(&fid)?,
+            None => false,
+        };
+        Ok(Some(message_dto(msg, active)))
     }
 
     /// Passa a receber os eventos de mudança em mensagens e põe a expiração
@@ -652,7 +684,10 @@ impl Core {
 /// que é quem escreve essas linhas) — um valor que não decodifica como hex
 /// vira `audio_file_id: None` em vez de erro, mesma política de "nunca
 /// panica com dado próprio corrompido" do resto da fronteira FFI.
-fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageDto {
+fn message_dto(
+    message: viska_proto::store::messages::StoredMessage,
+    has_active_transfer: bool,
+) -> MessageDto {
     let direction = match message.direction {
         viska_proto::store::messages::Direction::Outgoing => MessageDirectionDto::Outgoing,
         viska_proto::store::messages::Direction::Incoming => MessageDirectionDto::Incoming,
@@ -690,6 +725,7 @@ fn message_dto(message: viska_proto::store::messages::StoredMessage) -> MessageD
         reply_to_id: message.reply_to_id,
         view_once: message.view_once,
         reactions: message.reactions,
+        can_cancel_queued: message.can_cancel_queued && !has_active_transfer,
     }
 }
 
@@ -969,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn message_sent_before_session_ready_stays_pending_and_flush_pending_delivers_it() {
+    fn message_sent_before_session_ready_stays_pending_and_flush_next_pending_delivers_it() {
         let p = paired_pair();
 
         // `seal_outgoing_text` antes mesmo de `ensure_session`: nenhuma
@@ -988,14 +1024,13 @@ mod tests {
             p.device_id_b.clone(),
         );
 
-        let flushed = p.core_a.flush_pending(p.device_id_b).unwrap();
-        assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].message_id, sealed.message_id);
-        assert!(flushed[0].bytes.is_some());
+        let flushed = p.core_a.flush_next_pending(p.device_id_b).unwrap().unwrap();
+        assert_eq!(flushed.message_id, sealed.message_id);
+        assert!(flushed.bytes.is_some());
     }
 
     #[test]
-    fn flush_pending_without_sending_chain_returns_empty_and_keeps_row_pending() {
+    fn flush_next_pending_without_sending_chain_returns_empty_and_keeps_row_pending() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -1011,9 +1046,9 @@ mod tests {
             .unwrap();
         assert!(sealed.bytes.is_none());
 
-        let flushed = p.core_b.flush_pending(p.device_id_a.clone()).unwrap();
+        let flushed = p.core_b.flush_next_pending(p.device_id_a.clone()).unwrap();
 
-        assert!(flushed.is_empty());
+        assert!(flushed.is_none());
         let listed = p.core_b.list_messages(p.device_id_a).unwrap();
         assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
     }
@@ -1039,15 +1074,14 @@ mod tests {
             .decrypt_incoming(p.device_id_a.clone(), first.bytes.unwrap())
             .unwrap();
 
-        let flushed = p.core_b.flush_pending(p.device_id_a.clone()).unwrap();
+        let flushed = p.core_b.flush_next_pending(p.device_id_a.clone()).unwrap().unwrap();
 
-        assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].message_id, sealed.message_id);
-        assert!(flushed[0].bytes.is_some());
+        assert_eq!(flushed.message_id, sealed.message_id);
+        assert!(flushed.bytes.is_some());
     }
 
     #[test]
-    fn flush_pending_does_not_send_a_file_row_as_text() {
+    fn flush_next_pending_does_not_send_a_file_row_as_text() {
         let p = paired_pair();
         establish(
             &p.core_a,
@@ -1061,15 +1095,15 @@ mod tests {
             .insert_pending_message(&id, viska_proto::wire::packet_type::PacketType::FileMetadata, "segredo.pdf", 1)
             .unwrap();
 
-        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        let flushed = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap();
 
-        assert!(flushed.is_empty());
+        assert!(flushed.is_none());
         let listed = p.core_a.list_messages(p.device_id_b).unwrap();
         assert_eq!(listed[0].delivery_state, DeliveryStateDto::Pending);
     }
 
     #[test]
-    fn flush_pending_marks_rows_sending_so_a_second_flush_is_empty() {
+    fn flush_next_pending_marks_rows_sending_so_a_second_flush_is_empty() {
         let p = paired_pair();
         let sealed = p
             .core_a
@@ -1082,12 +1116,11 @@ mod tests {
             p.device_id_b.clone(),
         );
 
-        let first = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
-        let second = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        let first = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
+        let second = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap();
 
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].message_id, sealed.message_id);
-        assert!(second.is_empty());
+        assert_eq!(first.message_id, sealed.message_id);
+        assert!(second.is_none());
         let listed = p.core_a.list_messages(p.device_id_b).unwrap();
         assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
     }
@@ -1125,13 +1158,12 @@ mod tests {
             &p.core_b,
             p.device_id_b.clone(),
         );
-        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap();
 
         p.core_a.requeue_message(sealed.message_id).unwrap();
 
-        let again = p.core_a.flush_pending(p.device_id_b).unwrap();
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].message_id, sealed.message_id);
+        let again = p.core_a.flush_next_pending(p.device_id_b).unwrap().unwrap();
+        assert_eq!(again.message_id, sealed.message_id);
     }
 
     #[test]
@@ -1183,7 +1215,7 @@ mod tests {
             &p.core_b,
             p.device_id_b.clone(),
         );
-        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap();
 
         p.core_a.lock().unwrap();
         p.core_a.unlock().unwrap();
@@ -1230,12 +1262,12 @@ mod tests {
             .seal_outgoing_text(p.device_id_b.clone(), "oi".to_string())
             .unwrap();
         establish(&p.core_a, p.device_id_a.clone(), &p.core_b, p.device_id_b.clone());
-        p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap();
         sealed.message_id
     }
 
     #[test]
-    fn unknown_text_is_not_redrained_by_flush_pending() {
+    fn unknown_text_is_not_redrained_by_flush_next_pending() {
         let p = paired_pair();
         sending_text(&p);
 
@@ -1243,7 +1275,7 @@ mod tests {
 
         let listed = p.core_a.list_messages(p.device_id_b.clone()).unwrap();
         assert_eq!(listed[0].delivery_state, DeliveryStateDto::Unknown);
-        assert!(p.core_a.flush_pending(p.device_id_b).unwrap().is_empty());
+        assert!(p.core_a.flush_next_pending(p.device_id_b).unwrap().is_none());
     }
 
     #[test]
@@ -1253,10 +1285,9 @@ mod tests {
         p.core_a.store.mark_sending_messages_unknown().unwrap();
 
         p.core_a.resend_unknown_message(id).unwrap();
-        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
+        let flushed = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
 
-        assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].message_id, id);
+        assert_eq!(flushed.message_id, id);
         let listed = p.core_a.list_messages(p.device_id_b).unwrap();
         assert_eq!(listed[0].delivery_state, DeliveryStateDto::Sending);
     }
@@ -1727,16 +1758,15 @@ mod tests {
 
     /// Escreve `body` e entrega ao par o que sair, junto com o que a fila
     /// soltar (textos devolvidos a ela por um reset) — o que o app faz com
-    /// `seal_outgoing_text` e `flush_pending`.
+    /// `seal_outgoing_text` e `flush_next_pending`.
     fn deliver(from: &Core, from_peer: &[u8], to: &Core, to_peer: &[u8], body: &str) -> Vec<String> {
         let sealed = from.seal_outgoing_text(from_peer.to_vec(), body.to_owned()).unwrap();
         let mut out: Vec<Vec<u8>> = sealed.bytes.into_iter().collect();
-        out.extend(
-            from.flush_pending(from_peer.to_vec())
-                .unwrap()
-                .into_iter()
-                .filter_map(|m| m.bytes),
-        );
+        while let Some(m) = from.flush_next_pending(from_peer.to_vec()).unwrap() {
+            if let Some(bytes) = m.bytes {
+                out.push(bytes);
+            }
+        }
         out.into_iter()
             .filter_map(|bytes| to.receive_incoming(to_peer.to_vec(), bytes).unwrap().message)
             .map(|m| m.body)
@@ -1854,11 +1884,10 @@ mod tests {
         assert!(held.bytes.is_none());
 
         pump(&p, init, false);
-        let flushed = p.core_a.flush_pending(p.device_id_b.clone()).unwrap();
-        assert_eq!(flushed.len(), 1);
+        let flushed = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
         let got = p
             .core_b
-            .receive_incoming(p.device_id_a.clone(), flushed[0].bytes.clone().unwrap())
+            .receive_incoming(p.device_id_a.clone(), flushed.bytes.clone().unwrap())
             .unwrap();
         assert_eq!(got.message.unwrap().body, "na fila");
     }
@@ -1960,6 +1989,126 @@ mod tests {
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].message_id, message_id);
         assert_eq!(expired[0].peer_device_id, p.device_id_b);
+    }
+
+    #[test]
+    fn mid_batch_drop_does_not_waste_ratchet_counters_for_unsent_rows() {
+        let p = paired_pair();
+        for i in 0..5 {
+            p.core_a
+                .seal_outgoing_text(p.device_id_b.clone(), format!("msg-{i}"))
+                .unwrap();
+        }
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        // Entrega a 1ª linha; na 2ª, o envio falha no fio e volta para a fila.
+        let first = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
+        let recv0 = p
+            .core_b
+            .receive_incoming(p.device_id_a.clone(), first.bytes.unwrap())
+            .unwrap()
+            .message
+            .unwrap();
+        assert_eq!(recv0.body, "msg-0");
+        p.core_a.mark_message_sent(first.message_id).unwrap();
+
+        let second = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
+        assert!(second.bytes.is_some());
+        // Simula queda do transporte antes de o par receber `second`: só essa
+        // linha volta a `Pending`; as 3 seguintes nunca foram seladas.
+        p.core_a.requeue_message(second.message_id).unwrap();
+
+        let pending_count = p
+            .core_a
+            .list_messages(p.device_id_b.clone())
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.delivery_state == DeliveryStateDto::Pending)
+            .count();
+        assert_eq!(pending_count, 4);
+
+        let mut bodies = vec![recv0.body];
+        while let Some(next) = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap() {
+            let received = p
+                .core_b
+                .receive_incoming(p.device_id_a.clone(), next.bytes.unwrap())
+                .unwrap()
+                .message
+                .unwrap();
+            bodies.push(received.body);
+            p.core_a.mark_message_sent(next.message_id).unwrap();
+        }
+
+        assert_eq!(bodies, vec!["msg-0", "msg-1", "msg-2", "msg-3", "msg-4"]);
+        let id_a: [u8; 16] = p.device_id_a.clone().try_into().unwrap();
+        let skipped = p.core_b.lock_sessions().unwrap().get(&id_a).unwrap().skipped_keys_len();
+        assert_eq!(
+            skipped, 1,
+            "só a 1 linha perdida no fio poderia gerar chave pulada; gerou {skipped}"
+        );
+    }
+
+    #[test]
+    fn flush_next_pending_does_not_burn_counter_when_mark_sending_fails() {
+        let p = paired_pair();
+        for i in 0..2 {
+            p.core_a
+                .seal_outgoing_text(p.device_id_b.clone(), format!("msg-{i}"))
+                .unwrap();
+        }
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        p.core_a.store.set_fail_mark_sending_for_test(true).unwrap();
+        let err = p.core_a.flush_next_pending(p.device_id_b.clone());
+        assert_eq!(err, Err(FfiError::StoreFailure));
+        p.core_a.store.set_fail_mark_sending_for_test(false).unwrap();
+
+        let mut bodies = Vec::new();
+        while let Some(next) = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap() {
+            let received = p
+                .core_b
+                .receive_incoming(p.device_id_a.clone(), next.bytes.unwrap())
+                .unwrap()
+                .message
+                .unwrap();
+            bodies.push(received.body);
+            p.core_a.mark_message_sent(next.message_id).unwrap();
+        }
+
+        assert_eq!(bodies, vec!["msg-0", "msg-1"]);
+        let id_a: [u8; 16] = p.device_id_a.clone().try_into().unwrap();
+        let skipped = p.core_b.lock_sessions().unwrap().get(&id_a).unwrap().skipped_keys_len();
+        assert_eq!(skipped, 0, "falha de banco não deve queimar contador do ratchet");
+    }
+
+    #[test]
+    fn seal_outgoing_text_does_not_burn_counter_when_mark_sending_fails() {
+        let p = paired_pair();
+        let init = p.core_a.connect_signal(p.device_id_b.clone()).unwrap().unwrap();
+        pump(&p, init, false);
+
+        p.core_a.store.set_fail_mark_sending_for_test(true).unwrap();
+        let sealed = p
+            .core_a
+            .seal_outgoing_text(p.device_id_b.clone(), "falhou no banco".to_string())
+            .unwrap();
+        assert!(sealed.bytes.is_none());
+        p.core_a.store.set_fail_mark_sending_for_test(false).unwrap();
+
+        let flushed = p.core_a.flush_next_pending(p.device_id_b.clone()).unwrap().unwrap();
+        let received = p
+            .core_b
+            .receive_incoming(p.device_id_a.clone(), flushed.bytes.unwrap())
+            .unwrap()
+            .message
+            .unwrap();
+        assert_eq!(received.body, "falhou no banco");
+
+        let id_a: [u8; 16] = p.device_id_a.clone().try_into().unwrap();
+        let skipped = p.core_b.lock_sessions().unwrap().get(&id_a).unwrap().skipped_keys_len();
+        assert_eq!(skipped, 0, "falha de banco em seal_outgoing_text não deve queimar contador");
     }
 
     #[test]

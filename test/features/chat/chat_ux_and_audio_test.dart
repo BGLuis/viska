@@ -18,6 +18,8 @@ import 'package:viska/src/rust/ffi/error.dart';
 import 'package:viska/src/rust/ffi/types.dart';
 import 'package:viska/src/features/chat/chat_screen.dart';
 import 'package:viska/src/theme/dark_tech_theme.dart';
+import 'package:viska/src/common_widgets/feedback/viska_banner.dart';
+import 'package:viska/src/transport/message_reception_service.dart';
 import 'package:viska/src/transport/p2p_transport.dart';
 import 'package:viska/src/transport/p2p_transport_router.dart';
 import 'package:viska/src/transport/webrtc_transport.dart';
@@ -130,12 +132,26 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async => [];
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async => null;
 
   List<MessageDto> messagesToReturn = [];
+  var listMessagesCalls = 0;
+  final getMessageCalls = <int>[];
 
   @override
-  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async => messagesToReturn;
+  Future<List<MessageDto>> listMessages({required List<int> peerDeviceId}) async {
+    listMessagesCalls++;
+    return messagesToReturn;
+  }
+
+  @override
+  Future<MessageDto?> getMessage({required PlatformInt64 messageId}) async {
+    getMessageCalls.add(messageId);
+    for (final m in messagesToReturn) {
+      if (m.id == messageId) return m;
+    }
+    return null;
+  }
 
   @override
   Future<List<MessageDto>> listMessagesPaginated({
@@ -178,8 +194,48 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
     return unconfirmedFileOffersToReturn;
   }
 
+  final cancelQueuedTransferCalls = <int>[];
+
+  @override
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId}) async {
+    cancelQueuedTransferCalls.add(messageId);
+    final target = messagesToReturn.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (target == null) return null;
+    messagesToReturn = messagesToReturn.where((m) => m.id != messageId).toList();
+    emitMessageEvent(messageId, MessageEventKind.removed, peer: peerDeviceId);
+    return target.audioFileId ?? Uint8List.fromList(List.filled(16, 6));
+  }
+
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+Stream<T> _trackListeners<T>(Stream<T> source, void Function(int delta) onDelta) {
+  return Stream<T>.multi((controller) {
+    onDelta(1);
+    final sub = source.listen(
+      controller.add,
+      onError: controller.addError,
+      onDone: controller.close,
+    );
+    controller.onCancel = () {
+      onDelta(-1);
+      return sub.cancel();
+    };
+  }, isBroadcast: true);
+}
+
+class _SpyMessageReceptionService extends MessageReceptionService {
+  _SpyMessageReceptionService({required super.core, required super.router});
+
+  var activeEventListeners = 0;
+
+  @override
+  Stream<MessageReceptionEvent> eventsFor(ContactId contactId) =>
+      _trackListeners(super.eventsFor(contactId), (d) => activeEventListeners += d);
 }
 
 class _FakeP2PTransport implements P2PTransport {
@@ -187,6 +243,7 @@ class _FakeP2PTransport implements P2PTransport {
   final _incoming = StreamController<Uint8List>.broadcast();
   final _incomingFile = StreamController<Uint8List>.broadcast();
   final _connectionEvents = StreamController<TransportConnectionEvent>.broadcast();
+  var activeConnectionListeners = 0;
 
   @override
   Future<void> connect() async {}
@@ -199,9 +256,12 @@ class _FakeP2PTransport implements P2PTransport {
   @override
   Stream<Uint8List> get incomingFile => _incomingFile.stream;
   @override
-  Stream<TransportConnectionEvent> get connectionEvents => _connectionEvents.stream;
+  Stream<TransportConnectionEvent> get connectionEvents =>
+      _trackListeners(_connectionEvents.stream, (d) => activeConnectionListeners += d);
   @override
   Future<void> close() async {}
+
+  void emitConnectionEvent(TransportConnectionEvent event) => _connectionEvents.add(event);
 }
 
 void main() {
@@ -553,6 +613,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -604,6 +665,7 @@ void main() {
           isEphemeral: true,
           viewOnce: true,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -695,6 +757,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -730,6 +793,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -878,6 +942,215 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('offers_error_banner')), findsNothing);
+    });
+
+    testWidgets('queued file bubble disappears when cancelled offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 10,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'contrato.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('contrato.pdf'), findsOneWidget);
+      expect(find.text('Na fila — envia quando conectar'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_10')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('cancel_queued_transfer_10')));
+      await tester.pumpAndSettle();
+
+      expect(core.cancelQueuedTransferCalls, [10]);
+      expect(find.text('contrato.pdf'), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_10')), findsNothing);
+    });
+
+    testWidgets('queued voice note bubble disappears when cancelled offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 11,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: Uint8List.fromList(List.filled(16, 4)),
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('Na fila — envia quando conectar'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_11')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('cancel_queued_transfer_11')));
+      await tester.pumpAndSettle();
+
+      expect(core.cancelQueuedTransferCalls, [11]);
+      expect(find.text('Na fila — envia quando conectar'), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_11')), findsNothing);
+    });
+
+    testWidgets('cancel button disappears once session is established and excludes pending text', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 12,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'relatorio.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+        MessageDto(
+          id: 13,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: 'oi',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('cancel_queued_transfer_12')), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_13')), findsNothing);
+
+      core.sessionState = SessionStateKind.established;
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('cancel_queued_transfer_12')), findsNothing);
+    });
+
+    testWidgets('already-offered pending transfer after restart hides cancel button even offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 14,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'ja-ofertado.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+        MessageDto(
+          id: 15,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: Uint8List.fromList(List.filled(16, 8)),
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('ja-ofertado.pdf'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_14')), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_15')), findsNothing);
+    });
+
+    testWidgets('tapping RECONECTAR N times on SESSÃO INTERROMPIDA keeps one reception and one connection listener', (tester) async {
+      final transports = <_FakeP2PTransport>[];
+      final localRouter = P2PTransportRouter(
+        core: core,
+        transportFactory: (_, _) {
+          final t = _FakeP2PTransport();
+          transports.add(t);
+          return t;
+        },
+      );
+      final spyReception = _SpyMessageReceptionService(core: core, router: localRouter);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: localRouter,
+            receptionService: spyReception,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(core.listMessagesCalls, 1);
+      expect(spyReception.activeEventListeners, 1);
+      expect(transports, hasLength(1));
+      expect(transports.last.activeConnectionListeners, 3); // 1 router + 1 receptionService + 1 ChatController
+
+      const reconnectAttempts = 3;
+      for (var i = 0; i < reconnectAttempts; i++) {
+        transports.last.emitConnectionEvent(
+          TransportConnectionEvent(TransportConnectionState.failed, reason: 'queda $i'),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('SESSÃO INTERROMPIDA'), findsOneWidget);
+        final bannerFinder = find.ancestor(
+          of: find.text('SESSÃO INTERROMPIDA'),
+          matching: find.byType(ViskaBanner),
+        );
+        await tester.tap(find.descendant(of: bannerFinder, matching: find.text('RECONECTAR')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('SESSÃO INTERROMPIDA'), findsNothing);
+        expect(core.listMessagesCalls, 1, reason: 'RECONECTAR não deve chamar initialize() de novo');
+        expect(spyReception.activeEventListeners, 1);
+        for (var j = 0; j < transports.length - 1; j++) {
+          expect(transports[j].activeConnectionListeners, 0);
+        }
+        expect(transports.last.activeConnectionListeners, 3);
+      }
+
+      core.getMessageCalls.clear();
+      core.emitMessageEvent(77, MessageEventKind.added, peer: List.filled(16, 1));
+      await tester.pumpAndSettle();
+      expect(core.getMessageCalls, [77]);
+
+      // Desmontar a tela cancela todas as assinaturas do ChatController.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(spyReception.activeEventListeners, 0);
+      expect(transports.last.activeConnectionListeners, 2); // só router + receptionService
+
+      unawaited(spyReception.dispose());
+      unawaited(localRouter.closeAll());
     });
   });
 }

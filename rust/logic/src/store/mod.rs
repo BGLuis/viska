@@ -56,6 +56,8 @@ pub enum MessageChangeKind {
     KeyExpired,
     /// As reações da mensagem mudaram.
     ReactionsChanged,
+    /// A linha foi removida da timeline (cancelamento de item na fila offline).
+    Removed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,12 +352,19 @@ impl Store {
         Ok(())
     }
 
-    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
-    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
-        if self.with_conn(|conn| messages::mark_sending(conn, message_id))? {
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram,
+    /// informando se a linha de fato estava `Pending`.
+    pub fn try_mark_message_sending(&self, message_id: i64) -> Result<bool> {
+        let changed = self.with_conn(|conn| messages::mark_sending(conn, message_id))?;
+        if changed {
             self.announce(MessageChangeKind::Updated, &[message_id]);
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
+    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
+        self.try_mark_message_sending(message_id).map(|_| ())
     }
 
     /// Devolve à fila uma mensagem `Sending` cujo envio não aconteceu.
@@ -555,6 +564,33 @@ impl Store {
         self.with_conn(|conn| messages::list_pending(conn, contact_device_id))
     }
 
+    /// A mensagem de texto `Pending` mais antiga do contato.
+    pub fn next_pending_message(
+        &self,
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<messages::StoredMessage>> {
+        self.with_conn(|conn| messages::next_pending(conn, contact_device_id))
+    }
+
+    /// Só para teste: faz `mark_sending` falhar com `Error::Store` via trigger temporário.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_fail_mark_sending_for_test(&self, fail: bool) -> Result<()> {
+        let sql = if fail {
+            format!(
+                "CREATE TEMP TRIGGER IF NOT EXISTS fail_mark_sending
+                 BEFORE UPDATE ON messages
+                 WHEN NEW.delivery_state = {}
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected mark_sending failure');
+                 END;",
+                messages::DeliveryState::Sending as i64
+            )
+        } else {
+            "DROP TRIGGER IF EXISTS fail_mark_sending;".to_string()
+        };
+        self.with_conn(|conn| conn.execute_batch(&sql).map_err(|_| Error::Store))
+    }
+
     /// Adiciona uma reação emoji a uma mensagem.
     pub fn add_reaction(
         &self,
@@ -603,6 +639,7 @@ impl Store {
         transfer_secret: &[u8],
         created_at_unix_secs: i64,
         kind: crate::file::transfer::TransferKind,
+        offered: bool,
     ) -> Result<()> {
         self.with_conn(|conn| {
             transfers::insert(
@@ -614,8 +651,40 @@ impl Store {
                 transfer_secret,
                 created_at_unix_secs,
                 kind,
+                offered,
             )
-        })
+        })?;
+        // A linha em `messages` já foi anunciada antes desta inserção; quando o
+        // item entra na fila offline, `can_cancel_queued` passa a valer aqui.
+        if direction == transfers::Direction::Sending && !offered {
+            self.announce_by_file_id(file_id, contact_device_id);
+        }
+        Ok(())
+    }
+
+    /// Cancela um item na fila offline, apagando `file_transfers` e a mensagem
+    /// `Pending` numa transação única se `is_idle` confirmar ausência de handle
+    /// ativo. Anuncia [`MessageChangeKind::Removed`] fora da trava do banco.
+    pub fn cancel_queued_transfer_if<F>(
+        &self,
+        message_id: i64,
+        is_idle: F,
+    ) -> Result<Option<[u8; 16]>>
+    where
+        F: FnOnce(&[u8; 16]) -> bool,
+    {
+        let cancelled = self.with_conn(|conn| messages::cancel_queued_transfer_if(conn, message_id, is_idle))?;
+        if let Some((file_id, contact_device_id)) = cancelled {
+            if let Some(observer) = self.observer.read().ok().and_then(|slot| slot.clone()) {
+                observer(MessageChange {
+                    contact_device_id,
+                    message_id,
+                    kind: MessageChangeKind::Removed,
+                });
+            }
+            return Ok(Some(file_id));
+        }
+        Ok(None)
     }
 
     /// Busca uma transferência persistida pelo `file_id`.
@@ -643,6 +712,14 @@ impl Store {
     /// Registra que a oferta da transferência foi respondida (§7.7 item 5).
     pub fn mark_file_transfer_answered(&self, file_id: &[u8; 16]) -> Result<()> {
         self.with_conn(|conn| transfers::mark_answered(conn, file_id))
+    }
+
+    /// Registra que a oferta (`FILE_METADATA`) da transferência foi selada.
+    pub fn mark_file_transfer_offered(&self, file_id: &[u8; 16]) -> Result<()> {
+        if let Some(contact_device_id) = self.with_conn(|conn| transfers::mark_offered(conn, file_id))? {
+            self.announce_by_file_id(file_id, &contact_device_id);
+        }
+        Ok(())
     }
 
     /// Quantos envios ao contato ainda esperam resposta (a fila offline, D30).
@@ -1346,6 +1423,38 @@ mod tests {
             let contact = LocalIdentity::generate().unwrap().public();
             store.insert_contact(&contact, 100, None).unwrap();
             store.insert_pending_message(&contact.device_id, PacketType::MsgText, "oi", 1000).unwrap();
+        }
+
+        #[test]
+        fn cancel_queued_transfer_announces_removed_with_owner() {
+            let dir = tempfile::tempdir().unwrap();
+            let (store, contact, seen) = observed_store(&dir);
+            let file_id = [21u8; 16];
+            let msg_id = store
+                .insert_pending_message(&contact, PacketType::FileMetadata, "doc.pdf", 1000)
+                .unwrap();
+            store.set_message_file_id(msg_id, &file_id).unwrap();
+            store
+                .insert_file_transfer(
+                    &file_id,
+                    transfers::Direction::Sending,
+                    &contact,
+                    b"m",
+                    b"s",
+                    1000,
+                    crate::file::transfer::TransferKind::File,
+                    false,
+                )
+                .unwrap();
+            seen.lock().unwrap().clear();
+
+            let cancelled = store.cancel_queued_transfer_if(msg_id, |_| true).unwrap();
+
+            assert_eq!(cancelled, Some(file_id));
+            assert_eq!(kinds(&seen), vec![MessageChangeKind::Removed]);
+            let event = seen.lock().unwrap()[0];
+            assert_eq!(event.message_id, msg_id);
+            assert_eq!(event.contact_device_id, contact);
         }
     }
 }

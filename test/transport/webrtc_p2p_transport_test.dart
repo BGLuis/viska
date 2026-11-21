@@ -35,6 +35,10 @@ class _FakeCore implements Core {
   Uint8List? Function(Uint8List sealed)? openSignalingPayloadHandler;
 
   @override
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId}) =>
+      throw UnimplementedError();
+
+  @override
   Future<QueuedTransferDto> queueSendFile({
     required List<int> peerDeviceId,
     required String filePath,
@@ -100,7 +104,7 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) =>
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) =>
       throw UnimplementedError();
 
   @override

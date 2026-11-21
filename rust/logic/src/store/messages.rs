@@ -90,6 +90,10 @@ pub struct StoredMessage {
     pub reply_to_id: Option<i64>,
     pub view_once: bool,
     pub reactions: Vec<String>,
+    pub file_id: Option<[u8; 16]>,
+    /// Verdadeiro apenas quando a mensagem é um envio pendente na fila offline
+    /// cuja oferta nunca foi selada nem respondida (issue #111).
+    pub can_cancel_queued: bool,
 }
 
 fn reject_non_storable(packet_type: PacketType) -> Result<()> {
@@ -397,7 +401,7 @@ fn insert_with_options_internal(
 ) -> Result<i64> {
     reject_non_storable(packet_type)?;
 
-    // Reenvio de `flush_pending` sai recifrado com novo passo do ratchet, então só o
+    // Reenvio de `flush_next_pending` sai recifrado com novo passo do ratchet, então só o
     // `global_id` do corpo identifica a repetição. O acesso ao banco é serializado por
     // `with_conn`, logo consultar e inserir não corre contra outra inserção.
     if direction == Direction::Incoming {
@@ -810,6 +814,125 @@ pub fn reopen_failed_by_file_id(
     Ok(changed > 0)
 }
 
+/// Remove atomicamente um item da fila offline (D30): apaga a linha de
+/// `file_transfers`, eventuais chaves efêmeras/reações ligadas à mensagem e a
+/// própria linha `Pending` em `messages`, numa única transação, **só se** a
+/// mensagem ainda for um envio pendente de arquivo/nota de voz cuja oferta nunca
+/// foi selada nem respondida e `is_idle(&file_id)` confirmar que nenhum handle
+/// ativo a assumiu. Devolve `(file_id, contact_device_id)` se removeu.
+pub fn cancel_queued_transfer_if<F>(
+    conn: &rusqlite::Connection,
+    message_id: i64,
+    is_idle: F,
+) -> Result<Option<([u8; 16], [u8; 16])>>
+where
+    F: FnOnce(&[u8; 16]) -> bool,
+{
+    let tx = conn.unchecked_transaction().map_err(|_| Error::Store)?;
+
+    struct QueuedMessageRow {
+        contact_raw: Vec<u8>,
+        direction: i64,
+        packet_type: i64,
+        delivery_state: i64,
+        file_id_raw: Option<Vec<u8>>,
+    }
+
+    let row = tx
+        .query_row(
+            "SELECT contact_device_id, direction, packet_type, delivery_state, file_id
+             FROM messages WHERE id = ?1",
+            [message_id],
+            |r| {
+                Ok(QueuedMessageRow {
+                    contact_raw: r.get(0)?,
+                    direction: r.get(1)?,
+                    packet_type: r.get(2)?,
+                    delivery_state: r.get(3)?,
+                    file_id_raw: r.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+
+    let Some(QueuedMessageRow {
+        contact_raw,
+        direction,
+        packet_type,
+        delivery_state,
+        file_id_raw,
+    }) = row else {
+        return Ok(None);
+    };
+
+    if direction != Direction::Outgoing as i64
+        || delivery_state != DeliveryState::Pending as i64
+        || (packet_type != PacketType::FileMetadata.to_u8() as i64
+            && packet_type != PacketType::AudioChunk.to_u8() as i64)
+    {
+        return Ok(None);
+    }
+
+    let Ok(contact_device_id) = <[u8; 16]>::try_from(contact_raw.as_slice()) else {
+        return Ok(None);
+    };
+    let Some(file_id) = file_id_raw.and_then(|b| <[u8; 16]>::try_from(b.as_slice()).ok()) else {
+        return Ok(None);
+    };
+
+    let transfer: Option<(i64, Vec<u8>, i64, i64)> = tx
+        .query_row(
+            "SELECT direction, contact_device_id, answered, offered
+             FROM file_transfers WHERE file_id = ?1",
+            [file_id.as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+
+    let Some((t_dir, t_contact, answered, offered)) = transfer else {
+        return Ok(None);
+    };
+
+    if t_dir != crate::store::transfers::Direction::Sending as i64
+        || t_contact.as_slice() != contact_device_id.as_slice()
+        || answered != 0
+        || offered != 0
+    {
+        return Ok(None);
+    }
+
+    if !is_idle(&file_id) {
+        return Ok(None);
+    }
+
+    tx.execute(
+        "DELETE FROM file_transfers WHERE file_id = ?1",
+        [file_id.as_slice()],
+    )
+    .map_err(|_| Error::Store)?;
+    tx.execute(
+        "DELETE FROM ephemeral_message_keys WHERE message_id = ?1",
+        [message_id],
+    )
+    .map_err(|_| Error::Store)?;
+    tx.execute(
+        "DELETE FROM message_reactions WHERE message_id = ?1",
+        [message_id],
+    )
+    .map_err(|_| Error::Store)?;
+    tx.execute("DELETE FROM messages WHERE id = ?1", [message_id])
+        .map_err(|_| Error::Store)?;
+
+    tx.commit().map_err(|_| Error::Store)?;
+    // Garante que `transfer_secret` e eventual `K_msg` não fiquem no WAL (S-14).
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|_| Error::Store)?;
+
+    Ok(Some((file_id, contact_device_id)))
+}
+
 /// Liga a mensagem de saída de um arquivo ao `file_id` da transferência, para
 /// que a recusa do par (`FILE_REJECT`) ache a linha sem depender da UI.
 pub fn set_file_id(conn: &rusqlite::Connection, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
@@ -1032,7 +1155,13 @@ fn load_messages(
                     m.created_at_unix_secs, m.is_ephemeral, m.reply_to_id, m.view_once, m.global_id,
                     m.body_cipher_version,
                     ek.key,
-                    rx.reactions
+                    rx.reactions,
+                    m.contact_device_id,
+                    m.file_id,
+                    ft.direction,
+                    ft.contact_device_id,
+                    ft.answered,
+                    ft.offered
              FROM messages m
              LEFT JOIN ephemeral_message_keys ek ON (m.is_ephemeral = 1 AND ek.message_id = m.id)
              LEFT JOIN (
@@ -1040,6 +1169,7 @@ fn load_messages(
                  FROM message_reactions
                  GROUP BY message_id
              ) rx ON rx.message_id = m.id
+             LEFT JOIN file_transfers ft ON ft.file_id = m.file_id
              WHERE (?1 IS NULL OR m.contact_device_id = ?1)
                AND (?4 IS NULL OR m.id = ?4)
                AND (?2 IS NULL OR m.id > ?2)
@@ -1076,6 +1206,12 @@ fn load_messages(
         let body_cipher_version: i64 = row.get(10).map_err(|_| Error::Store)?;
         let ek_key: Option<Vec<u8>> = row.get(11).map_err(|_| Error::Store)?;
         let reactions_concat: Option<String> = row.get(12).map_err(|_| Error::Store)?;
+        let msg_contact_raw: Vec<u8> = row.get(13).map_err(|_| Error::Store)?;
+        let file_id_raw: Option<Vec<u8>> = row.get(14).map_err(|_| Error::Store)?;
+        let ft_direction: Option<i64> = row.get(15).map_err(|_| Error::Store)?;
+        let ft_contact_raw: Option<Vec<u8>> = row.get(16).map_err(|_| Error::Store)?;
+        let ft_answered: Option<i64> = row.get(17).map_err(|_| Error::Store)?;
+        let ft_offered: Option<i64> = row.get(18).map_err(|_| Error::Store)?;
 
         let direction = match direction_raw {
             0 => Direction::Outgoing,
@@ -1093,6 +1229,17 @@ fn load_messages(
             Some(s) if !s.is_empty() => s.split('\u{001f}').map(|e| e.to_string()).collect(),
             _ => Vec::new(),
         };
+        let file_id = file_id_raw
+            .as_deref()
+            .and_then(|b| <[u8; 16]>::try_from(b).ok());
+        let can_cancel_queued = direction == Direction::Outgoing
+            && delivery_state == DeliveryState::Pending
+            && (packet_type == PacketType::FileMetadata || packet_type == PacketType::AudioChunk)
+            && file_id.is_some()
+            && ft_direction == Some(crate::store::transfers::Direction::Sending as i64)
+            && ft_contact_raw.as_deref() == Some(msg_contact_raw.as_slice())
+            && ft_answered == Some(0)
+            && ft_offered == Some(0);
 
         messages.push(StoredMessage {
             id,
@@ -1106,6 +1253,8 @@ fn load_messages(
             reply_to_id,
             view_once: view_once != 0,
             reactions,
+            file_id,
+            can_cancel_queued,
         });
     }
     Ok(messages)
@@ -1128,6 +1277,24 @@ pub fn list_pending(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
 ) -> Result<Vec<StoredMessage>> {
+    list_pending_limited(conn, contact_device_id, None)
+}
+
+/// A mensagem de texto `Pending` mais antiga do contato, sem alterar o banco.
+pub fn next_pending(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<Option<StoredMessage>> {
+    Ok(list_pending_limited(conn, contact_device_id, Some(1))?
+        .into_iter()
+        .next())
+}
+
+fn list_pending_limited(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+    limit: Option<usize>,
+) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
             "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
@@ -1138,10 +1305,13 @@ pub fn list_pending(
              LEFT JOIN ephemeral_message_keys ek ON ek.message_id = m.id
              WHERE m.contact_device_id = ?1 AND m.direction = ?2 AND m.delivery_state = ?3
                AND m.packet_type = ?4
-             ORDER BY m.created_at_unix_secs ASC, m.id ASC",
+             ORDER BY m.created_at_unix_secs ASC, m.id ASC
+             LIMIT ?5",
         )
         .map_err(|_| Error::Store)?;
 
+    // No SQLite, `LIMIT -1` equivale a sem limite.
+    let limit_param = limit.map_or(-1_i64, |n| n as i64);
     let rows = statement
         .query_map(
             rusqlite::params![
@@ -1149,6 +1319,7 @@ pub fn list_pending(
                 Direction::Outgoing as i64,
                 DeliveryState::Pending as i64,
                 PacketType::MsgText.to_u8() as i64,
+                limit_param,
             ],
             |row| {
                 let id: i64 = row.get(0)?;
@@ -1223,6 +1394,8 @@ pub fn list_pending(
             reply_to_id,
             view_once: view_once != 0,
             reactions: Vec::new(),
+            file_id: None,
+            can_cancel_queued: false,
         });
     }
     Ok(messages)
@@ -1490,6 +1663,21 @@ mod tests {
         mark_delivered(&conn, id).unwrap();
 
         assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+    }
+
+    #[test]
+    fn next_pending_returns_oldest_text_and_ignores_sending_and_files() {
+        let contact = [10u8; 16];
+        let conn = conn_with_contact(contact);
+        insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 900).unwrap();
+        let first = insert_pending(&conn, &contact, PacketType::MsgText, "primeira", 1000).unwrap();
+        let second = insert_pending(&conn, &contact, PacketType::MsgText, "segunda", 1001).unwrap();
+
+        assert_eq!(next_pending(&conn, &contact).unwrap().unwrap().id, first);
+        assert!(mark_sending(&conn, first).unwrap());
+        assert_eq!(next_pending(&conn, &contact).unwrap().unwrap().id, second);
+        assert!(mark_sending(&conn, second).unwrap());
+        assert!(next_pending(&conn, &contact).unwrap().is_none());
     }
 
     #[test]
@@ -2265,6 +2453,89 @@ mod tests {
         assert!(matches!(res, Err(Error::SuiteRetired(1))));
 
         set_suite_retired(1, false);
+    }
+
+    #[test]
+    fn cancel_queued_transfer_deletes_unoffered_pending_transfer_and_ephemeral_key() {
+        let contact = [51u8; 16];
+        let conn = conn_with_contact(contact);
+        crate::store::contacts::set_ephemeral_ttl(&conn, &contact, 60).unwrap();
+        let file_id = [77u8; 16];
+        let msg_id = insert_pending(&conn, &contact, PacketType::AudioChunk, &hex::encode(file_id), 1000).unwrap();
+        set_file_id(&conn, msg_id, &file_id).unwrap();
+        crate::store::transfers::insert(
+            &conn,
+            &file_id,
+            crate::store::transfers::Direction::Sending,
+            &contact,
+            b"m",
+            b"secret",
+            1000,
+            crate::file::transfer::TransferKind::Audio,
+            false,
+        )
+        .unwrap();
+
+        assert!(get_by_id(&conn, msg_id).unwrap().unwrap().can_cancel_queued);
+
+        let cancelled = cancel_queued_transfer_if(&conn, msg_id, |_| true).unwrap();
+        assert_eq!(cancelled, Some((file_id, contact)));
+        assert!(get_by_id(&conn, msg_id).unwrap().is_none());
+        assert!(crate::store::transfers::find(&conn, &file_id).unwrap().is_none());
+        assert_eq!(next_ephemeral_expiry(&conn).unwrap(), None);
+
+        // Segunda chamada é idempotente.
+        assert_eq!(cancel_queued_transfer_if(&conn, msg_id, |_| true).unwrap(), None);
+    }
+
+    #[test]
+    fn cancel_queued_transfer_refuses_offered_answered_active_or_non_transfer_rows() {
+        let contact = [52u8; 16];
+        let conn = conn_with_contact(contact);
+
+        // 1. Texto comum nunca é cancelado por aqui.
+        let text_id = insert_pending(&conn, &contact, PacketType::MsgText, "oi", 1000).unwrap();
+        assert_eq!(cancel_queued_transfer_if(&conn, text_id, |_| true).unwrap(), None);
+        assert!(get_by_id(&conn, text_id).unwrap().is_some());
+
+        // 2. Transferência já oferecida (offered = true) não é cancelada.
+        let offered_fid = [1u8; 16];
+        let offered_msg = insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 1001).unwrap();
+        set_file_id(&conn, offered_msg, &offered_fid).unwrap();
+        crate::store::transfers::insert(
+            &conn,
+            &offered_fid,
+            crate::store::transfers::Direction::Sending,
+            &contact,
+            b"m",
+            b"s",
+            1001,
+            crate::file::transfer::TransferKind::File,
+            true,
+        )
+        .unwrap();
+        assert!(!get_by_id(&conn, offered_msg).unwrap().unwrap().can_cancel_queued);
+        assert_eq!(cancel_queued_transfer_if(&conn, offered_msg, |_| true).unwrap(), None);
+        assert!(get_by_id(&conn, offered_msg).unwrap().is_some());
+
+        // 3. Transferência não-ociosa (is_idle == false) não é cancelada.
+        let busy_fid = [2u8; 16];
+        let busy_msg = insert_pending(&conn, &contact, PacketType::FileMetadata, "b.bin", 1002).unwrap();
+        set_file_id(&conn, busy_msg, &busy_fid).unwrap();
+        crate::store::transfers::insert(
+            &conn,
+            &busy_fid,
+            crate::store::transfers::Direction::Sending,
+            &contact,
+            b"m",
+            b"s",
+            1002,
+            crate::file::transfer::TransferKind::File,
+            false,
+        )
+        .unwrap();
+        assert_eq!(cancel_queued_transfer_if(&conn, busy_msg, |_| false).unwrap(), None);
+        assert!(get_by_id(&conn, busy_msg).unwrap().is_some());
     }
 }
 
