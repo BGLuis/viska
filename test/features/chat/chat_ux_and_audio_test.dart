@@ -194,6 +194,21 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
     return unconfirmedFileOffersToReturn;
   }
 
+  final cancelQueuedTransferCalls = <int>[];
+
+  @override
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId}) async {
+    cancelQueuedTransferCalls.add(messageId);
+    final target = messagesToReturn.cast<MessageDto?>().firstWhere(
+          (m) => m?.id == messageId,
+          orElse: () => null,
+        );
+    if (target == null) return null;
+    messagesToReturn = messagesToReturn.where((m) => m.id != messageId).toList();
+    emitMessageEvent(messageId, MessageEventKind.removed, peer: peerDeviceId);
+    return target.audioFileId ?? Uint8List.fromList(List.filled(16, 6));
+  }
+
   @override
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -598,6 +613,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -649,6 +665,7 @@ void main() {
           isEphemeral: true,
           viewOnce: true,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
       await controller.initialize();
@@ -740,6 +757,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -775,6 +793,7 @@ void main() {
           isEphemeral: false,
           viewOnce: false,
           reactions: const [],
+          canCancelQueued: false,
         ),
       ];
 
@@ -923,6 +942,145 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const Key('offers_error_banner')), findsNothing);
+    });
+
+    testWidgets('queued file bubble disappears when cancelled offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 10,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'contrato.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('contrato.pdf'), findsOneWidget);
+      expect(find.text('Na fila — envia quando conectar'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_10')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('cancel_queued_transfer_10')));
+      await tester.pumpAndSettle();
+
+      expect(core.cancelQueuedTransferCalls, [10]);
+      expect(find.text('contrato.pdf'), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_10')), findsNothing);
+    });
+
+    testWidgets('queued voice note bubble disappears when cancelled offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 11,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: Uint8List.fromList(List.filled(16, 4)),
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('Na fila — envia quando conectar'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_11')), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('cancel_queued_transfer_11')));
+      await tester.pumpAndSettle();
+
+      expect(core.cancelQueuedTransferCalls, [11]);
+      expect(find.text('Na fila — envia quando conectar'), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_11')), findsNothing);
+    });
+
+    testWidgets('cancel button disappears once session is established and excludes pending text', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 12,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'relatorio.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: true,
+        ),
+        MessageDto(
+          id: 13,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.text,
+          body: 'oi',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('cancel_queued_transfer_12')), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_13')), findsNothing);
+
+      core.sessionState = SessionStateKind.established;
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('cancel_queued_transfer_12')), findsNothing);
+    });
+
+    testWidgets('already-offered pending transfer after restart hides cancel button even offline', (tester) async {
+      core.sessionState = SessionStateKind.handshaking;
+      core.messagesToReturn = [
+        MessageDto(
+          id: 14,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'ja-ofertado.pdf',
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+        MessageDto(
+          id: 15,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: Uint8List.fromList(List.filled(16, 8)),
+          deliveryState: DeliveryStateDto.pending,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('ja-ofertado.pdf'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_queued_transfer_14')), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_15')), findsNothing);
     });
 
     testWidgets('tapping RECONECTAR N times on SESSÃO INTERROMPIDA keeps one reception and one connection listener', (tester) async {

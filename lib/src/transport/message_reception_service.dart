@@ -62,8 +62,8 @@ class OffersChangedEvent extends MessageReceptionEvent {
 }
 
 /// O Rust avisou que uma mensagem da conversa mudou: apareceu, mudou de estado,
-/// perdeu a chave efêmera ou ganhou reação. É só um aviso de "releia essa
-/// linha": o conteúdo vem de `Core.getMessage`, nunca do evento.
+/// perdeu a chave efêmera, ganhou reação ou foi removida. É só um aviso de
+/// "releia essa linha": o conteúdo vem de `Core.getMessage`, nunca do evento.
 class MessageChangedEvent extends MessageReceptionEvent {
   const MessageChangedEvent(super.contactId, {required this.messageId, required this.kind});
   final int messageId;
@@ -1081,6 +1081,13 @@ class MessageReceptionService {
   /// Cacheia o caminho temporário de um arquivo enviado/recebido.
   void cacheReceivedFilePath(Uint8List fileId, String path) {
     _receivedFilePaths[_hex(fileId)] = path;
+  }
+
+  /// Remove áudio e caminho em cache de uma transferência cancelada.
+  void evictCachedTransfer(Uint8List fileId) {
+    final hexId = _hex(fileId);
+    _voiceNoteAudio.remove(hexId);
+    _receivedFilePaths.remove(hexId);
   }
 
   /// Pausa o processamento de novos pacotes (usado durante bloqueio do cofre).

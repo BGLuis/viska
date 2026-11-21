@@ -267,7 +267,11 @@ impl Core {
             return Ok(None);
         }
         let manifest = Manifest::decode(&stored.manifest_cbor)?;
-        self.reseal_metadata(&device_id, &stored, &manifest)
+        let sealed = self.reseal_metadata(&device_id, &stored, &manifest)?;
+        if sealed.is_some() {
+            self.store.mark_file_transfer_offered(&file_id)?;
+        }
+        Ok(sealed)
     }
 
     /// Garante um `SendTransfer` em memória para `stored`, lido da cópia em
@@ -1356,5 +1360,123 @@ mod tests {
         assert!(core.store.find_file_transfer(&fid(&queued.file_id)).unwrap().is_none());
         assert!(!outgoing_copy_exists(&core, &queued.file_id));
         assert_eq!(core.list_messages(peer).unwrap()[0].delivery_state, DeliveryStateDto::Expired);
+    }
+
+    #[test]
+    fn cancel_queued_file_removes_state_emits_removed_and_sends_no_offer_when_session_connects() {
+        let mut pair = established_pair();
+        // Simula ausência de sessão (reinício antes do handshake).
+        pair.core_a = open_core(&pair._dir_a);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_seen = std::sync::Arc::clone(&seen);
+        pair.core_a
+            .set_message_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "cancelar.bin", &[3u8; 4_000]);
+        let queued = pair
+            .core_a
+            .queue_send_file(pair.device_id_b.clone(), path, false)
+            .unwrap();
+        assert!(outgoing_copy_exists(&pair.core_a, &queued.file_id));
+        assert!(pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
+        assert!(pair.core_a.list_messages(pair.device_id_b.clone()).unwrap()[0].can_cancel_queued);
+
+        let cancelled = pair.core_a.cancel_queued_transfer(queued.message_id).unwrap();
+        assert_eq!(cancelled, Some(queued.file_id.clone()));
+
+        assert!(pair.core_a.store.find_file_transfer(&fid(&queued.file_id)).unwrap().is_none());
+        assert!(!outgoing_copy_exists(&pair.core_a, &queued.file_id));
+        assert!(pair.core_a.list_messages(pair.device_id_b.clone()).unwrap().is_empty());
+
+        let events = seen.lock().unwrap();
+        assert_eq!(
+            events.last().map(|e| (e.message_id, e.kind)),
+            Some((queued.message_id, crate::ffi::types::MessageEventKind::Removed))
+        );
+        drop(events);
+
+        // Ao estabelecer a sessão depois do cancelamento, nenhuma oferta sai.
+        reconnect(&pair, true);
+        let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert!(resumed.is_empty());
+        assert_eq!(
+            pair.core_a
+                .seal_resumed_offer(pair.device_id_b.clone(), queued.file_id)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cancel_queued_voice_note_removes_copy_and_frees_queue_slot() {
+        let (_dir, core, peer) = paired_without_session();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "voz.viska-audio", &[9u8; 1_024]);
+
+        let mut queued_ids = Vec::new();
+        for _ in 0..crate::ffi::transfer::MAX_QUEUED_TRANSFERS {
+            queued_ids.push(core.queue_send_audio(peer.clone(), path.clone(), false).unwrap());
+        }
+        assert_eq!(
+            core.queue_send_audio(peer.clone(), path.clone(), false),
+            Err(FfiError::QueueFull)
+        );
+
+        let first = &queued_ids[0];
+        let cancelled = core.cancel_queued_transfer(first.message_id).unwrap();
+        assert_eq!(cancelled, Some(first.file_id.clone()));
+        assert!(!outgoing_copy_exists(&core, &first.file_id));
+        assert!(core.store.find_file_transfer(&fid(&first.file_id)).unwrap().is_none());
+        assert_eq!(
+            core.list_messages(peer.clone()).unwrap().len(),
+            crate::ffi::transfer::MAX_QUEUED_TRANSFERS - 1
+        );
+
+        // Vaga liberada: um novo enfileiramento volta a ser aceito.
+        core.queue_send_audio(peer, path, false).unwrap();
+    }
+
+    #[test]
+    fn cancel_queued_transfer_refuses_offered_or_active_transfers_and_locked_core() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "enviado.bin", &[2u8; 2_000]);
+
+        // 1. Envio iniciado com sessão (`offered = true` + handle ativo) não é cancelado.
+        let started = pair
+            .core_a
+            .start_send_file(pair.device_id_b.clone(), path.clone(), false)
+            .unwrap();
+        assert!(!pair.core_a.get_message(started.message_id).unwrap().unwrap().can_cancel_queued);
+        assert_eq!(pair.core_a.cancel_queued_transfer(started.message_id).unwrap(), None);
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+
+        // Mesmo depois de trancar e destrancar (sem handle em RAM), `offered` segue verdadeiro.
+        pair.core_a.lock().unwrap();
+        assert_eq!(
+            pair.core_a.cancel_queued_transfer(started.message_id),
+            Err(FfiError::Locked)
+        );
+        pair.core_a.unlock().unwrap();
+        assert!(!pair.core_a.get_message(started.message_id).unwrap().unwrap().can_cancel_queued);
+        assert_eq!(pair.core_a.cancel_queued_transfer(started.message_id).unwrap(), None);
+
+        // 2. Item enfileirado retomado (`resume_transfers` instalou handle em RAM) não é cancelado.
+        let queued = pair
+            .core_a
+            .queue_send_file(pair.device_id_b.clone(), path, false)
+            .unwrap();
+        assert!(pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
+        reconnect(&pair, true);
+        let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert!(resumed.iter().any(|r| r.file_id == queued.file_id));
+        assert!(!pair.core_a.get_message(queued.message_id).unwrap().unwrap().can_cancel_queued);
+        assert_eq!(pair.core_a.cancel_queued_transfer(queued.message_id).unwrap(), None);
+        assert!(pair.core_a.store.find_file_transfer(&fid(&queued.file_id)).unwrap().is_some());
+
+        // 3. ID desconhecido é no-op silencioso.
+        assert_eq!(pair.core_a.cancel_queued_transfer(999_999).unwrap(), None);
     }
 }

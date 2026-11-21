@@ -40,6 +40,14 @@ abstract class Core implements RustOpaqueInterface {
   /// Cifra um pacote `CONTROL_SUITES` para publicação no canal de dados (§6.2, `0x42`).
   Future<Uint8List?> buildControlSuites({required List<int> peerDeviceId});
 
+  /// Cancela um item de arquivo ou nota de voz ainda na fila offline (D30):
+  /// apaga a linha de `file_transfers`, a mensagem `Pending` e a cópia
+  /// cifrada em `outgoing/`, emitindo `Removed` pelo observador do `Store`.
+  /// Só age se nenhuma oferta foi selada/respondida e não há handle ativo
+  /// em memória; devolve `Some(file_id)` se cancelou ou `None` caso
+  /// contrário (inclusive se já foi removido ou já começou a sair).
+  Future<Uint8List?> cancelQueuedTransfer({required PlatformInt64 messageId});
+
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
   /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.

@@ -360,6 +360,52 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
   }
 
+  final Set<int> _cancellingMessageIds = {};
+
+  /// `true` enquanto o cancelamento do item [messageId] está em voo no FFI.
+  bool isCancellingTransfer(int messageId) => _cancellingMessageIds.contains(messageId);
+
+  /// Cancela um arquivo ou nota de voz ainda na fila offline (D30). A linha só
+  /// sai da timeline quando o Rust emite `MessageEventKind.removed`.
+  Future<void> cancelQueuedTransfer(int messageId) async {
+    if (_cancellingMessageIds.contains(messageId)) return;
+    _cancellingMessageIds.add(messageId);
+    notifyListeners();
+    try {
+      final cancelledFileId = await _core.cancelQueuedTransfer(messageId: messageId);
+      if (_disposed) return;
+      if (cancelledFileId != null) {
+        _evictTransferCaches(messageId, cancelledFileId);
+      }
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao cancelar item $messageId da fila: $e\n$stack');
+      if (_disposed) return;
+      final msg = _messages.cast<MessageDto?>().firstWhere(
+            (m) => m?.id == messageId,
+            orElse: () => null,
+          );
+      if (msg?.kind == MessageKindDto.voiceNote) {
+        _voiceError = 'Não foi possível cancelar a nota de voz.';
+      } else {
+        _fileError = 'Não foi possível cancelar o envio do arquivo.';
+      }
+    } finally {
+      _cancellingMessageIds.remove(messageId);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _evictTransferCaches(int messageId, Uint8List fileId) {
+    final hexId = _hex(fileId);
+    _voiceNoteAudio.remove(hexId);
+    _receivedFilePaths.remove(hexId);
+    if (_decodedWav?.id == hexId) _decodedWav = null;
+    _receptionService.evictCachedTransfer(fileId);
+    if (_playingMessageId == messageId) {
+      unawaited(stopVoicePlayback());
+    }
+  }
+
   Map<String, int> reactionsFor(int messageId) => _reactions[messageId] ?? const {};
 
   Set<String> userReactionsFor(int messageId) => _userReactions[messageId] ?? const {};
@@ -433,8 +479,8 @@ class ChatController extends ChangeNotifier {
   void _handleReceptionEvent(MessageReceptionEvent event) {
     if (_disposed) return;
     switch (event) {
-      case MessageChangedEvent(:final messageId):
-        _enqueueChange(messageId);
+      case MessageChangedEvent(:final messageId, :final kind):
+        _enqueueChange(messageId, kind);
       case TypingIndicatorEvent():
         break;
       case SessionStateChangedEvent(:final state, :final needsRehandshake):
@@ -983,15 +1029,29 @@ class ChatController extends ChangeNotifier {
   /// mais antiga por cima. A carga inicial é o primeiro elo.
   Future<void> _changeQueue = Future<void>.value();
 
-  void _enqueueChange(int messageId) {
-    _changeQueue = _changeQueue.catchError((Object _) {}).then((_) => _applyMessageChange(messageId));
+  void _enqueueChange(int messageId, MessageEventKind kind) {
+    _changeQueue = _changeQueue
+        .catchError((Object _) {})
+        .then((_) => _applyMessageChange(messageId, kind));
   }
 
   /// Troca só a linha de [messageId] pelo que o Rust tem agora: entra se é nova,
   /// sai se sumiu (ou se a lista a esconde). A leitura é sempre a atual, então
   /// aplicar duas vezes o mesmo aviso dá o mesmo resultado.
-  Future<void> _applyMessageChange(int messageId) async {
+  Future<void> _applyMessageChange(int messageId, MessageEventKind kind) async {
     try {
+      if (kind == MessageEventKind.removed) {
+        if (_disposed) return;
+        final index = _messages.indexWhere((m) => m.id == messageId);
+        if (index == -1) return;
+        final removed = _messages.removeAt(index);
+        if (removed.audioFileId != null) {
+          _evictTransferCaches(messageId, removed.audioFileId!);
+        }
+        _aggregateReactions();
+        notifyListeners();
+        return;
+      }
       final fresh = await _core.getMessage(messageId: messageId);
       if (_disposed) return;
       final index = _messages.indexWhere((m) => m.id == messageId);
