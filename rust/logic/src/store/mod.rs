@@ -350,12 +350,19 @@ impl Store {
         Ok(())
     }
 
-    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
-    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
-        if self.with_conn(|conn| messages::mark_sending(conn, message_id))? {
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram,
+    /// informando se a linha de fato estava `Pending`.
+    pub fn try_mark_message_sending(&self, message_id: i64) -> Result<bool> {
+        let changed = self.with_conn(|conn| messages::mark_sending(conn, message_id))?;
+        if changed {
             self.announce(MessageChangeKind::Updated, &[message_id]);
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Tira da fila de pendentes uma mensagem cujos bytes cifrados já saíram.
+    pub fn mark_message_sending(&self, message_id: i64) -> Result<()> {
+        self.try_mark_message_sending(message_id).map(|_| ())
     }
 
     /// Devolve à fila uma mensagem `Sending` cujo envio não aconteceu.
@@ -553,6 +560,33 @@ impl Store {
         contact_device_id: &[u8; 16],
     ) -> Result<Vec<messages::StoredMessage>> {
         self.with_conn(|conn| messages::list_pending(conn, contact_device_id))
+    }
+
+    /// A mensagem de texto `Pending` mais antiga do contato.
+    pub fn next_pending_message(
+        &self,
+        contact_device_id: &[u8; 16],
+    ) -> Result<Option<messages::StoredMessage>> {
+        self.with_conn(|conn| messages::next_pending(conn, contact_device_id))
+    }
+
+    /// Só para teste: faz `mark_sending` falhar com `Error::Store` via trigger temporário.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_fail_mark_sending_for_test(&self, fail: bool) -> Result<()> {
+        let sql = if fail {
+            format!(
+                "CREATE TEMP TRIGGER IF NOT EXISTS fail_mark_sending
+                 BEFORE UPDATE ON messages
+                 WHEN NEW.delivery_state = {}
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected mark_sending failure');
+                 END;",
+                messages::DeliveryState::Sending as i64
+            )
+        } else {
+            "DROP TRIGGER IF EXISTS fail_mark_sending;".to_string()
+        };
+        self.with_conn(|conn| conn.execute_batch(&sql).map_err(|_| Error::Store))
     }
 
     /// Adiciona uma reação emoji a uma mensagem.

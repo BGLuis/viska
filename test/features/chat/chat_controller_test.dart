@@ -289,11 +289,11 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
-    if (sessionState != SessionStateKind.established) return [];
-    final result = pendingToFlush;
-    pendingToFlush = [];
-    return result;
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async {
+    if (sessionState != SessionStateKind.established || pendingToFlush.isEmpty) {
+      return null;
+    }
+    return pendingToFlush.removeAt(0);
   }
 
   @override
@@ -1060,7 +1060,7 @@ void main() {
     expect(controller.isEstablished, isTrue);
   });
 
-  test('established session flushes pending messages (flushPending)', () async {
+  test('established session flushes pending messages (flushNextPending)', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
     core.establishOnFeedHandshake = true;
@@ -1141,7 +1141,7 @@ void main() {
     expect(controller.connectionError, isNull);
   });
 
-  test('failed send stays pending: flushPending keeps every message pending when the connection is down', () async {
+  test('failed send stays pending: flushNextPending keeps every message pending when the connection is down', () async {
     core.outgoingHandshake = null;
     core.feedHandshakeResponse = null;
     core.establishOnFeedHandshake = true;

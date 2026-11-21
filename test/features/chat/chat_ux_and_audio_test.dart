@@ -132,7 +132,7 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async => [];
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async => null;
 
   List<MessageDto> messagesToReturn = [];
   var listMessagesCalls = 0;

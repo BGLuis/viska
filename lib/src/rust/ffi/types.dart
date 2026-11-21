@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
-
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `from_identity`
@@ -462,7 +461,7 @@ class SealedMessageDto {
 
   /// `None` quando a sessão ainda não está `Established`: a mensagem já
   /// está persistida como `pending`, mas não há nada para enviar ainda —
-  /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_pending` assim
+  /// o outbox (Fase 3, F6) tenta de novo via `Core::flush_next_pending` assim
   /// que a sessão ficar pronta.
   final Uint8List? bytes;
 

@@ -738,8 +738,8 @@ class MessageReceptionService {
   }
 
   /// Drenagens em curso por contato: a abertura do canal, o evento `connected`
-  /// e os avisos de sessão podem pedir a mesma drenagem juntos, e elas rodam
-  /// uma depois da outra.
+  /// e os avisos de sessão podem pedir a mesma drenagem juntos, e como cada
+  /// chamada sela uma única linha, elas rodam em fila preservando a ordem.
   final Map<ContactId, Future<void>> _flushQueue = {};
 
   Future<void> _flushPending(
@@ -774,32 +774,27 @@ class MessageReceptionService {
       // ficam `Pending` sem risco de virar `Unknown` no meio do caminho.
       final connecting = connectFuture ?? _router.pendingConnectFor(contactId);
       if (connecting != null) await connecting;
-      if (_isPaused || _disposed) return;
-      if (expectedTransport != null &&
-          !identical(_router.transportFor(contactId), expectedTransport)) {
-        return;
-      }
-
-      final sealed = await _core.flushPending(peerDeviceId: contactId.deviceId);
-      // O Rust já marcou o lote inteiro como `Sending`: o que não sair aqui
-      // precisa voltar à fila, senão fica fora dela até o app reiniciar.
-      for (var i = 0; i < sealed.length; i++) {
-        final bytes = sealed[i].bytes;
+      while (!_isPaused && !_disposed) {
+        if (expectedTransport != null &&
+            !identical(_router.transportFor(contactId), expectedTransport)) {
+          break;
+        }
+        final sealed = await _core.flushNextPending(peerDeviceId: contactId.deviceId);
+        if (sealed == null) break;
+        final bytes = sealed.bytes;
         // O Rust só devolve linhas com bytes, então isto não ocorre hoje.
-        if (bytes == null) continue;
+        if (bytes == null) break;
         try {
           await _router.sendToContact(contactId, bytes);
         } catch (_) {
-          await _requeueUnsent(sealed.skip(i));
+          // Só esta linha foi selada; as seguintes seguem `Pending` no banco
+          // sem ter consumido nenhum contador do ratchet.
+          await _requeueUnsent([sealed]);
           rethrow;
         }
-        try {
-          await _core.markMessageSent(messageId: sealed[i].messageId);
-        } catch (_) {
-          // Os bytes já saíram: devolver esta à fila a enviaria duas vezes.
-          await _requeueUnsent(sealed.skip(i + 1));
-          rethrow;
-        }
+        // Os bytes já saíram: falha local ao marcar deixa a linha `Sending`
+        // (não reenvia duas vezes) e para a drenagem sem selar a próxima.
+        await _core.markMessageSent(messageId: sealed.messageId);
       }
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Falha ao drenar outbox para $contactId: $e');

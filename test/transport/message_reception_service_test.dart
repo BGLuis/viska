@@ -21,6 +21,7 @@ class _FakeP2PTransport implements P2PTransport {
   final sendCalls = <Uint8List>[];
   final sendFileCalls = <Uint8List>[];
   bool Function(Uint8List)? sendError;
+  Future<void> Function(Uint8List)? onSend;
   Object? connectError;
   Completer<void>? connectGate;
   final _incoming = StreamController<Uint8List>.broadcast();
@@ -36,6 +37,7 @@ class _FakeP2PTransport implements P2PTransport {
 
   @override
   Future<void> send(Uint8List envelope) async {
+    if (onSend != null) await onSend!(envelope);
     if (sendError != null && sendError!(envelope)) throw StateError('envio falhou');
     sendCalls.add(envelope);
   }
@@ -192,21 +194,27 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessage
 
   /// Como o Rust com uma candidata recente: a fila não sai.
   var holdQueue = false;
-  var flushPendingCalls = 0;
+  var flushNextPendingCalls = 0;
+  final flushSealCounts = <int, int>{};
+  final _sending = <int, SealedMessageDto>{};
 
   @override
-  Future<List<SealedMessageDto>> flushPending({required List<int> peerDeviceId}) async {
-    flushPendingCalls++;
-    if (sessionState != SessionStateKind.established || holdQueue) return [];
-    final list = List<SealedMessageDto>.from(pendingToFlush);
-    pendingToFlush.clear();
-    return list;
+  Future<SealedMessageDto?> flushNextPending({required List<int> peerDeviceId}) async {
+    flushNextPendingCalls++;
+    if (sessionState != SessionStateKind.established || holdQueue || pendingToFlush.isEmpty) {
+      return null;
+    }
+    final next = pendingToFlush.removeAt(0);
+    flushSealCounts[next.messageId] = (flushSealCounts[next.messageId] ?? 0) + 1;
+    _sending[next.messageId] = next;
+    return next;
   }
 
   @override
   Future<void> markMessageSent({required int messageId}) async {
     markSentCalls.add(messageId);
     if (failMarkSent) throw StateError('banco indisponível');
+    _sending.remove(messageId);
   }
 
   final markFailedCalls = <int>[];
@@ -219,6 +227,8 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessage
   @override
   Future<void> requeueMessage({required int messageId}) async {
     requeueCalls.add(messageId);
+    final item = _sending.remove(messageId);
+    if (item != null) pendingToFlush.insert(0, item);
   }
 
   @override
@@ -1182,7 +1192,7 @@ void main() {
       expect(core.markSentCalls, [5]);
     });
 
-    test('failed flush send requeues the failed message and the unsent rest', () async {
+    test('failed flush send requeues only the failed message without sealing the rest, then redrains cleanly', () async {
       core.sessionState = SessionStateKind.established;
       await service.start();
       await pumpEventQueue();
@@ -1197,10 +1207,20 @@ void main() {
       await pumpEventQueue();
 
       expect(core.markSentCalls, [1]);
-      expect(core.requeueCalls, [2, 3]);
+      expect(core.requeueCalls, [2]);
+      expect(core.flushSealCounts, {1: 1, 2: 1});
+      expect(core.pendingToFlush.map((m) => m.messageId), [2, 3]);
+
+      transport.sendError = null;
+      transport.emitIncoming(Uint8List.fromList([10]));
+      await pumpEventQueue();
+
+      expect(core.markSentCalls, [1, 2, 3]);
+      expect(core.flushSealCounts, {1: 1, 2: 2, 3: 1});
+      expect(core.pendingToFlush, isEmpty);
     });
 
-    test('failed markMessageSent requeues the rest of the batch but not the delivered message', () async {
+    test('failed markMessageSent stops without sealing or requeuing the rest', () async {
       core.sessionState = SessionStateKind.established;
       await service.start();
       await pumpEventQueue();
@@ -1214,7 +1234,44 @@ void main() {
       await pumpEventQueue();
 
       expect(transport.sendCalls.where((b) => listEquals(b, [1])), hasLength(1));
-      expect(core.requeueCalls, [2], reason: 'a 1 já saiu; reenfileirá-la a enviaria duas vezes');
+      expect(core.requeueCalls, isEmpty, reason: 'a 1 já saiu; reenfileirá-la a enviaria duas vezes');
+      expect(core.flushSealCounts, {1: 1});
+      expect(core.pendingToFlush.map((m) => m.messageId), [2]);
+    });
+
+    test('concurrent flush triggers for the same contact drain in strict order without overlapping', () async {
+      core.sessionState = SessionStateKind.established;
+      core.decryptIncomingHandler = (_) => null;
+      await service.start();
+      await pumpEventQueue();
+      final firstSendGate = Completer<void>();
+      var inFlightSends = 0;
+      var maxInFlightSends = 0;
+      transport.onSend = (b) async {
+        inFlightSends++;
+        if (inFlightSends > maxInFlightSends) maxInFlightSends = inFlightSends;
+        if (listEquals(b, [1])) await firstSendGate.future;
+        inFlightSends--;
+      };
+      core.pendingToFlush = [
+        SealedMessageDto(messageId: 1, bytes: Uint8List.fromList([1])),
+        SealedMessageDto(messageId: 2, bytes: Uint8List.fromList([2])),
+      ];
+
+      transport.emitIncoming(Uint8List.fromList([9]));
+      await pumpEventQueue();
+      // Segundo gatilho enquanto a 1ª mensagem ainda está em trânsito: não
+      // pode selar a 2ª em paralelo antes da 1ª terminar.
+      transport.emitIncoming(Uint8List.fromList([10]));
+      await pumpEventQueue();
+      expect(core.flushSealCounts, {1: 1});
+
+      firstSendGate.complete();
+      await pumpEventQueue();
+
+      expect(maxInFlightSends, 1);
+      expect(core.markSentCalls, [1, 2]);
+      expect(core.flushSealCounts, {1: 1, 2: 1});
     });
 
     test('completing generic file transfer sends FILE_COMPLETE and caches path', () async {
@@ -1626,12 +1683,12 @@ void main() {
         core.pendingToFlush = [
           SealedMessageDto(messageId: 14, bytes: Uint8List.fromList([14, 14])),
         ];
-        final callsBefore = core.flushPendingCalls;
+        final callsBefore = core.flushNextPendingCalls;
 
         service.ensureListening(contact);
         await pumpEventQueue();
 
-        expect(core.flushPendingCalls, callsBefore);
+        expect(core.flushNextPendingCalls, callsBefore);
         expect(core.pendingToFlush, hasLength(1));
         expect(core.markSentCalls, isEmpty);
 
@@ -1642,7 +1699,7 @@ void main() {
         service.ensureListening(contact);
         await pumpEventQueue();
 
-        expect(core.flushPendingCalls, callsBefore);
+        expect(core.flushNextPendingCalls, callsBefore);
         expect(transport.sendCalls, isEmpty);
 
         gate.complete();
@@ -1660,14 +1717,14 @@ void main() {
         core.pendingToFlush = [
           SealedMessageDto(messageId: 15, bytes: Uint8List.fromList([15])),
         ];
-        final callsBefore = core.flushPendingCalls;
+        final callsBefore = core.flushNextPendingCalls;
 
         transport.emitConnectionEvent(
           const TransportConnectionEvent(TransportConnectionState.connected),
         );
         await pumpEventQueue();
 
-        expect(core.flushPendingCalls, callsBefore);
+        expect(core.flushNextPendingCalls, callsBefore);
         expect(transport.sendCalls, isEmpty);
       });
 
