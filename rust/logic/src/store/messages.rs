@@ -401,7 +401,7 @@ fn insert_with_options_internal(
 ) -> Result<i64> {
     reject_non_storable(packet_type)?;
 
-    // Reenvio de `flush_pending` sai recifrado com novo passo do ratchet, então só o
+    // Reenvio de `flush_next_pending` sai recifrado com novo passo do ratchet, então só o
     // `global_id` do corpo identifica a repetição. O acesso ao banco é serializado por
     // `with_conn`, logo consultar e inserir não corre contra outra inserção.
     if direction == Direction::Incoming {
@@ -1277,6 +1277,24 @@ pub fn list_pending(
     conn: &rusqlite::Connection,
     contact_device_id: &[u8; 16],
 ) -> Result<Vec<StoredMessage>> {
+    list_pending_limited(conn, contact_device_id, None)
+}
+
+/// A mensagem de texto `Pending` mais antiga do contato, sem alterar o banco.
+pub fn next_pending(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+) -> Result<Option<StoredMessage>> {
+    Ok(list_pending_limited(conn, contact_device_id, Some(1))?
+        .into_iter()
+        .next())
+}
+
+fn list_pending_limited(
+    conn: &rusqlite::Connection,
+    contact_device_id: &[u8; 16],
+    limit: Option<usize>,
+) -> Result<Vec<StoredMessage>> {
     let mut statement = conn
         .prepare(
             "SELECT m.id, m.direction, m.packet_type, m.body, m.delivery_state, 
@@ -1287,10 +1305,13 @@ pub fn list_pending(
              LEFT JOIN ephemeral_message_keys ek ON ek.message_id = m.id
              WHERE m.contact_device_id = ?1 AND m.direction = ?2 AND m.delivery_state = ?3
                AND m.packet_type = ?4
-             ORDER BY m.created_at_unix_secs ASC, m.id ASC",
+             ORDER BY m.created_at_unix_secs ASC, m.id ASC
+             LIMIT ?5",
         )
         .map_err(|_| Error::Store)?;
 
+    // No SQLite, `LIMIT -1` equivale a sem limite.
+    let limit_param = limit.map_or(-1_i64, |n| n as i64);
     let rows = statement
         .query_map(
             rusqlite::params![
@@ -1298,6 +1319,7 @@ pub fn list_pending(
                 Direction::Outgoing as i64,
                 DeliveryState::Pending as i64,
                 PacketType::MsgText.to_u8() as i64,
+                limit_param,
             ],
             |row| {
                 let id: i64 = row.get(0)?;
@@ -1641,6 +1663,21 @@ mod tests {
         mark_delivered(&conn, id).unwrap();
 
         assert!(!mark_rejected_by_file_id(&conn, &file_id, &contact).unwrap());
+    }
+
+    #[test]
+    fn next_pending_returns_oldest_text_and_ignores_sending_and_files() {
+        let contact = [10u8; 16];
+        let conn = conn_with_contact(contact);
+        insert_pending(&conn, &contact, PacketType::FileMetadata, "a.bin", 900).unwrap();
+        let first = insert_pending(&conn, &contact, PacketType::MsgText, "primeira", 1000).unwrap();
+        let second = insert_pending(&conn, &contact, PacketType::MsgText, "segunda", 1001).unwrap();
+
+        assert_eq!(next_pending(&conn, &contact).unwrap().unwrap().id, first);
+        assert!(mark_sending(&conn, first).unwrap());
+        assert_eq!(next_pending(&conn, &contact).unwrap().unwrap().id, second);
+        assert!(mark_sending(&conn, second).unwrap());
+        assert!(next_pending(&conn, &contact).unwrap().is_none());
     }
 
     #[test]

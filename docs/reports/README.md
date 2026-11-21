@@ -25,6 +25,12 @@ Dois modos, conforme o estado da fase:
 
 Todos os módulos planejados foram implementados e cobertos por testes unitários e de integração.
 
+## Spikes
+
+| Issue | Relatório | Modo | Status | Esforço estimado |
+|---|---|---|---|---|
+| #99 | [Roteamento de recepção e handshake no Rust](SPIKE-99-ROTEAMENTO-RECEPCAO-RUST.md) | A | 🟡 Análise concluída (sem implementação) | 1,5–2 d (mínimo) · 2,5–3,5 d (completo) |
+
 ## Itens que atravessam as fases
 
 1. **Repositório versionado.** O histórico de commits está estruturado no Git, garantindo rastreabilidade, controle de versão e builds reproduzíveis com `Cargo.lock`.

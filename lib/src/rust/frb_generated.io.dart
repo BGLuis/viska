@@ -84,6 +84,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto dco_decode_box_autoadd_message_dto(dynamic raw);
 
   @protected
+  SealedMessageDto dco_decode_box_autoadd_sealed_message_dto(dynamic raw);
+
+  @protected
   SessionStateKind dco_decode_box_autoadd_session_state_kind(dynamic raw);
 
   @protected
@@ -150,9 +153,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ResumedTransferDto> dco_decode_list_resumed_transfer_dto(dynamic raw);
 
   @protected
-  List<SealedMessageDto> dco_decode_list_sealed_message_dto(dynamic raw);
-
-  @protected
   List<SealedNoticeDto> dco_decode_list_sealed_notice_dto(dynamic raw);
 
   @protected
@@ -189,6 +189,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MessageDto? dco_decode_opt_box_autoadd_message_dto(dynamic raw);
+
+  @protected
+  SealedMessageDto? dco_decode_opt_box_autoadd_sealed_message_dto(dynamic raw);
 
   @protected
   SessionStateKind? dco_decode_opt_box_autoadd_session_state_kind(dynamic raw);
@@ -343,6 +346,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto sse_decode_box_autoadd_message_dto(SseDeserializer deserializer);
 
   @protected
+  SealedMessageDto sse_decode_box_autoadd_sealed_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   SessionStateKind sse_decode_box_autoadd_session_state_kind(
     SseDeserializer deserializer,
   );
@@ -427,11 +435,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<SealedMessageDto> sse_decode_list_sealed_message_dto(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   List<SealedNoticeDto> sse_decode_list_sealed_notice_dto(
     SseDeserializer deserializer,
   );
@@ -476,6 +479,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MessageDto? sse_decode_opt_box_autoadd_message_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  SealedMessageDto? sse_decode_opt_box_autoadd_sealed_message_dto(
     SseDeserializer deserializer,
   );
 
@@ -675,6 +683,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_sealed_message_dto(
+    SealedMessageDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_session_state_kind(
     SessionStateKind self,
     SseSerializer serializer,
@@ -783,12 +797,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_sealed_message_dto(
-    List<SealedMessageDto> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_list_sealed_notice_dto(
     List<SealedNoticeDto> self,
     SseSerializer serializer,
@@ -851,6 +859,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_message_dto(
     MessageDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_sealed_message_dto(
+    SealedMessageDto? self,
     SseSerializer serializer,
   );
 

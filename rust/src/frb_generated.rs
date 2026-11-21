@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -32493705;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 237085320;
 
 // Section: executor
 
@@ -1007,7 +1007,7 @@ fn wire__crate__ffi__core__Core_finish_receive_file_impl(
         },
     )
 }
-fn wire__crate__ffi__core__Core_flush_pending_impl(
+fn wire__crate__ffi__core__Core_flush_next_pending_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -1015,7 +1015,7 @@ fn wire__crate__ffi__core__Core_flush_pending_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "Core_flush_pending",
+            debug_name: "Core_flush_next_pending",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -1050,7 +1050,7 @@ fn wire__crate__ffi__core__Core_flush_pending_impl(
                         }
                     }
                     let api_that_guard = api_that_guard.unwrap();
-                    let output_ok = crate::ffi::core::Core::flush_pending(
+                    let output_ok = crate::ffi::core::Core::flush_next_pending(
                         &*api_that_guard,
                         api_peer_device_id,
                     )?;
@@ -4616,20 +4616,6 @@ impl SseDecode for Vec<crate::ffi::types::ResumedTransferDto> {
     }
 }
 
-impl SseDecode for Vec<crate::ffi::types::SealedMessageDto> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<crate::ffi::types::SealedMessageDto>::sse_decode(
-                deserializer,
-            ));
-        }
-        return ans_;
-    }
-}
-
 impl SseDecode for Vec<crate::ffi::types::SealedNoticeDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4796,6 +4782,19 @@ impl SseDecode for Option<crate::ffi::types::MessageDto> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::ffi::types::MessageDto>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::ffi::types::SealedMessageDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::ffi::types::SealedMessageDto>::sse_decode(
+                deserializer,
+            ));
         } else {
             return None;
         }
@@ -5215,7 +5214,9 @@ fn pde_ffi_dispatcher_primary_impl(
         18 => {
             wire__crate__ffi__core__Core_finish_receive_file_impl(port, ptr, rust_vec_len, data_len)
         }
-        19 => wire__crate__ffi__core__Core_flush_pending_impl(port, ptr, rust_vec_len, data_len),
+        19 => {
+            wire__crate__ffi__core__Core_flush_next_pending_impl(port, ptr, rust_vec_len, data_len)
+        }
         20 => wire__crate__ffi__core__Core_get_config_impl(port, ptr, rust_vec_len, data_len),
         21 => {
             wire__crate__ffi__core__Core_get_ephemeral_ttl_impl(port, ptr, rust_vec_len, data_len)
@@ -6387,16 +6388,6 @@ impl SseEncode for Vec<crate::ffi::types::ResumedTransferDto> {
     }
 }
 
-impl SseEncode for Vec<crate::ffi::types::SealedMessageDto> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::ffi::types::SealedMessageDto>::sse_encode(item, serializer);
-        }
-    }
-}
-
 impl SseEncode for Vec<crate::ffi::types::SealedNoticeDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6543,6 +6534,16 @@ impl SseEncode for Option<crate::ffi::types::MessageDto> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::ffi::types::MessageDto>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::ffi::types::SealedMessageDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::ffi::types::SealedMessageDto>::sse_encode(value, serializer);
         }
     }
 }

@@ -721,11 +721,12 @@ class _ChatScreenState extends State<ChatScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               child: ViskaBanner(
+                key: const Key('connection_error_banner'),
                 tone: ViskaBannerTone.warning,
                 title: 'SESSÃO INTERROMPIDA',
                 message: controller.connectionError!,
                 actionLabel: 'RECONECTAR',
-                onActionPressed: () => controller.initialize(),
+                onActionPressed: () => controller.reconnectTransport(),
               ),
             ),
           if (controller.voiceError != null)
