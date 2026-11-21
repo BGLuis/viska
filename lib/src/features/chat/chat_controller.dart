@@ -204,7 +204,7 @@ class ChatController extends ChangeNotifier {
     try {
       _isVerified = await _core.isContactVerified(contactDeviceId: _contactId.deviceId);
       _isKeyChanged = await _core.isKeyChanged(contactDeviceId: _contactId.deviceId);
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     } catch (_) {}
   }
 
@@ -366,21 +366,42 @@ class ChatController extends ChangeNotifier {
 
   StreamSubscription<MessageReceptionEvent>? _receptionSub;
   StreamSubscription<TransportConnectionEvent>? _connectionSub;
+  var _initialized = false;
+  Future<void>? _initInFlight;
+  var _reconnectingTransport = false;
   var _disposed = false;
+
+  void _subscribeReception() {
+    unawaited(_receptionSub?.cancel());
+    _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
+  }
+
+  void _subscribeConnection() {
+    unawaited(_connectionSub?.cancel());
+    _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
+  }
 
   /// Carrega o histórico, conecta o transporte (via [P2PTransportRouter],
   /// que faz isso sob demanda) e tenta publicar a mensagem de handshake se
-  /// formos iniciador. Chamar uma vez, normalmente em `initState`.
-  Future<void> initialize() async {
+  /// formos iniciador. Idempotente depois de concluída: chamadas seguintes
+  /// não recarregam o histórico nem acumulam ouvintes.
+  Future<void> initialize() {
+    if (_disposed || _initialized) return Future<void>.value();
+    return _initInFlight ??= _doInitialize().whenComplete(() => _initInFlight = null);
+  }
+
+  Future<void> _doInitialize() async {
     try {
+      _connectionError = null;
       _receptionService.ensureListening(_contactId);
       // Assina antes de carregar: o que mudar durante a carga fica na fila
       // atrás dela e é aplicado por id depois, sem se perder nem duplicar. É
       // isto que dispensa um retrato do Rust ao assinar.
-      _receptionSub = _receptionService.eventsFor(_contactId).listen(_handleReceptionEvent);
+      _subscribeReception();
       _changeQueue = _loadMessages();
       await _changeQueue;
-      _connectionSub = _router.connectionEventsFor(_contactId).listen(_handleConnectionEvent);
+      if (_disposed) return;
+      _subscribeConnection();
 
       // Eventos que passaram antes de esta conversa abrir já estão no serviço.
       final known = _receptionService.sessionStateFor(_contactId);
@@ -388,23 +409,29 @@ class ChatController extends ChangeNotifier {
         _applySessionState(known.state, known.needsRehandshake, fromStream: true);
       }
       final session = await _core.ensureSession(peerDeviceId: _contactId.deviceId);
+      if (_disposed) return;
       // Só vale se nenhum evento chegou: um evento que passe durante o await é
       // mais recente que esta leitura e não deve ser sobrescrito por ela.
       if (!_session.streamed) {
         _applySessionState(session.state, session.needsRehandshake, fromStream: false);
       }
       await refreshTrustState();
+      if (_disposed) return;
       await loadUnconfirmedOffers();
+      if (!_disposed) {
+        _initialized = true;
+      }
     } catch (e, stack) {
       if (kDebugMode) debugPrint('[ChatController] Erro na inicialização da conversa: $e\n$stack');
       _connectionError = e.toString().contains('Locked')
           ? 'Aplicativo bloqueado. Desbloqueie para conversar.'
           : 'Falha ao inicializar transporte: $e';
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
   void _handleReceptionEvent(MessageReceptionEvent event) {
+    if (_disposed) return;
     switch (event) {
       case MessageChangedEvent(:final messageId):
         _enqueueChange(messageId);
@@ -829,12 +856,42 @@ class ChatController extends ChangeNotifier {
   }
 
   void _handleConnectionEvent(TransportConnectionEvent event) {
+    if (_disposed) return;
     if (event.state == TransportConnectionState.failed) {
       _connectionError = event.reason;
       notifyListeners();
     } else if (event.state == TransportConnectionState.connected) {
       _connectionError = null;
       notifyListeners();
+    }
+  }
+
+  /// Fecha eventual transporte estagnado para o contato e reinicia a conexão
+  /// sem reinicializar a conversa nem duplicar assinaturas de eventos. Se a
+  /// inicialização ainda não concluiu, tenta [initialize] de novo.
+  Future<void> reconnectTransport() async {
+    if (_disposed) return;
+    if (!_initialized) {
+      await initialize();
+      return;
+    }
+    if (_reconnectingTransport) return;
+    _reconnectingTransport = true;
+    try {
+      await _router.closeContact(_contactId);
+      if (_disposed) return;
+      _connectionError = null;
+      notifyListeners();
+      _receptionService.ensureListening(_contactId);
+      _subscribeConnection();
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao reconectar transporte: $e\n$stack');
+      if (!_disposed) {
+        _connectionError = 'Falha ao reconectar transporte: $e';
+        notifyListeners();
+      }
+    } finally {
+      _reconnectingTransport = false;
     }
   }
 
@@ -886,8 +943,8 @@ class ChatController extends ChangeNotifier {
 
   /// Falha de envio não sobe até a UI (que dispara sem await): a mensagem
   /// volta à fila (`pending`) via `requeueMessage`, porque o Rust a deixou em
-  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia no próximo
-  /// pacote recebido ou ao reiniciar.
+  /// `sending` ao cifrá-la. O `MessageReceptionService` a reenvia quando o
+  /// transporte reconecta, no próximo pacote recebido ou ao reiniciar.
   Future<void> _trySendSealed(int messageId, Uint8List bytes) async {
     try {
       await _router.sendToContact(_contactId, bytes);

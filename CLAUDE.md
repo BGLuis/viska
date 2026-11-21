@@ -58,7 +58,7 @@ silêncio, e não "conserte" um desvio de volta para a spec original sem antes l
 ```bash
 # Núcleo Rust (rodar de dentro de rust/)
 cargo test
-cargo clippy --all-targets -- -D warnings     # zero avisos é o critério
+cargo clippy --workspace --all-targets -- -D warnings # zero avisos é o critério
 cargo build --all-features
 cargo build --no-default-features             # as duas combinações têm que compilar
 

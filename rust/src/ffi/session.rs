@@ -243,6 +243,11 @@ impl Core {
         let _publish = self.publish_on_exit(device_id);
         let created_at = viska_proto::util::time::unix_seconds() as i64;
 
+        // Inserir sob o lock de sessões: impede que um `flush_next_pending`
+        // concorrente leia a linha `Pending` antes de esta chamada cifrá-la e
+        // marcá-la `Sending` (mesma invariante de `flush_next_pending`).
+        let mut sessions = self.lock_sessions()?;
+
         // Se o corpo for uma reação, vincula à mensagem no banco local:
         if let Some((target_id, emoji)) = viska_proto::store::messages::parse_reaction_metadata(&body) {
             let _ = self.store.add_reaction_by_target(&target_id, &device_id, &emoji, created_at);
@@ -255,7 +260,6 @@ impl Core {
             created_at,
         )?;
 
-        let mut sessions = self.lock_sessions()?;
         let bytes = match sessions.get_mut(&device_id) {
             Some(session) if session.can_send() => {
                 if self.store.try_mark_message_sending(message_id).unwrap_or(false) {

@@ -131,7 +131,7 @@
         {
           rust-check = mk "viska-rust-check" "clippy (-D warnings) e testes do núcleo Rust" ''
             cd "$(git rev-parse --show-toplevel)/rust"
-            cargo clippy --locked --all-targets -- -D warnings
+            cargo clippy --locked --workspace --all-targets -- -D warnings
             cargo test --locked --workspace
           '';
           flutter-check = mk "viska-flutter-check" "pub get travado, analyze e testes do Flutter" ''
