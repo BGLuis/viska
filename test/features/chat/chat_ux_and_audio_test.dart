@@ -793,6 +793,7 @@ void main() {
           viewOnce: false,
           reactions: const [],
           canCancelQueued: false,
+          cancellableFileId: fileId,
         ),
       ];
 
@@ -1161,9 +1162,68 @@ void main() {
       expect(find.text('em-curso.pdf'), findsOneWidget, reason: 'a mensagem não sai da conversa');
       expect(find.text('Falhou'), findsOneWidget);
       expect(find.byKey(const Key('cancel_transfer_20')), findsNothing);
+      expect(find.text('Enviado'), findsOneWidget, reason: 'só o envio que terminou se diz enviado');
     });
 
-    testWidgets('cancel shows on a voice note being received and leaves it cancelled', (tester) async {
+    MessageDto incomingFile(int id, String name, {DeliveryStateDto state = DeliveryStateDto.delivered, Uint8List? live}) =>
+        MessageDto(
+          id: id,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.file,
+          body: name,
+          deliveryState: state,
+          createdAtUnixSecs: 1000 + id,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+          cancellableFileId: live,
+        );
+
+    testWidgets('a received file shows its name, or that it was not received', (tester) async {
+      core.messagesToReturn = [
+        incomingFile(30, 'chegou.pdf'),
+        incomingFile(31, 'parou.pdf', state: DeliveryStateDto.failed),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('chegou.pdf'), findsOneWidget);
+      expect(find.text('parou.pdf'), findsOneWidget);
+      expect(find.text('Não recebido'), findsOneWidget);
+      expect(find.text('Recebendo arquivo…'), findsNothing);
+      expect(find.byKey(const Key('cancel_transfer_30')), findsNothing);
+    });
+
+    testWidgets('cancel shows on a file being received and leaves it not received', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 3));
+      core.messagesToReturn = [incomingFile(32, 'grande.zip', live: fileId)];
+
+      // O indicador de recebimento anima sem fim: `pumpAndSettle` nunca assentaria.
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text('Recebendo arquivo…'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('cancel_transfer_32')));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(core.cancelTransferCalls, [fileId]);
+      expect(find.text('grande.zip'), findsOneWidget);
+      expect(find.text('Não recebido'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_transfer_32')), findsNothing);
+    });
+
+    testWidgets('cancel shows on a voice note being received and leaves it not received', (tester) async {
       final fileId = Uint8List.fromList(List.filled(16, 8));
       core.messagesToReturn = [
         MessageDto(
@@ -1202,7 +1262,7 @@ void main() {
 
       expect(core.cancelTransferCalls, [fileId]);
       expect(find.text('Recebendo nota de voz…'), findsNothing);
-      expect(find.text('Nota de voz cancelada'), findsOneWidget);
+      expect(find.text('Nota de voz não recebida'), findsOneWidget);
       expect(find.byKey(const Key('cancel_transfer_22')), findsNothing);
     });
 

@@ -1270,10 +1270,11 @@ class _MessageBubble extends StatelessWidget {
           ],
         );
       }
-      // Recebida só vira `failed` quando o recebimento foi cancelado aqui.
+      // Recebida só vira `failed` quando o recebimento parou antes do fim:
+      // cancelado aqui, pelo emissor, ou sem como retomar.
       if (message.deliveryState == DeliveryStateDto.failed) {
         return const Text(
-          'Nota de voz cancelada',
+          'Nota de voz não recebida',
           style: TextStyle(fontSize: 12.5, color: DarkTechTheme.textMuted),
         );
       }
@@ -1307,12 +1308,13 @@ class _MessageBubble extends StatelessWidget {
     return _VoiceNoteWaveform(controller: controller, message: message);
   }
 
-  /// Renderiza um balão de arquivo genérico. Outgoing é sempre exibido como
-  /// "enviado" — quem mandou já tem o arquivo. Incoming mostra progresso até
-  /// [ChatController.isFileReady] ser `true`.
+  /// Renderiza um balão de arquivo genérico. O recebimento mostra progresso
+  /// enquanto o Rust ainda tem a transferência (`cancellableFileId`); o
+  /// envio só se diz "Enviado" depois que a transferência acabou.
   Widget _buildFileContent(BuildContext context) {
     final isOutgoing = message.direction == MessageDirectionDto.outgoing;
-    final isReady = isOutgoing || controller.isFileReady(message);
+    final transferLive = message.cancellableFileId != null;
+    final isReady = isOutgoing || !transferLive || controller.isFileReady(message);
 
     if (!isReady) {
       return Container(
@@ -1361,15 +1363,25 @@ class _MessageBubble extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
           ),
         ),
-        if (isOutgoing) ...const [
-          SizedBox(width: 8),
+        if (_fileStatus(isOutgoing, transferLive) case final status?) ...[
+          const SizedBox(width: 8),
           Text(
-            'Enviado',
-            style: TextStyle(fontSize: 10.5, color: DarkTechTheme.textMuted),
+            status,
+            style: const TextStyle(fontSize: 10.5, color: DarkTechTheme.textMuted),
           ),
         ],
       ],
     );
+  }
+
+  String? _fileStatus(bool isOutgoing, bool transferLive) {
+    final state = message.deliveryState;
+    if (isOutgoing) {
+      final finished = state == DeliveryStateDto.sent || state == DeliveryStateDto.delivered;
+      return finished && !transferLive ? 'Enviado' : null;
+    }
+    // Recebido só vira `failed` quando o recebimento parou antes do fim.
+    return state == DeliveryStateDto.failed ? 'Não recebido' : null;
   }
 
   Widget _buildViewOnceContent(BuildContext context, String text) {
