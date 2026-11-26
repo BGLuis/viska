@@ -114,8 +114,8 @@ impl Core {
         Ok(())
     }
 
-    /// Encerra uma transferência que não vai mais andar: marca a mensagem do
-    /// envio conforme o motivo, descarta o handle, apaga a linha (o que destrói
+    /// Encerra uma transferência que não vai mais andar: marca a mensagem
+    /// conforme o motivo (a de recebimento sempre como falha), descarta o handle, apaga a linha (o que destrói
     /// a chave, D15) e os arquivos.
     fn drop_transfer(
         &self,
@@ -126,14 +126,13 @@ impl Core {
     ) -> Result<(), FfiError> {
         // A mensagem vem antes, como em `handle_incoming_file_reject`: se a
         // escrita falhar, a linha continua e a próxima chamada repete tudo.
-        if direction == Direction::Sending {
-            match ending {
-                Ending::OfferExpired => self.store.mark_message_expired_by_file_id(file_id, contact)?,
-                Ending::RetentionCeiling | Ending::Unresumable => {
-                    self.store.mark_message_failed_by_file_id(file_id, contact)?
-                }
-            };
-        }
+        match (direction, ending) {
+            (Direction::Sending, Ending::OfferExpired) => self.store.mark_message_expired_by_file_id(file_id, contact)?,
+            (Direction::Sending, Ending::RetentionCeiling | Ending::Unresumable) => {
+                self.store.mark_message_failed_by_file_id(file_id, contact)?
+            }
+            (Direction::Receiving, _) => self.store.mark_received_message_failed_by_file_id(file_id, contact)?,
+        };
         // No teto de retenção o par desiste sozinho pelo mesmo prazo; em qualquer
         // outro fim ele continuaria até lá, então fica a lápide (§7.8).
         let notice = match (ending, direction) {
@@ -899,6 +898,7 @@ mod tests {
         assert_eq!(resumed.len(), 1);
         assert_eq!(resumed[0].direction, ResumedDirectionDto::Abandoned);
         assert!(pair.core_b.list_active_file_transfer_ids().unwrap().is_empty());
+        assert_eq!(received_message(&pair).delivery_state, DeliveryStateDto::Failed);
 
         let notice = resumed[0].sealed_notice.clone().unwrap();
         pair.core_a.decrypt_incoming(pair.device_id_b.clone(), notice).unwrap();
@@ -1651,6 +1651,58 @@ mod tests {
         assert_receiver_clean(&pair, &started.file_id);
     }
 
+    /// A única mensagem de arquivo que B tem de A: a do recebimento.
+    fn received_message(pair: &EstablishedPair) -> crate::ffi::types::MessageDto {
+        let files: Vec<_> = pair
+            .core_b
+            .list_messages(pair.device_id_a.clone())
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.kind == crate::ffi::types::MessageKindDto::File)
+            .collect();
+        assert_eq!(files.len(), 1);
+        files.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_file_being_received_shows_in_the_conversation_and_can_be_cancelled() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        let receiving = received_message(&pair);
+        assert_eq!(receiving.kind, crate::ffi::types::MessageKindDto::File);
+        assert_eq!(receiving.body, "grande.bin");
+        assert_eq!(receiving.cancellable_file_id, Some(started.file_id.clone()));
+        let seen = watch_events(&pair.core_b);
+
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        let requests = take_notice_requests(&seen);
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &requests[0]);
+
+        let after = received_message(&pair);
+        assert_eq!(after.delivery_state, DeliveryStateDto::Failed);
+        assert_eq!(after.cancellable_file_id, None);
+        assert_receiver_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
+    }
+
+    #[test]
+    fn a_sender_cancel_marks_the_received_message_failed() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        let seen = watch_events(&pair.core_a);
+
+        pair.core_a.cancel_transfer(started.file_id.clone()).unwrap();
+        deliver_notice(&pair.core_a, &pair.core_b, pair.device_id_a.clone(), &take_notice_requests(&seen)[0]);
+
+        let received = received_message(&pair);
+        assert_eq!(received.delivery_state, DeliveryStateDto::Failed);
+        assert_eq!(received.cancellable_file_id, None);
+    }
+
     fn outgoing_message(pair: &EstablishedPair, message_id: i64) -> crate::ffi::types::MessageDto {
         pair.core_a.get_message(message_id).unwrap().unwrap()
     }
@@ -1697,6 +1749,10 @@ mod tests {
         pair.core_a.decrypt_incoming(pair.device_id_b.clone(), complete).unwrap();
 
         assert_eq!(outgoing_message(&pair, started.message_id).cancellable_file_id, None);
+        let received = received_message(&pair);
+        assert_eq!(received.body, "a.bin");
+        assert_eq!(received.delivery_state, DeliveryStateDto::Delivered);
+        assert_eq!(received.cancellable_file_id, None);
     }
 
     #[test]

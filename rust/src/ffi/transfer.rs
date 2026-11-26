@@ -1057,16 +1057,19 @@ impl Core {
             false,
         )?;
 
-        if kind == TransferKind::Audio {
-            let message_id = self.store.insert_incoming_message(
-                &contact_device_id,
-                PacketType::AudioChunk,
-                &hex::encode(manifest.file_id),
-                received_at,
-            )?;
-            // Sem a ligação, a nota em recebimento não se deixa cancelar pela conversa.
-            self.store.set_message_file_id(message_id, &manifest.file_id)?;
-        }
+        // Mesmo corpo que o emissor grava: `hex(file_id)` para a nota, o nome
+        // para o arquivo. O nome já foi validado ao chegar a oferta.
+        let (packet_type, body) = match kind {
+            TransferKind::Audio => (PacketType::AudioChunk, hex::encode(manifest.file_id)),
+            TransferKind::File => (
+                PacketType::FileMetadata,
+                manifest::decrypt_name(transfer_secret, &manifest.file_id, &manifest.name_encrypted)?,
+            ),
+        };
+        let message_id = self.store.insert_incoming_message(&contact_device_id, packet_type, &body, received_at)?;
+        // Sem a ligação, o recebimento não se deixa cancelar pela conversa nem
+        // vira falha quando o emissor desiste.
+        self.store.set_message_file_id(message_id, &manifest.file_id)?;
 
         if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive), None)? {
             return Err(FfiError::Locked);
