@@ -134,12 +134,14 @@ jobs:
         run: flutter pub get --enforce-lockfile
 
       - name: Build do APK em modo Release
-        # Em PR, o .so sai sem LTO: a auditoria olha só DEX, manifesto e a presença das ABIs, que
-        # não mudam. Push e release.yml (que audita de novo o APK publicado) mantêm o perfil do
-        # Cargo.toml. No passo, e não no job, porque o rust-cache põe as variáveis CARGO_* na chave.
+        # O .so sai sem LTO: a auditoria olha só DEX, manifesto e a presença das ABIs, que não mudam,
+        # e o APK publicado é compilado e auditado de novo, com o perfil do Cargo.toml, pelo
+        # release.yml. O mesmo perfil em push e PR, senão o cache salvo no push (perfil diferente)
+        # faz o PR recompilar todas as dependências. No passo, e não no job, porque o rust-cache põe
+        # as variáveis CARGO_* na chave.
         env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'pull_request' && 'off' || 'true' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'pull_request' && '16' || '1' }}
+          CARGO_PROFILE_RELEASE_LTO: 'off'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: flutter build apk --release --target-platform android-arm64,android-x64
 
       - name: Auditoria de Segurança e Zero Telemetria no APK

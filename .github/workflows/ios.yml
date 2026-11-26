@@ -95,11 +95,12 @@ jobs:
         run: bundle exec pod install
 
       - name: Compilação do App iOS (Release sem assinatura)
-        # Em PR, o Rust sai sem LTO: o job só prova que compila, linka e empacota. Push e
-        # release.yml mantêm o perfil do Cargo.toml. No passo porque o rust-cache põe CARGO_* na chave.
+        # O Rust sai sem LTO: o job só prova que compila, linka e empacota; o IPA publicado sai do
+        # release.yml com o perfil do Cargo.toml. O mesmo perfil em push e PR, senão o cache salvo no
+        # push faz o PR recompilar todas as dependências. No passo porque o rust-cache põe CARGO_* na chave.
         env:
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'pull_request' && 'off' || 'true' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'pull_request' && '16' || '1' }}
+          CARGO_PROFILE_RELEASE_LTO: 'off'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
         run: flutter build ios --no-codesign --release
 
       - name: Validar empacotamento em IPA sem assinatura
