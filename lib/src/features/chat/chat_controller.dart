@@ -395,6 +395,30 @@ class ChatController extends ChangeNotifier {
     }
   }
 
+  /// Cancela um arquivo ou nota de voz já em transferência, de envio ou de
+  /// recebimento. O Rust avisa o contato e deixa a mensagem como `failed`; a
+  /// linha muda pelo evento dele, não aqui.
+  Future<void> cancelTransfer(MessageDto message) async {
+    final fileId = message.cancellableFileId;
+    if (fileId == null || _cancellingMessageIds.contains(message.id)) return;
+    _cancellingMessageIds.add(message.id);
+    notifyListeners();
+    try {
+      await _core.cancelTransfer(fileId: fileId);
+    } catch (e, stack) {
+      if (kDebugMode) debugPrint('[ChatController] Erro ao cancelar transferência ${message.id}: $e\n$stack');
+      if (_disposed) return;
+      if (message.kind == MessageKindDto.voiceNote) {
+        _voiceError = 'Não foi possível cancelar a nota de voz.';
+      } else {
+        _fileError = 'Não foi possível cancelar o arquivo.';
+      }
+    } finally {
+      _cancellingMessageIds.remove(message.id);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
   void _evictTransferCaches(int messageId, Uint8List fileId) {
     final hexId = _hex(fileId);
     _voiceNoteAudio.remove(hexId);

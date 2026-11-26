@@ -1195,6 +1195,38 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ],
                     )
+                  else if (message.cancellableFileId != null)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (outgoing) ...[
+                          Text(
+                            _deliveryLabel(message, controller.isEstablished),
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              color: DarkTechTheme.textMuted,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        InkWell(
+                          key: Key('cancel_transfer_${message.id}'),
+                          onTap: controller.isCancellingTransfer(message.id)
+                              ? null
+                              : () => controller.cancelTransfer(message),
+                          child: Text(
+                            'Cancelar',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: controller.isCancellingTransfer(message.id)
+                                  ? DarkTechTheme.textMuted
+                                  : DarkTechTheme.alert,
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
                   else if (outgoing)
                     Text(
                       _deliveryLabel(message, controller.isEstablished),
@@ -1236,6 +1268,13 @@ class _MessageBubble extends StatelessWidget {
               style: TextStyle(fontSize: 13, color: DarkTechTheme.textPrimary),
             ),
           ],
+        );
+      }
+      // Recebida só vira `failed` quando o recebimento foi cancelado aqui.
+      if (message.deliveryState == DeliveryStateDto.failed) {
+        return const Text(
+          'Nota de voz cancelada',
+          style: TextStyle(fontSize: 12.5, color: DarkTechTheme.textMuted),
         );
       }
       return Container(

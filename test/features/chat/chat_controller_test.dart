@@ -461,8 +461,14 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   Uint8List Function(Uint8List fileId, String destinationPath)? finishReceiveFileHandler;
   List<FileOfferDto> pendingFileOffersToReturn = [];
 
+  final cancelTransferCalls = <List<int>>[];
+  Object? cancelTransferError;
+
   @override
-  Future<void> cancelTransfer({required List<int> fileId}) async {}
+  Future<void> cancelTransfer({required List<int> fileId}) async {
+    cancelTransferCalls.add(fileId);
+    if (cancelTransferError != null) throw cancelTransferError!;
+  }
 
   final cancelQueuedTransferCalls = <int>[];
   FutureOr<Uint8List?> Function(int messageId)? cancelQueuedTransferHandler;
@@ -2648,6 +2654,60 @@ void main() {
 
       expect(controller.messages, hasLength(1));
       expect(controller.fileError, isNull);
+    });
+  });
+
+  group('cancelling transfers in progress (issue #124)', () {
+    MessageDto inProgress({Uint8List? cancellableFileId}) => MessageDto(
+          id: 7,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'grande.bin',
+          deliveryState: DeliveryStateDto.sent,
+          createdAtUnixSecs: 100,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+          cancellableFileId: cancellableFileId,
+        );
+
+    test('cancelTransfer calls the core with the message file_id and leaves the message', () async {
+      final fileId = Uint8List.fromList(List.filled(16, 9));
+      core.messagesToReturn = [inProgress(cancellableFileId: fileId)];
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.cancelTransfer(controller.messages.single);
+
+      expect(core.cancelTransferCalls, [fileId]);
+      expect(core.cancelQueuedTransferCalls, isEmpty);
+      expect(controller.messages, hasLength(1));
+      expect(controller.isCancellingTransfer(7), isFalse);
+      expect(controller.fileError, isNull);
+    });
+
+    test('cancelTransfer does nothing for a message without a transfer to cancel', () async {
+      core.messagesToReturn = [inProgress()];
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.cancelTransfer(controller.messages.single);
+
+      expect(core.cancelTransferCalls, isEmpty);
+    });
+
+    test('cancelTransfer reports the failure without dropping the message', () async {
+      core.messagesToReturn = [inProgress(cancellableFileId: Uint8List.fromList(List.filled(16, 9)))];
+      core.cancelTransferError = Exception('core trancada');
+      controller = makeController();
+      await controller.initialize();
+
+      await controller.cancelTransfer(controller.messages.single);
+
+      expect(controller.fileError, 'Não foi possível cancelar o arquivo.');
+      expect(controller.messages, hasLength(1));
+      expect(controller.isCancellingTransfer(7), isFalse);
     });
   });
 
