@@ -104,7 +104,7 @@ use viska_proto::file::transfer::{
     self, FileFeedback, ReceiveTransfer, TransferKind, TransferProgress,
     TRANSFER_SECRET_LEN,
 };
-use viska_proto::store::transfers::Direction;
+use viska_proto::store::transfers::{Direction, EndNotice};
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
 
@@ -212,7 +212,7 @@ pub(super) fn to_device_id(bytes: Vec<u8>) -> Result<[u8; DEVICE_ID_LEN], FfiErr
     bytes.try_into().map_err(|_| FfiError::Internal)
 }
 
-fn to_file_id(bytes: Vec<u8>) -> Result<[u8; FILE_ID_LEN], FfiError> {
+pub(super) fn to_file_id(bytes: Vec<u8>) -> Result<[u8; FILE_ID_LEN], FfiError> {
     bytes.try_into().map_err(|_| FfiError::Internal)
 }
 
@@ -606,7 +606,15 @@ impl Core {
                     progress,
                 }))
             }
-            _ => Ok(None),
+            Some(TransferHandle::Send(_)) => Ok(None),
+            None => {
+                drop(transfers);
+                // O emissor retoma um envio que este lado já encerrou (§7.8). O
+                // canal `file` não diz de que contato veio o símbolo; o aviso vai
+                // ao contato da lápide, que é quem sabe o `file_id`.
+                self.notice_peer_activity(&file_id, None);
+                Ok(None)
+            }
         }
     }
 
@@ -618,8 +626,8 @@ impl Core {
     /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
     /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
     /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
-    /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
-    /// emissor só para pelo limite de inatividade (issue #108).
+    /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e a
+    /// lápide o repete quando o emissor retomar (§7.8).
     pub fn finish_receive_file(
         &self,
         peer_device_id: Vec<u8>,
@@ -724,7 +732,8 @@ impl Core {
         };
         // A reserva vai até a linha sumir; uma retomada que reservar depois disso
         // confere a linha antes de concluir que o staging se perdeu (`rebuild`).
-        self.end_transfer(&file_id)?;
+        // A lápide repete o `FILE_COMPLETE` se este se perder (§7.8).
+        self.retire_transfer(&file_id, EndNotice::Complete)?;
         drop(claim);
 
         // Daqui em diante o arquivo já está no destino e a transferência acabou:
@@ -770,11 +779,21 @@ impl Core {
 
     /// Cancela uma transferência (de qualquer lado): remove o handle em
     /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
-    /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
+    /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
+    /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
+    /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
+    /// insistir na transferência.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
         self.remove_unconfirmed_offer(&file_id)?;
-        self.end_transfer(&file_id)
+        let notice = match self.store.find_file_transfer(&file_id)?.map(|stored| stored.direction) {
+            Some(Direction::Sending) => EndNotice::Cancel,
+            Some(Direction::Receiving) => EndNotice::Reject,
+            None => return self.end_transfer(&file_id),
+        };
+        self.retire_transfer(&file_id, notice)?;
+        self.notice_peer_activity(&file_id, None);
+        Ok(())
     }
 
     /// Cancela um item de arquivo ou nota de voz ainda na fila offline (D30):
@@ -828,7 +847,7 @@ impl Core {
             .collect()
     }
 
-    fn lock_unconfirmed_offers(
+    pub(super) fn lock_unconfirmed_offers(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<[u8; FILE_ID_LEN], UnconfirmedOffer>>, FfiError>
     {
@@ -885,7 +904,7 @@ impl Core {
     }
 
     /// Tira uma oferta retida e avisa o Dart, sem evento se ela não existia.
-    fn remove_unconfirmed_offer(
+    pub(super) fn remove_unconfirmed_offer(
         &self,
         file_id: &[u8; FILE_ID_LEN],
     ) -> Result<Option<UnconfirmedOffer>, FfiError> {
@@ -1049,6 +1068,11 @@ impl Core {
         body: zeroize::Zeroizing<Vec<u8>>,
     ) -> Result<(), FfiError> {
         let (kind, transfer_secret, manifest) = transfer::decode_metadata_body(&body)?;
+        // Uma oferta reenviada de algo que este lado já encerrou não volta à
+        // tela: o emissor ainda não soube do fim, e é isso que se repete (§7.8).
+        if self.notice_peer_activity(&manifest.file_id, Some(contact_device_id)) {
+            return Ok(());
+        }
         // O emissor reenvia a oferta ao retomar, enquanto não tiver resposta
         // (§7.5): uma oferta que já virou recebimento é ignorada, e uma retida
         // é tratada logo abaixo. Um `file_id` de envio nosso também, sem erro
@@ -1132,10 +1156,11 @@ impl Core {
         // Expirar antes de aceitar: feedback depois do prazo não ressuscita a oferta.
         // Falha da varredura não impede processar o feedback.
         let _ = self.enforce_transfer_deadlines();
-        let stored = self
-            .store
-            .find_file_transfer(&file_id)?
-            .ok_or(FfiError::Internal)?;
+        let Some(stored) = self.store.find_file_transfer(&file_id)? else {
+            // O receptor retoma um envio que este lado já encerrou (§7.8).
+            self.notice_peer_activity(&file_id, Some(contact_device_id));
+            return Ok(());
+        };
         // Só o destinatário da oferta a responde, e só ele encerra o prazo.
         if stored.contact_device_id != contact_device_id || stored.direction != Direction::Sending {
             return Ok(());
@@ -3057,6 +3082,9 @@ pub(super) mod tests {
 
     fn assert_single_gone(result: (Vec<TransferEventDto>, Vec<u8>)) {
         let (events, file_id) = result;
+        // Cancelar um recebimento já aceito também pede o aviso ao emissor (§7.8),
+        // que não é evento de oferta.
+        let events: Vec<_> = events.into_iter().filter(|e| e.kind != TransferEventKind::NoticeReady).collect();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, TransferEventKind::OfferGone);
         assert_eq!(events[0].file_id, file_id);

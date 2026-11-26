@@ -4,7 +4,7 @@ A especificação de arquitetura recebida define o produto. Este documento regis
 a implementação se afasta dela, sempre por uma de duas razões: a letra da spec contradiz um objetivo
 declarado pela própria spec, ou é inviável nas plataformas alvo.
 
-Cada desvio tem um identificador estável (D1–D30). O código e o `protocol.md` referenciam esses
+Cada desvio tem um identificador estável (D1–D31). O código e o `protocol.md` referenciam esses
 identificadores. Reverter qualquer um para a letra original é uma decisão de produto, não técnica —
 o custo de cada reversão está anotado.
 
@@ -524,8 +524,8 @@ remonta a partir da cópia em vez de ficar parado adiante dele (`docs/protocol.m
 
 **Custo:** o disco ocupado pelo arquivo dobra durante o envio, e cada retomada relê a cópia inteira
 para conferir a raiz. Quando a transferência termina de um lado só sem o aviso chegar ao outro
-(`FILE_COMPLETE` perdido, emissor que desiste), o outro lado retoma a cada reconexão até o teto, limitado
-a 2 minutos de laço por vez (issue #108). Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
+(`FILE_COMPLETE` perdido, emissor que desiste), o outro lado retoma até a próxima atividade dele fazer a
+lápide repetir o aviso (D31), limitado a 2 minutos de laço por vez. Um envio da LAN mantém `symbol_size` 65535 (D23) ao retomar, então só retoma por
 um transporte que aceite símbolos desse tamanho.
 
 **Custo de reverter:** sem a cópia, a retomada teria de reler o original e conviver com o arquivo
@@ -585,11 +585,40 @@ enfileirar e enviar (as mesmas razões de D28).
 envios limita o pior caso, e não há limite de tamanho por arquivo. Sem sessão, o `use_lan` do
 manifesto é só uma aposta: quem enfileira no DataChannel manda símbolos de 16384 B mesmo se a
 conexão acabar sendo pela LAN. Um item ainda na fila (antes de qualquer oferta selada) pode ser
-cancelado localmente por `Core::cancel_queued_transfer`; após selar a oferta, vale o prazo de 24 h
-(cancelamento com aviso ao par é da issue #108). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
+cancelado localmente por `Core::cancel_queued_transfer`; após selar a oferta, vale o prazo de 24 h,
+e `Core::cancel_transfer` avisa o par (D31). Uma nota de voz já oferecida e sem feedback do receptor por 24 h também expira,
 o que antes só acontecia aos 7 dias.
 
 **Custo de reverter:** enfileirar sem a cópia exigiria guardar o caminho em claro e tratar arquivo
 sumido ou alterado só na drenagem (o problema de D28). Voltar o prazo de voz a 7 dias é restaurar o
 filtro de `kind` em `store::transfers::list_due`, ao preço de uma nota enfileirada ficar até uma
 semana no aparelho.
+
+---
+
+## D31 — Fim de um lado só avisado por `FILE_CANCEL` e repetido por uma lápide
+**Spec:** §6.2 não tem pacote do emissor para o receptor que encerre uma transferência, e a spec não
+prevê transferência que sobreviva a bloqueio (D28), então não diz o que fazer quando o aviso de fim se
+perde.
+**Aqui:** `FILE_CANCEL` (0x25) leva o fim do emissor ao receptor, com o mesmo corpo e a mesma
+autenticação do `FILE_REJECT`. O lado que encerra sozinho troca a linha de `file_transfers` por uma
+lápide em `ended_transfers` (`file_id`, contato, aviso, vencimento no teto de 7 dias), e cada atividade
+do par sobre aquele `file_id` (símbolo, feedback ou oferta reenviada) pede o aviso de novo, no máximo
+um a cada 5 s (`docs/protocol.md` §7.8).
+
+Nenhum dos dois mecanismos resolve sozinho (decisão do mantenedor, issue #108). Um pacote novo
+mandado uma vez se perde nos mesmos casos em que o `FILE_COMPLETE` se perde, porque o aviso nasce sem
+sessão; e só a lápide do receptor não cobre o emissor que desiste, porque ele não tinha pacote nenhum
+para mandar. A lápide reage à atividade do par, em vez de guardar o aviso selado para reenvio: um
+envelope selado numa sessão que depois foi trocada (§11.4) não abriria mais.
+
+**Custo:** estado novo em repouso, sem segredo, até 7 dias depois da criação da transferência: quem
+tiver o aparelho destrancado vê que uma transferência com aquele contato terminou, mesmo que a
+mensagem dela tenha sido efêmera e já expirado (D29). O receptor responde a um `FILE_SYMBOL` cujo
+`file_id` em claro (D17) bate com uma lápide sem saber de que contato veio o canal; o aviso sai cifrado
+para o contato da lápide e no máximo a cada 5 s, então quem injeta o símbolo só gasta um envelope do
+ratchet dele. Um build antigo ignora `0x25` (§6.2) e continua até o teto, como antes.
+
+**Custo de reverter:** sem a lápide, um `FILE_COMPLETE` ou `FILE_CANCEL` perdido volta a deixar o
+outro lado retomando até 7 dias; sem `FILE_CANCEL`, o receptor de um emissor que desistiu manda
+`FILE_FEEDBACK` a cada reconexão pelo mesmo prazo.

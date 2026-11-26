@@ -339,6 +339,12 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
   }
 
   @override
+  Future<Uint8List?> sealEndNotice({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) async => null;
+
+  @override
   Future<SealedMessageDto> sealOutgoingReceipt({
     required List<int> peerDeviceId,
     required String targetId,

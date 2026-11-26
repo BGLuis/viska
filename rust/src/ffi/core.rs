@@ -73,6 +73,10 @@ pub struct Core {
     /// o evento sai sob a mesma trava, para o replay da assinatura não perder
     /// nem duplicar uma mudança concorrente.
     pub(super) transfer_events: Mutex<TransferEvents>,
+    /// Quando cada lápide pediu um aviso ao Dart pela última vez
+    /// (`ffi/transfer_notices.rs`): um envio retomado manda centenas de símbolos
+    /// por segundo, e cada um não pode virar um aviso cifrado.
+    pub(super) notice_requests: Mutex<HashMap<[u8; 16], std::time::Instant>>,
     /// Destinatário dos eventos de mensagem. `Arc` porque o observador do
     /// `Store` o segura. Nunca é tomado com a conexão do banco em mãos.
     pub(super) message_events: Arc<Mutex<MessageEvents>>,
@@ -142,6 +146,7 @@ impl Core {
             agreed_upgrades: Mutex::new(HashMap::new()),
             unconfirmed_offers: Mutex::new(HashMap::new()),
             transfer_events: Mutex::new(TransferEvents::default()),
+            notice_requests: Mutex::new(HashMap::new()),
             message_events: Arc::clone(&message_events),
             expiry_wake: Arc::clone(&expiry_wake),
             expiry_started: std::sync::atomic::AtomicBool::new(false),

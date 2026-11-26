@@ -134,6 +134,9 @@ pub enum TransferEventKind {
     /// cancelada ou largada no bloqueio). Quem bombeia o envio acorda e
     /// reconsulta, em vez de dormir um tempo fixo.
     ChunkReleased,
+    /// O par ainda age sobre uma transferência que este lado encerrou sozinho
+    /// (§7.8): o Dart sela o aviso com `Core::seal_end_notice` e o envia.
+    NoticeReady,
 }
 
 /// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.

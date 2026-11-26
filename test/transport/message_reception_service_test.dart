@@ -283,6 +283,19 @@ class _FakeReceptionCore with FakeSessionEvents, FakeTransferEvents, FakeMessage
     return Uint8List.fromList([0x57, 0x41, 0x56]); // 'WAV'
   }
 
+  /// O que `sealEndNotice` devolve: `null` simula a sessão que não cifra agora.
+  Uint8List? endNotice = Uint8List.fromList([0x25]);
+  final sealEndNoticeCalls = <List<int>>[];
+
+  @override
+  Future<Uint8List?> sealEndNotice({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) async {
+    sealEndNoticeCalls.add(fileId);
+    return endNotice;
+  }
+
   final sealOutgoingReceiptCalls = <String>[];
 
   @override
@@ -1140,6 +1153,41 @@ void main() {
 
       expect(events.whereType<OffersChangedEvent>(), isEmpty);
       await sub.cancel();
+    });
+
+    test('NoticeReady seals the end notice and sends it to that contact, not as an offer event', () async {
+      await service.start();
+      final events = <MessageReceptionEvent>[];
+      final sub = service.events.listen(events.add);
+      final fileId = Uint8List.fromList(List.filled(16, 4));
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: fileId,
+        kind: TransferEventKind.noticeReady,
+      ));
+      await pumpEventQueue();
+
+      expect(core.sealEndNoticeCalls, [fileId]);
+      expect(transport.sendCalls.where((b) => listEquals(b, [0x25])), hasLength(1));
+      expect(events.whereType<OffersChangedEvent>(), isEmpty);
+      await sub.cancel();
+    });
+
+    test('NoticeReady with nothing sealed sends nothing', () async {
+      core.endNotice = null;
+      await service.start();
+      final sentBefore = transport.sendCalls.length;
+
+      core.emitTransferEvent(TransferEventDto(
+        peerDeviceId: Uint8List.fromList(contact.deviceId),
+        fileId: Uint8List.fromList(List.filled(16, 4)),
+        kind: TransferEventKind.noticeReady,
+      ));
+      await pumpEventQueue();
+
+      expect(core.sealEndNoticeCalls, hasLength(1));
+      expect(transport.sendCalls, hasLength(sentBefore));
     });
 
     test('packets arriving on a failed session are dropped, not fed as handshake', () async {

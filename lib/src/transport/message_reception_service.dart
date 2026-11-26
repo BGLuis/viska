@@ -189,7 +189,7 @@ class MessageReceptionService {
   /// Quanto um envio ou recebimento já aceito fica sem progresso antes de o
   /// laço parar. A transferência continua no banco e volta na próxima retomada;
   /// isto só impede que um par que sumiu, ou que encerrou a transferência sem o
-  /// aviso chegar (issue #108), deixe o laço rodando até o teto de 7 dias.
+  /// aviso chegar (docs/protocol.md §7.8), deixe o laço rodando até o teto de 7 dias.
   static const defaultIdleLimit = Duration(minutes: 2);
 
   /// Teto da espera de um envio por um `ChunkReleased`. Não dá ritmo ao envio:
@@ -281,6 +281,10 @@ class MessageReceptionService {
     // O envio acordou: não é novidade para nenhuma tela.
     if (dto.kind == TransferEventKind.chunkReleased) {
       _signalRelease(dto.fileId);
+      return;
+    }
+    if (dto.kind == TransferEventKind.noticeReady) {
+      unawaited(_sendEndNotice(ContactId(dto.peerDeviceId), dto.fileId));
       return;
     }
     _eventsController.add(
@@ -706,8 +710,8 @@ class MessageReceptionService {
   }
 
   /// O aviso de conclusão é melhor esforço: o arquivo já foi aceito, e uma
-  /// falha aqui não pode desfazê-lo. Se ele se perde, o emissor só para pelo
-  /// limite de inatividade (issue #108).
+  /// falha aqui não pode desfazê-lo. Se ele se perde, a lápide o repete quando
+  /// o emissor retomar (docs/protocol.md §7.8).
   Future<void> _sendFileComplete(ContactId contactId, Uint8List? sealedComplete) async {
     if (sealedComplete == null) return;
     try {
@@ -957,7 +961,7 @@ class MessageReceptionService {
         } else if (clock.now().difference(idleSince) >= _idleLimit) {
           if (completed) return;
           // O receptor sumiu ou já encerrou a transferência sem que o aviso
-          // chegasse (issue #108). A oferta ainda sem resposta não conta: o
+          // chegasse (docs/protocol.md §7.8). A oferta ainda sem resposta não conta: o
           // aceite de uma oferta grande espera a pessoa (§7.6).
           if (!progress.awaitingAnswer) throw const TransferStalledException();
         }
@@ -1061,6 +1065,18 @@ class MessageReceptionService {
       await _router.sendToContact(contactId, notice);
     } catch (e) {
       if (kDebugMode) debugPrint('[MessageReceptionService] Aviso a $contactId não enviado: $e');
+    }
+  }
+
+  /// O par ainda age sobre uma transferência que este lado já encerrou
+  /// (docs/protocol.md §7.8). Sem sessão agora, o Rust não sela e o próximo
+  /// pedido tenta de novo.
+  Future<void> _sendEndNotice(ContactId contactId, Uint8List fileId) async {
+    try {
+      final notice = await _core.sealEndNotice(peerDeviceId: contactId.deviceId, fileId: fileId);
+      if (notice != null) await _sendNotice(contactId, notice);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[MessageReceptionService] Aviso de fim a $contactId não selado: $e');
     }
   }
 

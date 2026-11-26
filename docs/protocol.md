@@ -325,6 +325,7 @@ offset  tam  campo
 0x22 FILE_FEEDBACK       progresso esparso (D6)
 0x23 FILE_COMPLETE       confirmação atômica de integridade
 0x24 FILE_REJECT         o receptor recusou a oferta, ver §7.7
+0x25 FILE_CANCEL         o emissor desistiu da transferência, ver §7.8
 0x30 AUDIO_CHUNK         quadro Opus
 0x40 CONTROL_PING        keepalive / cover traffic
 0x41 CONTROL_REKEM       carrega apenas material de re-KEM
@@ -494,7 +495,7 @@ trocada por outra (§11.4), e quando o canal com ele reconecta, o app chama `Cor
 que reconstrói o que falta:
 
 - **Emissor:** decifra a cópia inteira e confere a raiz contra o manifesto; se a cópia sumiu ou não
-  bate, o envio é encerrado como falha. O progresso não é persistido: o emissor recomeça do bloco 0 e
+  bate, o envio é encerrado como falha e o emissor sela um `FILE_CANCEL` (§7.8) para o receptor parar. O progresso não é persistido: o emissor recomeça do bloco 0 e
   o bitmap do primeiro `FILE_FEEDBACK` (§7.4) o faz pular o que o receptor já tem. Se a oferta ainda
   não teve resposta (nenhum `FILE_FEEDBACK` chegou, coluna `answered`), o `FILE_METADATA` é selado de
   novo na sessão atual (`Core::seal_resumed_offer`, só quando o envio de fato recomeça), com o mesmo
@@ -519,7 +520,7 @@ atrasado. O receptor só apaga o staging junto com a linha, depois do commit no 
 falhe ao escrever o destino devolve o recebimento, ainda completo, à memória, e a próxima tentativa (o
 próximo pedaço ou tick de feedback que o vir completo) só decifra de novo; se a Core trancar antes, a
 retomada recomeça do último bloco. Selar o `FILE_COMPLETE` depois do commit é melhor esforço, como o
-`FILE_REJECT`: sem sessão, o arquivo recebido fica e o aviso se perde (issue #108). Enquanto uma sessão candidata segura o envio (§11.4), ela
+`FILE_REJECT`: sem sessão, o arquivo recebido fica e o aviso se perde, até a lápide de §7.8 repeti-lo. Enquanto uma sessão candidata segura o envio (§11.4), ela
 não faz nada. Uma falha passageira de E/S só adia aquela transferência para a próxima chamada; só um
 arquivo sumido, cortado, adulterado ou que não bate com a raiz a encerra. Um handle montado enquanto
 a Core trancou, ou enquanto a transferência acabou, é descartado em vez de instalado. Os arquivos sem
@@ -527,12 +528,11 @@ linha no banco só são varridos ao abrir ou destrancar a Core, porque um envio 
 cópia antes da linha. Uma transferência enfileirada sem sessão entra pelo mesmo caminho: basta a linha
 e a cópia existirem.
 
-**Fim de um lado só.** Nem todo encerramento chega ao outro lado: o `FILE_COMPLETE` pode se perder, e
-o emissor não tem pacote para avisar que desistiu (§7.7 só define `FILE_REJECT` do receptor). Para o
-lado que ficou não rodar até o teto de 7 dias, o app para de bombear um envio já respondido e de mandar
-`FILE_FEEDBACK` depois de 2 minutos sem progresso; a transferência continua no banco e volta na próxima
-retomada. Uma oferta ainda sem resposta não conta, porque o aceite de uma oferta grande espera a pessoa
-(§7.6). Avisar o par nesses casos é a issue #108.
+**Fim de um lado só.** Nem todo encerramento chega ao outro lado na hora: o aviso de §7.8 é melhor
+esforço. Para o lado que ficou não bombear sem fim enquanto isso, o app para de bombear um envio já
+respondido e de mandar `FILE_FEEDBACK` depois de 2 minutos sem progresso; a transferência continua no
+banco e volta na próxima retomada, quando a lápide de §7.8 repete o aviso. Uma oferta ainda sem
+resposta não conta, porque o aceite de uma oferta grande espera a pessoa (§7.6).
 
 ### 7.6 Limite de auto-aceite e retenção volátil de ofertas
 
@@ -553,6 +553,43 @@ Corpo: exatamente `file_id` (16 B), sem mais nada. Vai cifrado dentro da sessão
 3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou, ou que bloqueou o app com ela pendente. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
 4. **Compatibilidade:** um build antigo trata `0x24` como tipo desconhecido e o ignora sem derrubar a sessão (§6.2); para ele, a transferência continua até o cancelamento manual, ou até o prazo do item 5.
 5. **Prazo do emissor:** se nem `FILE_FEEDBACK` nem `FILE_REJECT` chegarem em 24 h (`OFFER_RESPONSE_TIMEOUT_SECS`) contadas do envio do `FILE_METADATA`, o emissor desiste: marca a mensagem como expirada, descarta o handle e remove a linha de `file_transfers`. O primeiro `FILE_FEEDBACK` encerra o prazo, pois prova que a oferta foi aceita, e fica registrado na linha de `file_transfers` (`answered`). O prazo conta de `created_at` dessa linha e sobrevive a bloqueio e reinício, como a própria transferência (§7.5). Não há timer; a expiração é aplicada quando a timeline é lida, quando um feedback chega, ao abrir ou destrancar a Core e ao retomar. Vale também para notas de voz (D30): sem isso, uma nota enfileirada sem sessão ficaria até o teto de 7 dias. Num envio enfileirado, nenhum `FILE_METADATA` saiu ainda e o prazo conta do `created_at` da linha, isto é, do enfileiramento. O prazo usa o relógio de parede, não um relógio monotônico, que não conta o tempo com o aparelho em suspensão; um salto do relógio para frente pode expirar a oferta antes da hora.
+
+### 7.8 Fim de um lado só: `FILE_CANCEL` (0x25) e lápide (D31)
+
+Uma transferência pode acabar só de um lado: o receptor conclui e o `FILE_COMPLETE` não chega, o
+emissor perde a cópia em `outgoing/` e não tem como retomar, ou uma das pontas cancela. Sem aviso, o
+outro lado retoma a cada reconexão até o teto de 7 dias (§7.5).
+
+1. **`FILE_CANCEL`:** o pacote do emissor para o receptor que diz que o emissor desistiu. Corpo:
+   exatamente `file_id` (16 B). Vai cifrado na sessão e só autenticado pelo AEAD simétrico, como o
+   `FILE_REJECT` (§7.7): nenhuma assinatura. O receptor só age se `file_id` for um recebimento deste
+   contato, em curso ou ainda retido como oferta (§7.6); então descarta a oferta, a linha, o handle e o
+   staging. Qualquer outro caso é ignorado sem erro distinguível. O receptor não tem mensagem na
+   conversa antes de concluir, então nada mais muda.
+2. **Qual aviso cada fim produz:** o receptor que conclui avisa com `FILE_COMPLETE`; o receptor que
+   cancela ou não consegue retomar, com `FILE_REJECT`; o emissor que cancela, não consegue retomar ou
+   vê a oferta expirar (§7.7 item 5), com `FILE_CANCEL`. Quem cai no teto de retenção não avisa: o par
+   cai no mesmo teto. O aviso sai na hora quando há sessão (`cancel_transfer` pede o envio ao Dart pelo
+   evento `NoticeReady`; a retomada o devolve como `Abandoned`).
+3. **Lápide:** ao encerrar por um desses motivos, a linha de `file_transfers` dá lugar, na mesma
+   transação, a uma linha de `ended_transfers` com `file_id`, contato, o aviso a repetir e o vencimento
+   (`created_at` da transferência + 7 dias, o teto que o par também aplica). Nenhum segredo fica: a
+   chave da transferência morre com a linha original, como antes. A lápide some ao vencer, na mesma
+   varredura dos prazos de §7.7 item 5.
+4. **Repetição:** cada atividade do par sobre um `file_id` com lápide pede o aviso de novo: um
+   `FILE_SYMBOL` de um envio retomado, um `FILE_FEEDBACK` de um recebimento retomado ou um
+   `FILE_METADATA` reenviado (§7.5, que então não volta a ser oferta). O `FILE_FEEDBACK` e o
+   `FILE_METADATA` só contam vindos do contato da lápide. O `FILE_SYMBOL` chega pelo canal `file`, que
+   não diz o contato; o aviso vai sempre ao contato da lápide, cifrado na sessão dele, e o `file_id`
+   em claro do símbolo (D17) é o que o identifica. A Core pede no máximo um aviso por lápide a cada 5 s,
+   e o Dart o sela (`Core::seal_end_notice`) e envia. Sem sessão, nada sai e a atividade seguinte tenta
+   de novo.
+5. **Vazamento aceito:** a lápide diz a quem tiver o aparelho destrancado que uma transferência com
+   aquele contato terminou nos últimos 7 dias, inclusive quando a mensagem dela foi efêmera e já
+   expirou (D29). O par passa a saber que o outro lado encerrou, o que o `FILE_COMPLETE` e o
+   `FILE_REJECT` já revelavam.
+6. **Compatibilidade:** um build antigo trata `0x25` como tipo desconhecido e o ignora sem derrubar a
+   sessão (§6.2); para ele, o recebimento continua até o teto de 7 dias, como antes.
 
 ---
 

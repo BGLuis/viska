@@ -98,6 +98,15 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // Oferta já selada (`start_send` ou `seal_resumed_offer`): impede cancelar
     // como item só da fila offline depois que o `FILE_METADATA` já saiu (issue #111).
     "ALTER TABLE file_transfers ADD COLUMN offered INTEGER NOT NULL DEFAULT 1;",
+    // Lápide de uma transferência encerrada só deste lado: sem segredo nenhum, só
+    // o que é preciso para repetir o aviso ao par enquanto ele insistir (§7.8).
+    "\
+    CREATE TABLE ended_transfers (
+        file_id               BLOB PRIMARY KEY,
+        contact_device_id     BLOB NOT NULL REFERENCES contacts(device_id),
+        notice                INTEGER NOT NULL,
+        expires_at_unix_secs  INTEGER NOT NULL
+    );",
 ];
 
 /// Aplica as migrations pendentes, a partir de `PRAGMA user_version`.
@@ -142,6 +151,7 @@ mod tests {
             "ephemeral_message_keys",
             "app_config",
             "message_reactions",
+            "ended_transfers",
         ] {
             let exists: bool = conn
                 .query_row(
