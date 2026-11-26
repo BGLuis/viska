@@ -53,7 +53,8 @@ abstract class Core implements RustOpaqueInterface {
   /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
   /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
   /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
-  /// insistir na transferência.
+  /// insistir na transferência. A mensagem fica na conversa como `Failed`
+  /// (issue #124): a pessoa vê que aquilo não chegou ao fim.
   Future<void> cancelTransfer({required List<int> fileId});
 
   /// Pede à thread de expiração que reconte o próximo vencimento. O sono dela
@@ -136,8 +137,8 @@ abstract class Core implements RustOpaqueInterface {
   /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
   /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
   /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
-  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
-  /// emissor só para pelo limite de inatividade (issue #108).
+  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e a
+  /// lápide o repete quando o emissor retomar (§7.8).
   Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,
