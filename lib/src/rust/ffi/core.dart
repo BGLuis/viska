@@ -50,7 +50,10 @@ abstract class Core implements RustOpaqueInterface {
 
   /// Cancela uma transferência (de qualquer lado): remove o handle em
   /// memória e o registro em `store`, o que destrói a chave (§7.5/D15), e
-  /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor.
+  /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
+  /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
+  /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
+  /// insistir na transferência.
   Future<void> cancelTransfer({required List<int> fileId});
 
   /// Pede à thread de expiração que reconte o próximo vencimento. O sono dela
@@ -403,6 +406,17 @@ abstract class Core implements RustOpaqueInterface {
   Future<void> sanitizeAndStageAudio({
     required String sourcePath,
     required String destinationPath,
+  });
+
+  /// Sela o aviso de fim de uma transferência que este lado encerrou sozinho
+  /// (`FILE_COMPLETE`, `FILE_REJECT` ou `FILE_CANCEL`, §7.8), para mandar ao
+  /// contato pelo canal `control`. Chamar ao receber
+  /// [`TransferEventKind::NoticeReady`]. `None` se a lápide não existe mais,
+  /// é de outro contato ou a sessão não cifra agora: o próximo pedido tenta
+  /// de novo.
+  Future<Uint8List?> sealEndNotice({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
   });
 
   /// Cifra e empacota um recibo de entrega (MSG_RECEIPT) confirmando o recebimento de uma mensagem.

@@ -330,6 +330,13 @@ class _FakeCore implements Core {
       throw UnimplementedError();
 
   @override
+  Future<Uint8List?> sealEndNotice({
+    required List<int> peerDeviceId,
+    required List<int> fileId,
+  }) =>
+      throw UnimplementedError();
+
+  @override
   Future<SealedMessageDto> sealOutgoingReceipt({
     required List<int> peerDeviceId,
     required String targetId,
