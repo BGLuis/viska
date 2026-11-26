@@ -18,15 +18,16 @@ use std::collections::HashSet;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
-use crate::ffi::transfer::{seal_file_reject, to_device_id, OFFER_RESPONSE_TIMEOUT_SECS};
+use crate::ffi::transfer::{to_device_id, OFFER_RESPONSE_TIMEOUT_SECS};
 use crate::ffi::transfer_handles::{can_seal_now, Claim, OutgoingHandle, TransferHandle};
+use crate::ffi::transfer_notices::seal_notice;
 use crate::ffi::types::{ResumedDirectionDto, ResumedTransferDto};
 use viska_proto::crypto::identity::DEVICE_ID_LEN;
 use viska_proto::file::manifest::{Manifest, FILE_ID_LEN};
 use viska_proto::file::outgoing;
 use viska_proto::file::staging;
 use viska_proto::file::transfer::{self, FileFeedback, ReceiveTransfer, TRANSFER_SECRET_LEN};
-use viska_proto::store::transfers::{Direction, StoredTransfer};
+use viska_proto::store::transfers::{Direction, EndNotice, StoredTransfer};
 use viska_proto::wire::packet_type::PacketType;
 use viska_proto::wire::transport::Transport;
 
@@ -80,6 +81,9 @@ impl Core {
         // Uma falha não pode custar o prazo das demais: todas são tentadas, e as
         // que falharem continuam no banco para a próxima chamada repetir.
         let mut first_error = None;
+        if let Err(e) = self.store.delete_expired_transfer_tombstones(now) {
+            first_error = Some(e.into());
+        }
         for transfer in due {
             let ending = if transfer.offer_expired {
                 Ending::OfferExpired
@@ -130,7 +134,14 @@ impl Core {
                 }
             };
         }
-        self.end_transfer(file_id)
+        // No teto de retenção o par desiste sozinho pelo mesmo prazo; em qualquer
+        // outro fim ele continuaria até lá, então fica a lápide (§7.8).
+        let notice = match (ending, direction) {
+            (Ending::RetentionCeiling, _) => return self.end_transfer(file_id),
+            (_, Direction::Sending) => EndNotice::Cancel,
+            (_, Direction::Receiving) => EndNotice::Reject,
+        };
+        self.retire_transfer(file_id, notice)
     }
 
     /// Geração atual da sessão com o contato, 0 sem sessão.
@@ -200,8 +211,12 @@ impl Core {
                     self.drop_stored(stored, Ending::Unresumable)?;
                     return Ok(None);
                 };
-                if !matches!(self.ensure_send_handle(stored, &manifest)?, Rebuild::Ready) {
-                    return Ok(None);
+                match self.ensure_send_handle(stored, &manifest)? {
+                    Rebuild::Ready => {}
+                    // O receptor ainda tem a linha e mandaria `FILE_FEEDBACK` até o
+                    // teto de retenção; o `FILE_CANCEL` de §7.8 o encerra.
+                    Rebuild::Ended => return Ok(self.abandoned(device_id, &stored.file_id, EndNotice::Cancel)),
+                    Rebuild::Later => return Ok(None),
                 }
                 self.store.reopen_failed_message_by_file_id(&stored.file_id, device_id)?;
                 Ok(Some(ResumedTransferDto {
@@ -221,25 +236,31 @@ impl Core {
                     message_id: None,
                 })),
                 // O emissor ainda tem a linha e tentaria retomar até o teto de
-                // retenção; o `FILE_REJECT` de §7.7 o encerra. Melhor esforço,
-                // como a recusa: sem sessão para selar, o aviso se perde.
-                Rebuild::Ended => {
-                    let mut sessions = self.lock_sessions()?;
-                    let notice = sessions
-                        .get_mut(device_id)
-                        .filter(|session| can_seal_now(session))
-                        .and_then(|session| seal_file_reject(session, &stored.file_id));
-                    Ok(notice.map(|notice| ResumedTransferDto {
-                        file_id: stored.file_id.to_vec(),
-                        direction: ResumedDirectionDto::Abandoned,
-                        needs_offer: false,
-                        sealed_notice: Some(notice),
-                        message_id: None,
-                    }))
-                }
+                // retenção; o `FILE_REJECT` de §7.7 o encerra.
+                Rebuild::Ended => Ok(self.abandoned(device_id, &stored.file_id, EndNotice::Reject)),
                 Rebuild::Later => Ok(None),
             },
         }
+    }
+
+    /// Transferência que a retomada encerrou, com o aviso ao par já selado.
+    /// Sem sessão para selar agora, `None`: a lápide repete o aviso quando o
+    /// par voltar a agir sobre ela (§7.8).
+    fn abandoned(
+        &self,
+        device_id: &[u8; DEVICE_ID_LEN],
+        file_id: &[u8; FILE_ID_LEN],
+        notice: EndNotice,
+    ) -> Option<ResumedTransferDto> {
+        let mut sessions = self.lock_sessions().ok()?;
+        let sealed = seal_notice(sessions.get_mut(device_id)?, file_id, notice)?;
+        Some(ResumedTransferDto {
+            file_id: file_id.to_vec(),
+            direction: ResumedDirectionDto::Abandoned,
+            needs_offer: false,
+            sealed_notice: Some(sealed),
+            message_id: None,
+        })
     }
 
     /// O `FILE_METADATA` de um envio retomado cuja oferta ainda não teve
@@ -856,7 +877,10 @@ mod tests {
         pair.core_a.unlock().unwrap();
         reconnect(&pair, true);
 
-        assert!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().is_empty());
+        let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].direction, ResumedDirectionDto::Abandoned);
+        assert!(resumed[0].sealed_notice.is_some());
         assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
         assert_sender_clean(&pair, &started.file_id);
     }
@@ -1077,8 +1101,14 @@ mod tests {
 
         let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
 
-        assert_eq!(resumed.len(), 1);
-        assert_eq!(resumed[0].file_id, started[1].file_id);
+        let directions: Vec<_> = resumed.iter().map(|r| (r.file_id.clone(), r.direction)).collect();
+        assert_eq!(
+            directions,
+            vec![
+                (started[0].file_id.clone(), ResumedDirectionDto::Abandoned),
+                (started[1].file_id.clone(), ResumedDirectionDto::Send),
+            ]
+        );
         assert_eq!(state_of(&pair, started[0].message_id), DeliveryStateDto::Failed);
     }
 
@@ -1478,5 +1508,255 @@ mod tests {
 
         // 3. ID desconhecido é no-op silencioso.
         assert_eq!(pair.core_a.cancel_queued_transfer(999_999).unwrap(), None);
+    }
+
+
+    // --- Fim de um lado só (§7.8) ---
+
+    type SeenEvents = std::sync::Arc<std::sync::Mutex<Vec<crate::ffi::types::TransferEventDto>>>;
+
+    fn watch_events(core: &Core) -> SeenEvents {
+        let seen: SeenEvents = Default::default();
+        let sink_seen = std::sync::Arc::clone(&seen);
+        core.set_transfer_event_sink(Box::new(move |e| sink_seen.lock().unwrap().push(e)))
+            .unwrap();
+        seen
+    }
+
+    /// Os `NoticeReady` vistos desde a última chamada, esvaziando a lista.
+    fn take_notice_requests(seen: &SeenEvents) -> Vec<crate::ffi::types::TransferEventDto> {
+        let mut seen = seen.lock().unwrap();
+        let (notices, _): (Vec<_>, Vec<_>) = seen
+            .drain(..)
+            .partition(|e| e.kind == crate::ffi::types::TransferEventKind::NoticeReady);
+        notices
+    }
+
+    /// O que o Dart faz com `NoticeReady`: sela o aviso e o entrega ao par.
+    fn deliver_notice(from: &Core, to: &Core, to_peer: Vec<u8>, request: &crate::ffi::types::TransferEventDto) {
+        let sealed = from
+            .seal_end_notice(request.peer_device_id.clone(), request.file_id.clone())
+            .unwrap()
+            .expect("com sessão, a lápide sela o aviso");
+        to.decrypt_incoming(to_peer, sealed).unwrap();
+    }
+
+    fn assert_receiver_clean(pair: &EstablishedPair, file_id: &[u8]) {
+        assert!(pair.core_b.store.find_file_transfer(&fid(file_id)).unwrap().is_none());
+        assert!(!staging::staging_path(&pair.core_b.staging_dir, &fid(file_id)).exists());
+        assert!(pair.core_b.transfer_progress(file_id.to_vec()).unwrap().is_none());
+        assert!(pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap().is_empty());
+    }
+
+    /// Esquece os pedidos de aviso já feitos, como se o intervalo entre eles
+    /// tivesse passado.
+    fn forget_notice_requests(core: &Core) {
+        core.notice_requests.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn a_lost_file_complete_is_repeated_when_the_sender_resumes() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = write_temp_file(&dir_src, "a.bin", &[5u8; 20_000]);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone()).unwrap();
+        drive(&pair, &started.file_id, 1);
+        let dst = dir_dst.path().join("a.bin");
+        let lost = pair
+            .core_b
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), dst.to_str().unwrap().to_owned())
+            .unwrap();
+        assert!(lost.is_some(), "o FILE_COMPLETE foi selado, e se perde no caminho");
+        pair.core_a.lock().unwrap();
+        pair.core_a.unlock().unwrap();
+        reconnect(&pair, true);
+        let seen = watch_events(&pair.core_b);
+
+        assert_eq!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().len(), 1);
+        let mut symbols = 0;
+        while let Some(chunk) = pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap() {
+            assert!(pair.core_b.ingest_incoming_wire_bytes(chunk).unwrap().is_none());
+            symbols += 1;
+        }
+        assert!(symbols > 1);
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1, "uma rajada de símbolos pede um aviso só");
+        assert_eq!(requests[0].peer_device_id, pair.device_id_a);
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &requests[0]);
+
+        assert_sender_clean(&pair, &started.file_id);
+        assert!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sender_that_cannot_resume_tells_the_receiver_to_stop() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        pair.core_a.lock().unwrap();
+        std::fs::remove_file(staging::staging_path(&pair.core_a.outgoing_dir, &fid(&started.file_id))).unwrap();
+        pair.core_a.unlock().unwrap();
+        reconnect(&pair, true);
+
+        let resumed = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert_eq!(resumed.len(), 1);
+        assert_eq!(resumed[0].direction, ResumedDirectionDto::Abandoned);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed);
+        let notice = resumed[0].sealed_notice.clone().unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), notice).unwrap();
+
+        assert_receiver_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_lost_file_cancel_is_repeated_on_the_receivers_next_feedback() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        pair.core_a.lock().unwrap();
+        std::fs::remove_file(staging::staging_path(&pair.core_a.outgoing_dir, &fid(&started.file_id))).unwrap();
+        pair.core_a.unlock().unwrap();
+        reconnect(&pair, true);
+        let lost = pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap();
+        assert_eq!(lost[0].direction, ResumedDirectionDto::Abandoned);
+        let seen = watch_events(&pair.core_a);
+
+        assert_eq!(pair.core_b.resume_transfers(pair.device_id_a.clone()).unwrap().len(), 1);
+        let feedback = pair.core_b.file_feedback(pair.device_id_a.clone(), started.file_id.clone()).unwrap();
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), feedback).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1);
+        deliver_notice(&pair.core_a, &pair.core_b, pair.device_id_a.clone(), &requests[0]);
+
+        assert_receiver_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_sender_cancel_tells_the_receiver_to_stop() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        let seen = watch_events(&pair.core_a);
+
+        pair.core_a.cancel_transfer(started.file_id.clone()).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1, "cancelar já pede o aviso");
+        deliver_notice(&pair.core_a, &pair.core_b, pair.device_id_a.clone(), &requests[0]);
+
+        assert_sender_clean(&pair, &started.file_id);
+        assert_receiver_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_receiver_cancel_whose_notice_was_lost_is_repeated_on_the_next_symbol() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        let seen = watch_events(&pair.core_b);
+
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        assert_eq!(take_notice_requests(&seen).len(), 1, "o primeiro aviso se perde");
+        forget_notice_requests(&pair.core_b);
+        let chunk = pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap().unwrap();
+        pair.core_b.ingest_incoming_wire_bytes(chunk).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1);
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &requests[0]);
+
+        assert_sender_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
+    }
+
+    #[test]
+    fn a_resent_offer_of_a_cancelled_receive_is_answered_not_offered_again() {
+        let dir_src = tempfile::tempdir().unwrap();
+        let (pair, started) = pair_with_pending_offer(&dir_src);
+        pair.core_b.accept_file_offer(started.file_id.clone()).unwrap();
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        forget_notice_requests(&pair.core_b);
+        let seen = watch_events(&pair.core_b);
+        seen.lock().unwrap().clear();
+
+        let offer = pair
+            .core_a
+            .seal_resumed_offer(pair.device_id_b.clone(), started.file_id.clone())
+            .unwrap()
+            .expect("a oferta ainda não teve resposta");
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), offer).unwrap();
+
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_none());
+        assert!(pair.core_b.unconfirmed_file_offers(pair.device_id_a.clone()).unwrap().is_empty());
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "nada de oferta nova, só o pedido de aviso: {events:?}");
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &events[0]);
+        assert_sender_clean(&pair, &started.file_id);
+    }
+
+    #[test]
+    fn a_file_cancel_only_ends_a_receive_of_the_contact_that_sent_it() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        let device_a: [u8; DEVICE_ID_LEN] = pair.device_id_a.clone().try_into().unwrap();
+        let other: [u8; DEVICE_ID_LEN] = [0xEE; DEVICE_ID_LEN];
+
+        // O receptor mandando FILE_CANCEL ao emissor não encerra o envio.
+        let mut sessions = pair.core_b.lock_sessions().unwrap();
+        let from_b = seal_notice(sessions.get_mut(&device_a).unwrap(), &fid(&started.file_id), EndNotice::Cancel)
+            .unwrap();
+        drop(sessions);
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), from_b).unwrap();
+        assert!(pair.core_a.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+
+        // Outro contato não encerra o recebimento.
+        pair.core_b.handle_incoming_file_cancel(other, &started.file_id).unwrap();
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+
+        // Corpo que não é exatamente um `file_id` é lixo.
+        let mut long = started.file_id.clone();
+        long.push(0);
+        assert!(pair.core_b.handle_incoming_file_cancel(device_a, &long).is_err());
+        assert!(pair.core_b.store.find_file_transfer(&fid(&started.file_id)).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_tombstone_answers_only_its_contact_and_until_the_retention_ceiling() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        let created = created_at(&pair.core_b, &started.file_id);
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        forget_notice_requests(&pair.core_b);
+        let file_id = fid(&started.file_id);
+
+        assert!(pair
+            .core_b
+            .seal_end_notice(vec![0xEE; DEVICE_ID_LEN], started.file_id.clone())
+            .unwrap()
+            .is_none());
+        assert!(!pair.core_b.notice_peer_activity(&file_id, Some([0xEE; DEVICE_ID_LEN])));
+        assert!(pair.core_b.notice_peer_activity(&file_id, None));
+
+        pair.core_b.enforce_transfer_deadlines_at(created + TRANSFER_RETENTION_SECS).unwrap();
+        assert!(pair.core_b.store.find_transfer_tombstone(&file_id, created).unwrap().is_none());
+        assert!(!pair.core_b.notice_peer_activity(&file_id, None));
+    }
+
+    #[test]
+    fn transfers_dropped_at_the_retention_ceiling_leave_no_tombstone() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        let created = created_at(&pair.core_a, &started.file_id);
+
+        for core in [&pair.core_a, &pair.core_b] {
+            core.enforce_transfer_deadlines_at(created + TRANSFER_RETENTION_SECS).unwrap();
+            assert!(core.store.find_transfer_tombstone(&fid(&started.file_id), created).unwrap().is_none());
+        }
     }
 }

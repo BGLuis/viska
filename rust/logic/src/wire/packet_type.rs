@@ -24,6 +24,7 @@ pub enum PacketType {
     FileFeedback,
     FileComplete,
     FileReject,
+    FileCancel,
     AudioChunk,
     ControlPing,
     ControlRekem,
@@ -33,7 +34,7 @@ pub enum PacketType {
 
 impl PacketType {
     /// Todas as variantes conhecidas, na ordem da spec. Usado pelos testes exaustivos.
-    pub const ALL: [PacketType; 14] = [
+    pub const ALL: [PacketType; 15] = [
         PacketType::MsgText,
         PacketType::MsgReceipt,
         PacketType::MsgTyping,
@@ -44,6 +45,7 @@ impl PacketType {
         PacketType::FileFeedback,
         PacketType::FileComplete,
         PacketType::FileReject,
+        PacketType::FileCancel,
         PacketType::AudioChunk,
         PacketType::ControlPing,
         PacketType::ControlRekem,
@@ -63,6 +65,7 @@ impl PacketType {
             Self::FileFeedback => 0x22,
             Self::FileComplete => 0x23,
             Self::FileReject => 0x24,
+            Self::FileCancel => 0x25,
             Self::AudioChunk => 0x30,
             Self::ControlPing => 0x40,
             Self::ControlRekem => 0x41,
@@ -94,6 +97,7 @@ impl PacketType {
             0x22 => Ok(Self::FileFeedback),
             0x23 => Ok(Self::FileComplete),
             0x24 => Ok(Self::FileReject),
+            0x25 => Ok(Self::FileCancel),
             0x30 => Ok(Self::AudioChunk),
             0x40 => Ok(Self::ControlPing),
             0x41 => Ok(Self::ControlRekem),
@@ -131,7 +135,7 @@ mod tests {
 
     #[test]
     fn decodes_unknown_values() {
-        for valor in [0x00, 0x03, 0x15, 0x1f, 0x25, 0x31, 0x43, 0x7f, 0xff] {
+        for valor in [0x00, 0x03, 0x15, 0x1f, 0x26, 0x31, 0x43, 0x7f, 0xff] {
             let parsed = PacketType::from_u8(valor).unwrap();
             assert_eq!(parsed, PacketType::Unknown(valor));
             assert_eq!(parsed.to_u8(), valor);

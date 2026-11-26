@@ -282,6 +282,87 @@ pub fn delete(conn: &rusqlite::Connection, file_id: &[u8; 16]) -> Result<()> {
     Ok(())
 }
 
+/// O aviso que o lado que encerrou uma transferência sozinho repete ao par
+/// enquanto o par ainda age sobre ela (`docs/protocol.md` §7.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndNotice {
+    /// O receptor concluiu: `FILE_COMPLETE`.
+    Complete = 0,
+    /// O receptor desistiu: `FILE_REJECT`.
+    Reject = 1,
+    /// O emissor desistiu: `FILE_CANCEL`.
+    Cancel = 2,
+}
+
+impl EndNotice {
+    fn from_i64(value: i64) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Complete),
+            1 => Ok(Self::Reject),
+            2 => Ok(Self::Cancel),
+            _ => Err(Error::Store),
+        }
+    }
+}
+
+/// Lápide de uma transferência encerrada só deste lado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tombstone {
+    pub contact_device_id: [u8; 16],
+    pub notice: EndNotice,
+}
+
+/// Apaga a linha e deixa a lápide no lugar, numa transação só: sem a linha não
+/// se sabe mais o contato nem a criação, e uma lápide sem linha apagada faria
+/// o par receber um aviso de uma transferência que continua. A lápide vence
+/// quando a linha venceria (`created_at + retention_secs`, §7.5): depois disso
+/// o par já desistiu sozinho pelo mesmo teto. Sem linha, não faz nada.
+pub fn retire(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    notice: EndNotice,
+    retention_secs: i64,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction().map_err(|_| Error::Store)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO ended_transfers (file_id, contact_device_id, notice, expires_at_unix_secs)
+         SELECT file_id, contact_device_id, ?2, created_at_unix_secs + ?3
+         FROM file_transfers WHERE file_id = ?1",
+        rusqlite::params![file_id.as_slice(), notice as i64, retention_secs],
+    )
+    .map_err(|_| Error::Store)?;
+    tx.execute("DELETE FROM file_transfers WHERE file_id = ?1", [file_id.as_slice()])
+        .map_err(|_| Error::Store)?;
+    tx.commit().map_err(|_| Error::Store)
+}
+
+/// A lápide de `file_id`, se ainda não venceu em `now`.
+pub fn find_tombstone(conn: &rusqlite::Connection, file_id: &[u8; 16], now: i64) -> Result<Option<Tombstone>> {
+    let row = conn
+        .query_row(
+            "SELECT contact_device_id, notice FROM ended_transfers
+             WHERE file_id = ?1 AND expires_at_unix_secs > ?2",
+            rusqlite::params![file_id.as_slice(), now],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|_| Error::Store)?;
+    let Some((contact, notice)) = row else {
+        return Ok(None);
+    };
+    Ok(Some(Tombstone {
+        contact_device_id: contact.try_into().map_err(|_| Error::Store)?,
+        notice: EndNotice::from_i64(notice)?,
+    }))
+}
+
+/// Apaga as lápides vencidas em `now`.
+pub fn delete_expired_tombstones(conn: &rusqlite::Connection, now: i64) -> Result<()> {
+    conn.execute("DELETE FROM ended_transfers WHERE expires_at_unix_secs <= ?1", [now])
+        .map_err(|_| Error::Store)?;
+    Ok(())
+}
+
 fn row_to_transfer(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredTransfer> {
     let file_id: Vec<u8> = row.get(0)?;
     let direction: i64 = row.get(1)?;
@@ -485,5 +566,34 @@ mod tests {
         let mut expected = vec![a, b];
         expected.sort();
         assert_eq!(ids, expected);
+    }
+
+
+    #[test]
+    fn retire_swaps_the_row_for_a_tombstone_that_expires_with_the_row() {
+        let contact = [1u8; 16];
+        let conn = conn_with_contact(contact);
+        let file_id = [9u8; 16];
+        insert(&conn, &file_id, Direction::Receiving, &contact, b"m", b"s", 1000, TransferKind::File, true).unwrap();
+
+        retire(&conn, &file_id, EndNotice::Complete, 500).unwrap();
+
+        assert!(find(&conn, &file_id).unwrap().is_none());
+        let tombstone = find_tombstone(&conn, &file_id, 1499).unwrap().unwrap();
+        assert_eq!(tombstone, Tombstone { contact_device_id: contact, notice: EndNotice::Complete });
+        assert!(find_tombstone(&conn, &file_id, 1500).unwrap().is_none(), "vence com a linha");
+        delete_expired_tombstones(&conn, 1499).unwrap();
+        assert!(find_tombstone(&conn, &file_id, 0).unwrap().is_some());
+        delete_expired_tombstones(&conn, 1500).unwrap();
+        assert!(find_tombstone(&conn, &file_id, 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn retire_without_a_row_leaves_no_tombstone() {
+        let conn = conn_with_contact([1u8; 16]);
+
+        retire(&conn, &[9u8; 16], EndNotice::Cancel, 500).unwrap();
+
+        assert!(find_tombstone(&conn, &[9u8; 16], 0).unwrap().is_none());
     }
 }

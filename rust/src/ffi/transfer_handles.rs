@@ -19,9 +19,10 @@ use std::sync::MutexGuard;
 
 use crate::ffi::core::Core;
 use crate::ffi::error::FfiError;
+use crate::ffi::transfer_resume::TRANSFER_RETENTION_SECS;
 use viska_proto::file::manifest::{Manifest, FILE_ID_LEN, LAN_SYMBOL_SIZE};
 use viska_proto::file::staging::{self, StagingReader};
-use viska_proto::store::transfers::Direction;
+use viska_proto::store::transfers::{Direction, EndNotice};
 use viska_proto::file::transfer::{ReceiveTransfer, SendTransfer, TransferKind, TransferMode};
 
 /// Um lado (emissor ou receptor) de uma transferência em memória, indexado
@@ -213,13 +214,27 @@ impl Core {
     /// reconstrução concorrente ou viu a linha e instalou um handle que este
     /// passo tira em seguida, ou já não a vê e não instala nada.
     pub(super) fn end_transfer(&self, file_id: &[u8; FILE_ID_LEN]) -> Result<(), FfiError> {
+        self.end_transfer_leaving(file_id, None)
+    }
+
+    /// [`Self::end_transfer`] de uma transferência que acaba só deste lado: no
+    /// lugar da linha fica a lápide que repete `notice` ao par enquanto ele
+    /// insistir (§7.8).
+    pub(super) fn retire_transfer(&self, file_id: &[u8; FILE_ID_LEN], notice: EndNotice) -> Result<(), FfiError> {
+        self.end_transfer_leaving(file_id, Some(notice))
+    }
+
+    fn end_transfer_leaving(&self, file_id: &[u8; FILE_ID_LEN], notice: Option<EndNotice>) -> Result<(), FfiError> {
         // O contato só se acha antes de a linha sumir. Só envio tem laço esperando.
         let sender_contact = self
             .store
             .find_file_transfer(file_id)?
             .filter(|stored| stored.direction == Direction::Sending)
             .map(|stored| stored.contact_device_id);
-        self.store.delete_file_transfer(file_id)?;
+        match notice {
+            Some(notice) => self.store.retire_file_transfer(file_id, notice, TRANSFER_RETENTION_SECS)?,
+            None => self.store.delete_file_transfer(file_id)?,
+        }
         self.lock_transfers()?.remove(file_id);
         let _ = std::fs::remove_file(staging::staging_path(&self.staging_dir, file_id));
         let _ = std::fs::remove_file(staging::staging_path(&self.outgoing_dir, file_id));

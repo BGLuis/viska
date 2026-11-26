@@ -745,6 +745,26 @@ impl Store {
     pub fn delete_file_transfer(&self, file_id: &[u8; 16]) -> Result<()> {
         self.with_conn(|conn| transfers::delete(conn, file_id))
     }
+
+    /// Apaga o registro deixando a lápide que repete `notice` ao par (§7.8).
+    pub fn retire_file_transfer(
+        &self,
+        file_id: &[u8; 16],
+        notice: transfers::EndNotice,
+        retention_secs: i64,
+    ) -> Result<()> {
+        self.with_conn(|conn| transfers::retire(conn, file_id, notice, retention_secs))
+    }
+
+    /// A lápide de `file_id`, se ainda não venceu em `now`.
+    pub fn find_transfer_tombstone(&self, file_id: &[u8; 16], now: i64) -> Result<Option<transfers::Tombstone>> {
+        self.with_conn(|conn| transfers::find_tombstone(conn, file_id, now))
+    }
+
+    /// Apaga as lápides vencidas em `now`.
+    pub fn delete_expired_transfer_tombstones(&self, now: i64) -> Result<()> {
+        self.with_conn(|conn| transfers::delete_expired_tombstones(conn, now))
+    }
 }
 
 impl core::fmt::Debug for Store {

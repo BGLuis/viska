@@ -22,6 +22,7 @@ pub mod session;
 pub mod signaling;
 pub mod transfer;
 pub mod transfer_handles;
+pub mod transfer_notices;
 pub mod transfer_resume;
 pub mod types;
 

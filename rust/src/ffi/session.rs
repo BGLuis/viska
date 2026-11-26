@@ -387,7 +387,7 @@ impl Core {
     ///
     /// `MSG_TYPING` nunca é persistido (`docs/protocol.md` §6.2): devolve um
     /// DTO efêmero, sem `message_id`. `FILE_METADATA`/`FILE_FEEDBACK`/
-    /// `FILE_COMPLETE`/`FILE_REJECT` são processados como efeito colateral e
+    /// `FILE_COMPLETE`/`FILE_REJECT`/`FILE_CANCEL` são processados como efeito colateral e
     /// devolvem `None`; quem quer saber de uma oferta nova assina
     /// `Core::subscribe_transfer_events`. Falha ao processar um desses (CBOR
     /// malformado, `file_id` desconhecido) é silenciada — nunca deveria
@@ -459,6 +459,10 @@ impl Core {
             }
             PacketType::FileReject => {
                 let _ = self.handle_incoming_file_reject(device_id, &inner.body);
+                Ok(None)
+            }
+            PacketType::FileCancel => {
+                let _ = self.handle_incoming_file_cancel(device_id, &inner.body);
                 Ok(None)
             }
             _ => Ok(None),
