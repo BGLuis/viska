@@ -1,0 +1,7 @@
+# Fixa o rustc do rust-check e do desenvolvimento local: um rustc novo na imagem do runner traz
+# lints novos do clippy e quebraria o `-D warnings` sem nenhuma mudança no código. O Cargokit
+# (APK, IPA) não lê este arquivo: ele chama `rustup run stable cargo` explicitamente.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["clippy"]
