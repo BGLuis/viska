@@ -550,7 +550,7 @@ Corpo: exatamente `file_id` (16 B), sem mais nada. Vai cifrado dentro da sessão
 
 1. **Emissão:** `reject_file_offer` descarta a oferta (§7.6) e, havendo sessão estabelecida com o contato, sela o pacote e o devolve ao Dart para envio. `Core::lock()` faz o mesmo para toda oferta retida (§7.6.2). É melhor esforço: sem sessão ou com o envio falhando, a recusa local vale e o aviso se perde. Nada é persistido para reenvio. O pacote é o mesmo nos dois casos: o emissor não distingue recusa de bloqueio.
 2. **Recepção:** o emissor só age se `file_id` for uma transferência sua em curso (direção de envio) **e** pertencer ao contato que mandou o pacote. Então remove a linha de `file_transfers`, descarta o handle de envio (o bombeamento para) e marca a mensagem como recusada. Qualquer outro caso (`file_id` desconhecido, de outro contato, ou de uma transferência de recebimento) é ignorado sem erro distinguível.
-3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou, ou que bloqueou o app com ela pendente. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
+3. **Vazamento aceito:** o emissor passa a saber que o destinatário viu a oferta e a recusou, ou que bloqueou o app com ela pendente. O mesmo pacote também encerra um recebimento já aceito (§7.8 item 2), e então só diz que o destinatário desistiu dele, sem dizer por quê. Isso se soma ao que o aceite já revela, pois um `FILE_FEEDBACK` (§7.4) mostra que a oferta foi vista.
 4. **Compatibilidade:** um build antigo trata `0x24` como tipo desconhecido e o ignora sem derrubar a sessão (§6.2); para ele, a transferência continua até o cancelamento manual, ou até o prazo do item 5.
 5. **Prazo do emissor:** se nem `FILE_FEEDBACK` nem `FILE_REJECT` chegarem em 24 h (`OFFER_RESPONSE_TIMEOUT_SECS`) contadas do envio do `FILE_METADATA`, o emissor desiste: marca a mensagem como expirada, descarta o handle e remove a linha de `file_transfers`. O primeiro `FILE_FEEDBACK` encerra o prazo, pois prova que a oferta foi aceita, e fica registrado na linha de `file_transfers` (`answered`). O prazo conta de `created_at` dessa linha e sobrevive a bloqueio e reinício, como a própria transferência (§7.5). Não há timer; a expiração é aplicada quando a timeline é lida, quando um feedback chega, ao abrir ou destrancar a Core e ao retomar. Vale também para notas de voz (D30): sem isso, uma nota enfileirada sem sessão ficaria até o teto de 7 dias. Num envio enfileirado, nenhum `FILE_METADATA` saiu ainda e o prazo conta do `created_at` da linha, isto é, do enfileiramento. O prazo usa o relógio de parede, não um relógio monotônico, que não conta o tempo com o aparelho em suspensão; um salto do relógio para frente pode expirar a oferta antes da hora.
 
@@ -570,8 +570,10 @@ outro lado retoma a cada reconexão até o teto de 7 dias (§7.5).
    cancela, não consegue retomar ou vê a raiz Merkle não bater ao concluir (§7.2), com `FILE_REJECT`; o
    emissor que cancela, não consegue retomar ou vê a oferta expirar (§7.7 item 5), com `FILE_CANCEL`.
    Quem cai no teto de retenção não avisa: o par cai no mesmo teto. O aviso sai na hora quando há
-   sessão (`cancel_transfer` e a raiz que não bate pedem o envio ao Dart pelo evento `NoticeReady`; a
-   retomada o devolve como `Abandoned`).
+   sessão (`cancel_transfer`, e `finish_receive` quando a raiz não bate, pedem o envio ao Dart pelo
+   evento `NoticeReady`; a retomada o devolve como `Abandoned`). O emissor não distingue os fins que
+   chegam como `FILE_REJECT`: recusa da oferta, cancelamento do receptor, recebimento que não pôde ser
+   retomado e raiz que não bate marcam a mensagem igualmente como recusada (§7.7 item 2).
 3. **Lápide:** ao encerrar por um desses motivos, a linha de `file_transfers` dá lugar, na mesma
    transação, a uma linha de `ended_transfers` com `file_id`, contato, o aviso a repetir e o vencimento
    (`created_at` da transferência + 7 dias, o teto que o par também aplica). Nenhum segredo fica: a
