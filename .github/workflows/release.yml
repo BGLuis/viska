@@ -143,8 +143,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     cache-mode: none
-    # Revisores obrigatórios se configuram no ambiente (Settings → Environments → release): é o único
-    # job com contents: write e id-token: write, e o que ele publica vira o binário que se instala.
+    # O ambiente só aceita a main e tags v* (Settings → Environments → release): é o único job com
+    # contents: write e id-token: write, e um disparo manual de outra branch não pode publicar.
     environment: release
     permissions:
       contents: write # criar release e anexar binários no GitHub
@@ -187,7 +187,6 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          PRERELEASE=false
           if [ -n "$TAG_INPUT" ]; then
             # Um valor começando com "-" viraria opção do `gh release`.
             if ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
@@ -198,8 +197,6 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           else
-            # Build automático de um commit da main: nunca vira "Latest".
-            PRERELEASE=true
             VERSION=$(grep '^version: ' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
             TAG="v${VERSION}"
             if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -207,7 +204,6 @@ jobs:
             fi
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "Versão definida para a Release: ${TAG}"
 
       - name: Criar Release e Anexar Binários
@@ -215,7 +211,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.tag_info.outputs.tag }}
-          PRERELEASE: ${{ steps.tag_info.outputs.prerelease }}
           TARGET_SHA: ${{ github.sha }}
         run: |
           NOTES_FILE="$RUNNER_TEMP/release-notes.md"
@@ -237,12 +232,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" viska-android.apk viska-ios-unsigned.ipa SHA256SUMS.txt --clobber
           else
-            RELEASE_FLAGS=()
-            if [ "$PRERELEASE" = "true" ]; then
-              RELEASE_FLAGS=(--prerelease --latest=false)
-            fi
             gh release create "$TAG" viska-android.apk viska-ios-unsigned.ipa SHA256SUMS.txt \
-              "${RELEASE_FLAGS[@]}" \
               --target "$TARGET_SHA" \
               --title "Viska ${TAG}" \
               --notes-file "$NOTES_FILE" \
