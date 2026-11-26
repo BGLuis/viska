@@ -11,7 +11,8 @@ permissions: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+  # Só PR cancela: um push na develop cancelado deixa o merge sem veredito e o cache sem atualizar.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +34,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: rust
+          shared-key: rust-host
           save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Clippy (zero warnings)
@@ -51,17 +53,8 @@ jobs:
         working-directory: rust
         run: cargo test --locked --workspace
 
-      - name: Upload da biblioteca nativa Rust (para testes E2E do Flutter)
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: viska-core-linux-x64
-          path: rust/target/debug/libviska_core.so
-          retention-days: 1
-          if-no-files-found: error
-
   flutter-check:
     name: Flutter — Análise Estática e Testes
-    needs: [rust-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -72,11 +65,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Baixar biblioteca nativa Rust
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      # Compilar aqui, em vez de esperar o rust-check e baixar o .so, deixa os dois jobs em paralelo.
+      - name: Cache de dependências e artefatos Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          name: viska-core-linux-x64
-          path: rust/target/debug/
+          workspaces: rust
+          shared-key: rust-host
+          save-if: false
+
+      - name: Compilar biblioteca nativa Rust (para testes E2E do Flutter)
+        working-directory: rust
+        run: cargo build --locked
 
       - name: Configurar Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
@@ -135,6 +134,12 @@ jobs:
         run: flutter pub get --enforce-lockfile
 
       - name: Build do APK em modo Release
+        # Em PR, o .so sai sem LTO: a auditoria olha só DEX, manifesto e a presença das ABIs, que
+        # não mudam. Push e release.yml (que audita de novo o APK publicado) mantêm o perfil do
+        # Cargo.toml. No passo, e não no job, porque o rust-cache põe as variáveis CARGO_* na chave.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'pull_request' && 'off' || 'true' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'pull_request' && '16' || '1' }}
         run: flutter build apk --release --target-platform android-arm64,android-x64
 
       - name: Auditoria de Segurança e Zero Telemetria no APK

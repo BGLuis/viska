@@ -11,7 +11,8 @@ permissions: {}
 
 concurrency:
   group: ios-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+  # Só PR cancela: um push na develop cancelado deixa o merge sem veredito e o cache sem atualizar.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -94,6 +95,11 @@ jobs:
         run: bundle exec pod install
 
       - name: Compilação do App iOS (Release sem assinatura)
+        # Em PR, o Rust sai sem LTO: o job só prova que compila, linka e empacota. Push e
+        # release.yml mantêm o perfil do Cargo.toml. No passo porque o rust-cache põe CARGO_* na chave.
+        env:
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'pull_request' && 'off' || 'true' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'pull_request' && '16' || '1' }}
         run: flutter build ios --no-codesign --release
 
       - name: Validar empacotamento em IPA sem assinatura
