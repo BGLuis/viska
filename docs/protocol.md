@@ -567,10 +567,11 @@ outro lado retoma a cada reconexão até o teto de 7 dias (§7.5).
    staging. Qualquer outro caso é ignorado sem erro distinguível. O receptor não tem mensagem na
    conversa antes de concluir, então nada mais muda.
 2. **Qual aviso cada fim produz:** o receptor que conclui avisa com `FILE_COMPLETE`; o receptor que
-   cancela ou não consegue retomar, com `FILE_REJECT`; o emissor que cancela, não consegue retomar ou
-   vê a oferta expirar (§7.7 item 5), com `FILE_CANCEL`. Quem cai no teto de retenção não avisa: o par
-   cai no mesmo teto. O aviso sai na hora quando há sessão (`cancel_transfer` pede o envio ao Dart pelo
-   evento `NoticeReady`; a retomada o devolve como `Abandoned`).
+   cancela, não consegue retomar ou vê a raiz Merkle não bater ao concluir (§7.2), com `FILE_REJECT`; o
+   emissor que cancela, não consegue retomar ou vê a oferta expirar (§7.7 item 5), com `FILE_CANCEL`.
+   Quem cai no teto de retenção não avisa: o par cai no mesmo teto. O aviso sai na hora quando há
+   sessão (`cancel_transfer` e a raiz que não bate pedem o envio ao Dart pelo evento `NoticeReady`; a
+   retomada o devolve como `Abandoned`).
 3. **Lápide:** ao encerrar por um desses motivos, a linha de `file_transfers` dá lugar, na mesma
    transação, a uma linha de `ended_transfers` com `file_id`, contato, o aviso a repetir e o vencimento
    (`created_at` da transferência + 7 dias, o teto que o par também aplica). Nenhum segredo fica: a
