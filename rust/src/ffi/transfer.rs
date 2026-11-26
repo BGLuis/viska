@@ -717,9 +717,11 @@ impl Core {
 
         let complete = match recv.finish(&self.staging_dir, destination) {
             Ok(complete) => complete,
-            // A raiz não bate: receber de novo daria o mesmo arquivo errado.
+            // A raiz não bate: receber de novo daria o mesmo arquivo errado. Sem o
+            // `FILE_REJECT`, o emissor retomaria até o teto de retenção (§7.8).
             Err(viska_proto::Error::MerkleMismatch) => {
-                self.end_transfer(&file_id)?;
+                self.retire_transfer(&file_id, EndNotice::Reject)?;
+                self.notice_peer_activity(&file_id, None);
                 return Err(viska_proto::Error::MerkleMismatch.into());
             }
             // Qualquer outra falha (E/S no destino, Core trancada no meio) devolve o
