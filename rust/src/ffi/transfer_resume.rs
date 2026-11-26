@@ -1836,6 +1836,7 @@ mod tests {
         assert!(matches!(finished, Err(FfiError::FileCorrupted)));
         assert_eq!(std::fs::metadata(&dst).unwrap().len(), 0, "nada decifrado vai ao destino");
         assert_receiver_clean(&pair, &started.file_id);
+        assert_eq!(received_message(&pair).delivery_state, DeliveryStateDto::Failed);
         assert_eq!(take_notice_requests(&seen).len(), 1, "o primeiro aviso se perde");
         forget_notice_requests(&pair.core_b);
 

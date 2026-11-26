@@ -720,6 +720,8 @@ impl Core {
             // A raiz não bate: receber de novo daria o mesmo arquivo errado. Sem o
             // `FILE_REJECT`, o emissor retomaria até o teto de retenção (§7.8).
             Err(viska_proto::Error::MerkleMismatch) => {
+                self.store
+                    .mark_received_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
                 self.retire_transfer(&file_id, EndNotice::Reject)?;
                 self.notice_peer_activity(&file_id, None);
                 return Err(viska_proto::Error::MerkleMismatch.into());
