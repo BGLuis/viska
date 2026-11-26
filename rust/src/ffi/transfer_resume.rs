@@ -1672,6 +1672,57 @@ mod tests {
         assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
     }
 
+    /// Troca o recebimento de B por um cuja raiz Merkle não é a do conteúdo que A
+    /// manda. Adulterar o `.staging` não serviria: a raiz é calculada sobre o
+    /// que foi decodificado em memória, e uma página adulterada falha no AEAD.
+    fn expect_another_root(pair: &EstablishedPair, file_id: &[u8]) {
+        let stored = pair.core_b.store.find_file_transfer(&fid(file_id)).unwrap().unwrap();
+        let mut manifest = Manifest::decode(&stored.manifest_cbor).unwrap();
+        manifest.merkle_root[0] ^= 1;
+        pair.core_b.lock_transfers().unwrap().remove(&fid(file_id));
+        std::fs::remove_file(staging::staging_path(&pair.core_b.staging_dir, &fid(file_id))).unwrap();
+        let receive =
+            ReceiveTransfer::start(manifest, stored.kind, &stored.transfer_secret, &pair.core_b.staging_dir).unwrap();
+        pair.core_b.lock_transfers().unwrap().insert(fid(file_id), TransferHandle::Receive(receive));
+    }
+
+    #[test]
+    fn a_receive_whose_root_does_not_match_tells_the_sender_to_stop() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = write_temp_file(&dir_src, "a.bin", &[5u8; 20_000]);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone()).unwrap();
+        expect_another_root(&pair, &started.file_id);
+        drive(&pair, &started.file_id, 1);
+        let dst = dir_dst.path().join("a.bin");
+        let seen = watch_events(&pair.core_b);
+
+        let finished = pair.core_b.finish_receive_file(
+            pair.device_id_a.clone(),
+            started.file_id.clone(),
+            dst.to_str().unwrap().to_owned(),
+        );
+        assert!(matches!(finished, Err(FfiError::FileCorrupted)));
+        assert_eq!(std::fs::metadata(&dst).unwrap().len(), 0, "nada decifrado vai ao destino");
+        assert_receiver_clean(&pair, &started.file_id);
+        assert_eq!(take_notice_requests(&seen).len(), 1, "o primeiro aviso se perde");
+        forget_notice_requests(&pair.core_b);
+
+        pair.core_a.lock().unwrap();
+        pair.core_a.unlock().unwrap();
+        reconnect(&pair, true);
+        assert_eq!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().len(), 1);
+        let chunk = pair.core_a.next_outgoing_wire_chunk(started.file_id.clone()).unwrap().unwrap();
+        pair.core_b.ingest_incoming_wire_bytes(chunk).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1, "o símbolo do envio retomado pede o aviso");
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &requests[0]);
+
+        assert_sender_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
+    }
+
     #[test]
     fn a_resent_offer_of_a_cancelled_receive_is_answered_not_offered_again() {
         let dir_src = tempfile::tempdir().unwrap();
