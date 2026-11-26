@@ -1651,6 +1651,80 @@ mod tests {
         assert_receiver_clean(&pair, &started.file_id);
     }
 
+    fn outgoing_message(pair: &EstablishedPair, message_id: i64) -> crate::ffi::types::MessageDto {
+        pair.core_a.get_message(message_id).unwrap().unwrap()
+    }
+
+    #[test]
+    fn cancelling_a_send_in_progress_marks_it_failed_and_neither_side_resumes() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let (started, _) = start_two_block_send(&pair, &dir_src);
+        drive(&pair, &started.file_id, 1);
+        let before = outgoing_message(&pair, started.message_id);
+        assert!(!before.can_cancel_queued);
+        assert_eq!(before.cancellable_file_id, Some(started.file_id.clone()));
+        let seen = watch_events(&pair.core_a);
+
+        pair.core_a.cancel_transfer(started.file_id.clone()).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1);
+        deliver_notice(&pair.core_a, &pair.core_b, pair.device_id_a.clone(), &requests[0]);
+
+        let after = outgoing_message(&pair, started.message_id);
+        assert_eq!(after.delivery_state, DeliveryStateDto::Failed, "a mensagem fica, como falha");
+        assert_eq!(after.cancellable_file_id, None);
+        assert_sender_clean(&pair, &started.file_id);
+        assert!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().is_empty());
+        assert_receiver_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Failed, "retomar não reabre");
+    }
+
+    #[test]
+    fn a_finished_send_is_no_longer_cancellable() {
+        let pair = established_pair();
+        let (dir_src, dir_dst) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = write_temp_file(&dir_src, "a.bin", &[5u8; 20_000]);
+        let started = pair.core_a.start_send_file(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone()).unwrap();
+        drive(&pair, &started.file_id, 1);
+        let dst = dir_dst.path().join("a.bin");
+        let complete = pair
+            .core_b
+            .finish_receive_file(pair.device_id_a.clone(), started.file_id.clone(), dst.to_str().unwrap().to_owned())
+            .unwrap()
+            .expect("com sessão, o FILE_COMPLETE sai selado");
+        pair.core_a.decrypt_incoming(pair.device_id_b.clone(), complete).unwrap();
+
+        assert_eq!(outgoing_message(&pair, started.message_id).cancellable_file_id, None);
+    }
+
+    #[test]
+    fn cancelling_a_voice_note_being_received_marks_it_failed_and_stops_the_sender() {
+        let pair = established_pair();
+        let dir_src = tempfile::tempdir().unwrap();
+        let path = write_temp_file(&dir_src, "voz.viska-audio", &[9u8; 4_096]);
+        let started = pair.core_a.start_send_audio(pair.device_id_b.clone(), path, false).unwrap();
+        pair.core_b.decrypt_incoming(pair.device_id_a.clone(), started.sealed_metadata.clone()).unwrap();
+        let received = pair.core_b.list_messages(pair.device_id_a.clone()).unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].cancellable_file_id, Some(started.file_id.clone()));
+        let seen = watch_events(&pair.core_b);
+
+        pair.core_b.cancel_transfer(started.file_id.clone()).unwrap();
+        let requests = take_notice_requests(&seen);
+        assert_eq!(requests.len(), 1);
+        deliver_notice(&pair.core_b, &pair.core_a, pair.device_id_b.clone(), &requests[0]);
+
+        let after = pair.core_b.get_message(received[0].id).unwrap().unwrap();
+        assert_eq!(after.delivery_state, DeliveryStateDto::Failed);
+        assert_eq!(after.cancellable_file_id, None);
+        assert_receiver_clean(&pair, &started.file_id);
+        assert_sender_clean(&pair, &started.file_id);
+        assert_eq!(state_of(&pair, started.message_id), DeliveryStateDto::Rejected);
+        assert!(pair.core_a.resume_transfers(pair.device_id_b.clone()).unwrap().is_empty());
+    }
+
     #[test]
     fn a_receiver_cancel_whose_notice_was_lost_is_repeated_on_the_next_symbol() {
         let pair = established_pair();

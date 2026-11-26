@@ -252,6 +252,11 @@ pub struct MessageDto {
     /// `true` apenas para envios de arquivo ou nota de voz ainda na fila offline
     /// antes de qualquer oferta selada ou handle ativo (issue #111).
     pub can_cancel_queued: bool,
+    /// `file_id` para `Core::cancel_transfer` quando o arquivo ou a nota de voz
+    /// ainda está em transferência e já saiu da fila offline; `None` em
+    /// qualquer outro caso, inclusive quando `can_cancel_queued` vale (issue
+    /// #124). O `file_id` já anda em claro no pacote (D17): não é segredo.
+    pub cancellable_file_id: Option<Vec<u8>>,
 }
 
 /// Pacote já selado que o Dart precisa enviar a um contato depois que a Core

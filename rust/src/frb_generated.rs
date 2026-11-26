@@ -4713,6 +4713,7 @@ impl SseDecode for crate::ffi::types::MessageDto {
         let mut var_viewOnce = <bool>::sse_decode(deserializer);
         let mut var_reactions = <Vec<String>>::sse_decode(deserializer);
         let mut var_canCancelQueued = <bool>::sse_decode(deserializer);
+        let mut var_cancellableFileId = <Option<Vec<u8>>>::sse_decode(deserializer);
         return crate::ffi::types::MessageDto {
             id: var_id,
             global_id: var_globalId,
@@ -4727,6 +4728,7 @@ impl SseDecode for crate::ffi::types::MessageDto {
             view_once: var_viewOnce,
             reactions: var_reactions,
             can_cancel_queued: var_canCancelQueued,
+            cancellable_file_id: var_cancellableFileId,
         };
     }
 }
@@ -5729,6 +5731,7 @@ impl flutter_rust_bridge::IntoDart for crate::ffi::types::MessageDto {
             self.view_once.into_into_dart().into_dart(),
             self.reactions.into_into_dart().into_dart(),
             self.can_cancel_queued.into_into_dart().into_dart(),
+            self.cancellable_file_id.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -6488,6 +6491,7 @@ impl SseEncode for crate::ffi::types::MessageDto {
         <bool>::sse_encode(self.view_once, serializer);
         <Vec<String>>::sse_encode(self.reactions, serializer);
         <bool>::sse_encode(self.can_cancel_queued, serializer);
+        <Option<Vec<u8>>>::sse_encode(self.cancellable_file_id, serializer);
     }
 }
 

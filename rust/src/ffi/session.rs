@@ -716,6 +716,12 @@ fn message_dto(
             (MessageKindDto::Text, message.body, None)
         };
 
+    let can_cancel_queued = message.can_cancel_queued && !has_active_transfer;
+    let cancellable_file_id = message
+        .file_id
+        .filter(|_| message.has_live_transfer && !can_cancel_queued)
+        .map(|file_id| file_id.to_vec());
+
     MessageDto {
         id: message.id,
         global_id: message.global_id,
@@ -729,7 +735,8 @@ fn message_dto(
         reply_to_id: message.reply_to_id,
         view_once: message.view_once,
         reactions: message.reactions,
-        can_cancel_queued: message.can_cancel_queued && !has_active_transfer,
+        can_cancel_queued,
+        cancellable_file_id,
     }
 }
 

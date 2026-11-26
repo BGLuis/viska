@@ -784,14 +784,27 @@ impl Core {
     /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
     /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
     /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
-    /// insistir na transferência.
+    /// insistir na transferência. A mensagem fica na conversa como `Failed`
+    /// (issue #124): a pessoa vê que aquilo não chegou ao fim.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
         self.remove_unconfirmed_offer(&file_id)?;
-        let notice = match self.store.find_file_transfer(&file_id)?.map(|stored| stored.direction) {
-            Some(Direction::Sending) => EndNotice::Cancel,
-            Some(Direction::Receiving) => EndNotice::Reject,
-            None => return self.end_transfer(&file_id),
+        let Some(stored) = self.store.find_file_transfer(&file_id)? else {
+            return self.end_transfer(&file_id);
+        };
+        // A mensagem vem antes, como em `drop_transfer`: se a escrita falhar,
+        // a linha continua e cancelar de novo repete tudo.
+        let notice = match stored.direction {
+            Direction::Sending => {
+                self.store
+                    .mark_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
+                EndNotice::Cancel
+            }
+            Direction::Receiving => {
+                self.store
+                    .mark_received_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
+                EndNotice::Reject
+            }
         };
         self.retire_transfer(&file_id, notice)?;
         self.notice_peer_activity(&file_id, None);
@@ -1045,12 +1058,14 @@ impl Core {
         )?;
 
         if kind == TransferKind::Audio {
-            self.store.insert_incoming_message(
+            let message_id = self.store.insert_incoming_message(
                 &contact_device_id,
                 PacketType::AudioChunk,
                 &hex::encode(manifest.file_id),
                 received_at,
             )?;
+            // Sem a ligação, a nota em recebimento não se deixa cancelar pela conversa.
+            self.store.set_message_file_id(message_id, &manifest.file_id)?;
         }
 
         if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive), None)? {
