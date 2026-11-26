@@ -1374,8 +1374,12 @@ void main() {
       await service.start();
       final events = <MessageReceptionEvent>[];
       final sub = service.eventsFor(contact).listen(events.add);
+      final received = service.eventsFor(contact).firstWhere((e) => e is VoiceNoteReceivedEvent);
 
       transport.emitIncomingFile(Uint8List.fromList([0xBB]));
+      // A nota lê o arquivo do disco de verdade: `pumpEventQueue` só drena microtarefas e,
+      // num runner lento, voltava antes de a leitura terminar.
+      await received.timeout(const Duration(seconds: 10));
       await pumpEventQueue();
 
       expect(core.finishReceiveAudioCalls, [fileId]);
