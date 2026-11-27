@@ -94,6 +94,9 @@ pub struct StoredMessage {
     /// Verdadeiro apenas quando a mensagem é um envio pendente na fila offline
     /// cuja oferta nunca foi selada nem respondida (issue #111).
     pub can_cancel_queued: bool,
+    /// Há linha em `file_transfers` deste contato, na direção da mensagem,
+    /// ligada a ela: a transferência ainda não terminou de nenhum jeito.
+    pub has_live_transfer: bool,
 }
 
 fn reject_non_storable(packet_type: PacketType) -> Result<()> {
@@ -933,8 +936,9 @@ where
     Ok(Some((file_id, contact_device_id)))
 }
 
-/// Liga a mensagem de saída de um arquivo ao `file_id` da transferência, para
-/// que a recusa do par (`FILE_REJECT`) ache a linha sem depender da UI.
+/// Liga a mensagem de um arquivo ao `file_id` da transferência, para que a
+/// recusa do par (`FILE_REJECT`) e o cancelamento local achem a linha sem
+/// depender da UI.
 pub fn set_file_id(conn: &rusqlite::Connection, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
     conn.execute(
         "UPDATE messages SET file_id = ?1 WHERE id = ?2",
@@ -974,6 +978,38 @@ pub fn mark_failed_by_file_id(
     contact_device_id: &[u8; 16],
 ) -> Result<bool> {
     mark_unfinished_by_file_id(conn, DeliveryState::Failed, file_id, contact_device_id)
+}
+
+/// Marca como falha a nota de voz recebida ligada a `file_id` cujo
+/// recebimento este lado cancelou. A linha nasce `Delivered` no aceite, então
+/// é dela que sai. Devolve os ids que mudaram.
+pub fn mark_received_failed_by_file_id(
+    conn: &rusqlite::Connection,
+    file_id: &[u8; 16],
+    contact_device_id: &[u8; 16],
+) -> Result<Vec<i64>> {
+    let mut statement = conn
+        .prepare(
+            "UPDATE messages SET delivery_state = ?1
+             WHERE file_id = ?2 AND contact_device_id = ?3 AND direction = ?4 AND delivery_state = ?5
+             RETURNING id",
+        )
+        .map_err(|_| Error::Store)?;
+    let ids = statement
+        .query_map(
+            rusqlite::params![
+                DeliveryState::Failed as i64,
+                file_id.as_slice(),
+                contact_device_id.as_slice(),
+                Direction::Incoming as i64,
+                DeliveryState::Delivered as i64,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::Store)?
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .map_err(|_| Error::Store)?;
+    Ok(ids)
 }
 
 fn mark_unfinished_by_file_id(
@@ -1240,6 +1276,13 @@ fn load_messages(
             && ft_contact_raw.as_deref() == Some(msg_contact_raw.as_slice())
             && ft_answered == Some(0)
             && ft_offered == Some(0);
+        let transfer_direction = match direction {
+            Direction::Outgoing => crate::store::transfers::Direction::Sending,
+            Direction::Incoming => crate::store::transfers::Direction::Receiving,
+        };
+        let has_live_transfer = file_id.is_some()
+            && ft_direction == Some(transfer_direction as i64)
+            && ft_contact_raw.as_deref() == Some(msg_contact_raw.as_slice());
 
         messages.push(StoredMessage {
             id,
@@ -1255,6 +1298,7 @@ fn load_messages(
             reactions,
             file_id,
             can_cancel_queued,
+            has_live_transfer,
         });
     }
     Ok(messages)
@@ -1396,6 +1440,7 @@ fn list_pending_limited(
             reactions: Vec::new(),
             file_id: None,
             can_cancel_queued: false,
+            has_live_transfer: false,
         });
     }
     Ok(messages)

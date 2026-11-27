@@ -437,7 +437,7 @@ impl Store {
         Ok(())
     }
 
-    /// Liga a mensagem de saída de um arquivo ao seu `file_id`.
+    /// Liga a mensagem de um arquivo ao seu `file_id`.
     pub fn set_message_file_id(&self, message_id: i64, file_id: &[u8; 16]) -> Result<()> {
         self.with_conn(|conn| messages::set_file_id(conn, message_id, file_id))?;
         self.announce(MessageChangeKind::Updated, &[message_id]);
@@ -481,6 +481,19 @@ impl Store {
             self.announce_by_file_id(file_id, contact_device_id);
         }
         Ok(changed)
+    }
+
+    /// Marca como falha a nota de voz recebida deste contato cujo recebimento
+    /// foi cancelado aqui.
+    pub fn mark_received_message_failed_by_file_id(
+        &self,
+        file_id: &[u8; 16],
+        contact_device_id: &[u8; 16],
+    ) -> Result<bool> {
+        let ids =
+            self.with_conn(|conn| messages::mark_received_failed_by_file_id(conn, file_id, contact_device_id))?;
+        self.announce(MessageChangeKind::Updated, &ids);
+        Ok(!ids.is_empty())
     }
 
     /// Marca como falha os envios de arquivo/voz `Pending` que não podem retomar.

@@ -145,6 +145,8 @@ impl Core {
         if stored.direction != Direction::Receiving || stored.contact_device_id != contact_device_id {
             return Ok(());
         }
+        self.store
+            .mark_received_message_failed_by_file_id(&file_id, &contact_device_id)?;
         self.end_transfer(&file_id)
     }
 }

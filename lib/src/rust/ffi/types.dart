@@ -250,6 +250,12 @@ class MessageDto {
   /// antes de qualquer oferta selada ou handle ativo (issue #111).
   final bool canCancelQueued;
 
+  /// `file_id` para `Core::cancel_transfer` quando o arquivo ou a nota de voz
+  /// ainda está em transferência e já saiu da fila offline; `None` em
+  /// qualquer outro caso, inclusive quando `can_cancel_queued` vale (issue
+  /// #124). O `file_id` já anda em claro no pacote (D17): não é segredo.
+  final Uint8List? cancellableFileId;
+
   const MessageDto({
     required this.id,
     this.globalId,
@@ -264,6 +270,7 @@ class MessageDto {
     required this.viewOnce,
     required this.reactions,
     required this.canCancelQueued,
+    this.cancellableFileId,
   });
 
   @override
@@ -280,7 +287,8 @@ class MessageDto {
       replyToId.hashCode ^
       viewOnce.hashCode ^
       reactions.hashCode ^
-      canCancelQueued.hashCode;
+      canCancelQueued.hashCode ^
+      cancellableFileId.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -299,7 +307,8 @@ class MessageDto {
           replyToId == other.replyToId &&
           viewOnce == other.viewOnce &&
           reactions == other.reactions &&
-          canCancelQueued == other.canCancelQueued;
+          canCancelQueued == other.canCancelQueued &&
+          cancellableFileId == other.cancellableFileId;
 }
 
 /// Evento de mensagem, empurrado pelo stream de `Core::subscribe_message_events`.

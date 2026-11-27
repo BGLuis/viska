@@ -3930,8 +3930,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MessageDto dco_decode_message_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return MessageDto(
       id: dco_decode_i_64(arr[0]),
       globalId: dco_decode_opt_String(arr[1]),
@@ -3946,6 +3946,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       viewOnce: dco_decode_bool(arr[10]),
       reactions: dco_decode_list_String(arr[11]),
       canCancelQueued: dco_decode_bool(arr[12]),
+      cancellableFileId: dco_decode_opt_list_prim_u_8_strict(arr[13]),
     );
   }
 
@@ -4695,6 +4696,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_viewOnce = sse_decode_bool(deserializer);
     var var_reactions = sse_decode_list_String(deserializer);
     var var_canCancelQueued = sse_decode_bool(deserializer);
+    var var_cancellableFileId = sse_decode_opt_list_prim_u_8_strict(
+      deserializer,
+    );
     return MessageDto(
       id: var_id,
       globalId: var_globalId,
@@ -4709,6 +4713,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       viewOnce: var_viewOnce,
       reactions: var_reactions,
       canCancelQueued: var_canCancelQueued,
+      cancellableFileId: var_cancellableFileId,
     );
   }
 
@@ -5552,6 +5557,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.viewOnce, serializer);
     sse_encode_list_String(self.reactions, serializer);
     sse_encode_bool(self.canCancelQueued, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.cancellableFileId, serializer);
   }
 
   @protected
@@ -6035,7 +6041,8 @@ class CoreImpl extends RustOpaque implements Core {
   /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
   /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
   /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
-  /// insistir na transferência.
+  /// insistir na transferência. A mensagem fica na conversa como `Failed`
+  /// (issue #124): a pessoa vê que aquilo não chegou ao fim.
   Future<void> cancelTransfer({required List<int> fileId}) => RustLib
       .instance
       .api
@@ -6152,8 +6159,8 @@ class CoreImpl extends RustOpaque implements Core {
   /// `Ok` quer dizer que o arquivo está no destino, e só então: quem chama
   /// pode apagar `destination_path` num `Err`. O `FILE_COMPLETE` selado volta
   /// em `Some` para mandar ao emissor pelo canal `control`; sem sessão que
-  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e o
-  /// emissor só para pelo limite de inatividade (issue #108).
+  /// cifre agora ele é `None`, em melhor esforço como o `FILE_REJECT`, e a
+  /// lápide o repete quando o emissor retomar (§7.8).
   Future<Uint8List?> finishReceiveFile({
     required List<int> peerDeviceId,
     required List<int> fileId,

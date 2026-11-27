@@ -720,6 +720,8 @@ impl Core {
             // A raiz não bate: receber de novo daria o mesmo arquivo errado. Sem o
             // `FILE_REJECT`, o emissor retomaria até o teto de retenção (§7.8).
             Err(viska_proto::Error::MerkleMismatch) => {
+                self.store
+                    .mark_received_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
                 self.retire_transfer(&file_id, EndNotice::Reject)?;
                 self.notice_peer_activity(&file_id, None);
                 return Err(viska_proto::Error::MerkleMismatch.into());
@@ -784,14 +786,27 @@ impl Core {
     /// apaga o `.staging` do receptor ou a cópia em `outgoing/` do emissor. O
     /// par é avisado por [`TransferEventKind::NoticeReady`] (`FILE_CANCEL` do
     /// emissor, `FILE_REJECT` do receptor, §7.8), e de novo a cada vez que
-    /// insistir na transferência.
+    /// insistir na transferência. A mensagem fica na conversa como `Failed`
+    /// (issue #124): a pessoa vê que aquilo não chegou ao fim.
     pub fn cancel_transfer(&self, file_id: Vec<u8>) -> Result<(), FfiError> {
         let file_id = to_file_id(file_id)?;
         self.remove_unconfirmed_offer(&file_id)?;
-        let notice = match self.store.find_file_transfer(&file_id)?.map(|stored| stored.direction) {
-            Some(Direction::Sending) => EndNotice::Cancel,
-            Some(Direction::Receiving) => EndNotice::Reject,
-            None => return self.end_transfer(&file_id),
+        let Some(stored) = self.store.find_file_transfer(&file_id)? else {
+            return self.end_transfer(&file_id);
+        };
+        // A mensagem vem antes, como em `drop_transfer`: se a escrita falhar,
+        // a linha continua e cancelar de novo repete tudo.
+        let notice = match stored.direction {
+            Direction::Sending => {
+                self.store
+                    .mark_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
+                EndNotice::Cancel
+            }
+            Direction::Receiving => {
+                self.store
+                    .mark_received_message_failed_by_file_id(&file_id, &stored.contact_device_id)?;
+                EndNotice::Reject
+            }
         };
         self.retire_transfer(&file_id, notice)?;
         self.notice_peer_activity(&file_id, None);
@@ -1044,14 +1059,19 @@ impl Core {
             false,
         )?;
 
-        if kind == TransferKind::Audio {
-            self.store.insert_incoming_message(
-                &contact_device_id,
-                PacketType::AudioChunk,
-                &hex::encode(manifest.file_id),
-                received_at,
-            )?;
-        }
+        // Mesmo corpo que o emissor grava: `hex(file_id)` para a nota, o nome
+        // para o arquivo. O nome já foi validado ao chegar a oferta.
+        let (packet_type, body) = match kind {
+            TransferKind::Audio => (PacketType::AudioChunk, hex::encode(manifest.file_id)),
+            TransferKind::File => (
+                PacketType::FileMetadata,
+                manifest::decrypt_name(transfer_secret, &manifest.file_id, &manifest.name_encrypted)?,
+            ),
+        };
+        let message_id = self.store.insert_incoming_message(&contact_device_id, packet_type, &body, received_at)?;
+        // Sem a ligação, o recebimento não se deixa cancelar pela conversa nem
+        // vira falha quando o emissor desiste.
+        self.store.set_message_file_id(message_id, &manifest.file_id)?;
 
         if !self.install_handle(manifest.file_id, TransferHandle::Receive(receive), None)? {
             return Err(FfiError::Locked);

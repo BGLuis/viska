@@ -194,6 +194,41 @@ class _FakeCore with FakeSessionEvents, FakeTransferEvents, FakeMessageEvents im
     return unconfirmedFileOffersToReturn;
   }
 
+  final cancelTransferCalls = <List<int>>[];
+
+  /// Como o Rust: a mensagem fica, como `failed`, e deixa de ser cancelável.
+  @override
+  Future<void> cancelTransfer({required List<int> fileId}) async {
+    cancelTransferCalls.add(fileId);
+    final key = fileId.join(',');
+    final cancelledIds = [
+      for (final m in messagesToReturn)
+        if (m.cancellableFileId?.join(',') == key) m.id,
+    ];
+    messagesToReturn = [
+      for (final m in messagesToReturn)
+        if (cancelledIds.contains(m.id))
+          MessageDto(
+            id: m.id,
+            direction: m.direction,
+            kind: m.kind,
+            body: m.body,
+            audioFileId: m.audioFileId,
+            deliveryState: DeliveryStateDto.failed,
+            createdAtUnixSecs: m.createdAtUnixSecs,
+            isEphemeral: m.isEphemeral,
+            viewOnce: m.viewOnce,
+            reactions: m.reactions,
+            canCancelQueued: false,
+          )
+        else
+          m,
+    ];
+    for (final id in cancelledIds) {
+      emitMessageEvent(id, MessageEventKind.updated, peer: peerDeviceId);
+    }
+  }
+
   final cancelQueuedTransferCalls = <int>[];
 
   @override
@@ -758,6 +793,7 @@ void main() {
           viewOnce: false,
           reactions: const [],
           canCancelQueued: false,
+          cancellableFileId: fileId,
         ),
       ];
 
@@ -1081,6 +1117,153 @@ void main() {
       expect(find.text('ja-ofertado.pdf'), findsOneWidget);
       expect(find.byKey(const Key('cancel_queued_transfer_14')), findsNothing);
       expect(find.byKey(const Key('cancel_queued_transfer_15')), findsNothing);
+    });
+
+    testWidgets('cancel shows on a file send in progress, not on a finished one, and leaves it failed', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 7));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 20,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'em-curso.pdf',
+          deliveryState: DeliveryStateDto.sent,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+          cancellableFileId: fileId,
+        ),
+        MessageDto(
+          id: 21,
+          direction: MessageDirectionDto.outgoing,
+          kind: MessageKindDto.file,
+          body: 'entregue.pdf',
+          deliveryState: DeliveryStateDto.sent,
+          createdAtUnixSecs: 1001,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+        ),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.byKey(const Key('cancel_transfer_20')), findsOneWidget);
+      expect(find.byKey(const Key('cancel_transfer_21')), findsNothing);
+      expect(find.byKey(const Key('cancel_queued_transfer_20')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('cancel_transfer_20')));
+      await tester.pumpAndSettle();
+
+      expect(core.cancelTransferCalls, [fileId]);
+      expect(find.text('em-curso.pdf'), findsOneWidget, reason: 'a mensagem não sai da conversa');
+      expect(find.text('Falhou'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_transfer_20')), findsNothing);
+      expect(find.text('Enviado'), findsOneWidget, reason: 'só o envio que terminou se diz enviado');
+    });
+
+    MessageDto incomingFile(int id, String name, {DeliveryStateDto state = DeliveryStateDto.delivered, Uint8List? live}) =>
+        MessageDto(
+          id: id,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.file,
+          body: name,
+          deliveryState: state,
+          createdAtUnixSecs: 1000 + id,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+          cancellableFileId: live,
+        );
+
+    testWidgets('a received file shows its name, or that it was not received', (tester) async {
+      core.messagesToReturn = [
+        incomingFile(30, 'chegou.pdf'),
+        incomingFile(31, 'parou.pdf', state: DeliveryStateDto.failed),
+      ];
+
+      await pumpChat(tester);
+
+      expect(find.text('chegou.pdf'), findsOneWidget);
+      expect(find.text('parou.pdf'), findsOneWidget);
+      expect(find.text('Não recebido'), findsOneWidget);
+      expect(find.text('Recebendo arquivo…'), findsNothing);
+      expect(find.byKey(const Key('cancel_transfer_30')), findsNothing);
+    });
+
+    testWidgets('cancel shows on a file being received and leaves it not received', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 3));
+      core.messagesToReturn = [incomingFile(32, 'grande.zip', live: fileId)];
+
+      // O indicador de recebimento anima sem fim: `pumpAndSettle` nunca assentaria.
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text('Recebendo arquivo…'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('cancel_transfer_32')));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(core.cancelTransferCalls, [fileId]);
+      expect(find.text('grande.zip'), findsOneWidget);
+      expect(find.text('Não recebido'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_transfer_32')), findsNothing);
+    });
+
+    testWidgets('cancel shows on a voice note being received and leaves it not received', (tester) async {
+      final fileId = Uint8List.fromList(List.filled(16, 8));
+      core.messagesToReturn = [
+        MessageDto(
+          id: 22,
+          direction: MessageDirectionDto.incoming,
+          kind: MessageKindDto.voiceNote,
+          body: '',
+          audioFileId: fileId,
+          deliveryState: DeliveryStateDto.delivered,
+          createdAtUnixSecs: 1000,
+          isEphemeral: false,
+          viewOnce: false,
+          reactions: const [],
+          canCancelQueued: false,
+          cancellableFileId: fileId,
+        ),
+      ];
+
+      // O indicador de recebimento anima sem fim: `pumpAndSettle` nunca assentaria.
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: DarkTechTheme.theme,
+          home: ChatScreen(
+            core: core,
+            router: router,
+            contactId: ContactId(List.filled(16, 1)),
+            contactLabel: 'Bob',
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text('Recebendo nota de voz…'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('cancel_transfer_22')));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(core.cancelTransferCalls, [fileId]);
+      expect(find.text('Recebendo nota de voz…'), findsNothing);
+      expect(find.text('Nota de voz não recebida'), findsOneWidget);
+      expect(find.byKey(const Key('cancel_transfer_22')), findsNothing);
     });
 
     testWidgets('tapping RECONECTAR N times on SESSÃO INTERROMPIDA keeps one reception and one connection listener', (tester) async {
